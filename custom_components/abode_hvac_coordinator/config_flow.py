@@ -363,23 +363,26 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             self._rooms, self._tariff_title(), self._outdoor_entity_id()
         )
 
-    def _outdoor_entity_id(self) -> str | None:
-        return self.config_entry.options.get(
-            CONF_OUTDOOR_TEMPERATURE_ENTITY,
-            self.config_entry.data.get(CONF_OUTDOOR_TEMPERATURE_ENTITY),
+    def _stored(self, key: str) -> str | None:
+        """One configured value, options first then data, as a string or None.
+
+        Options and data are untyped mappings, so the narrowing has to happen
+        somewhere. Doing it once here is the difference between one cast and
+        one per caller.
+        """
+        value = self.config_entry.options.get(
+            key, self.config_entry.data.get(key)
         )
+        return None if value is None else str(value)
+
+    def _outdoor_entity_id(self) -> str | None:
+        return self._stored(CONF_OUTDOOR_TEMPERATURE_ENTITY)
 
     def _outdoor_humidity_entity_id(self) -> str | None:
-        return self.config_entry.options.get(
-            CONF_OUTDOOR_HUMIDITY_ENTITY,
-            self.config_entry.data.get(CONF_OUTDOOR_HUMIDITY_ENTITY),
-        )
+        return self._stored(CONF_OUTDOOR_HUMIDITY_ENTITY)
 
     def _tariff_entry_id(self) -> str | None:
-        return self.config_entry.options.get(
-            CONF_TARIFF_ENTRY_ID,
-            self.config_entry.data.get(CONF_TARIFF_ENTRY_ID),
-        )
+        return self._stored(CONF_TARIFF_ENTRY_ID)
 
     def _tariff_title(self) -> str | None:
         """The selected tariff entry\'s title, so the menu names it.

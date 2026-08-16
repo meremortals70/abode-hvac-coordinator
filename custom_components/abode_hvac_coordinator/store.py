@@ -66,7 +66,8 @@ class ModelStore:
     def room(self, room_id: str) -> dict[str, Any]:
         """Learned state for one room. Empty dict means nothing learned yet."""
         rooms: dict[str, Any] = self._data.setdefault("rooms", {})
-        return rooms.setdefault(room_id, {})
+        room: dict[str, Any] = rooms.setdefault(room_id, {})
+        return room
 
     def update_room(self, room_id: str, state: dict[str, Any]) -> None:
         """Record learned state, written out on a delay."""

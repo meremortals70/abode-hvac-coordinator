@@ -97,7 +97,7 @@ from .regulate import (
     note_transition,
     permit_transition,
 )
-from .scheduling import plan_precondition
+from .scheduling import PreconditionPlan, plan_precondition
 from .staleness import (
     CONTACT_TOLERANCE,
     INDOOR_TOLERANCE,
@@ -145,8 +145,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.store = store
         self.actuator = Actuator(hass, self)
         self.outdoor_entity_id: str | None = config_entry.options.get(
-            CONF_OUTDOOR_HUMIDITY_ENTITY,
-    CONF_OUTDOOR_TEMPERATURE_ENTITY,
+            CONF_OUTDOOR_TEMPERATURE_ENTITY,
             config_entry.data.get(CONF_OUTDOOR_TEMPERATURE_ENTITY),
         )
         self.outdoor_humidity_entity_id: str | None = config_entry.options.get(
@@ -602,7 +601,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             return None
         return round(dew_point_c(temp, humidity), 1)
 
-    def _precondition_plan(self, room: RoomConfig, now: datetime):
+    def _precondition_plan(
+        self, room: RoomConfig, now: datetime
+    ) -> PreconditionPlan | None:
         """When a heading-home request should actually start the compressor.
 
         The model already answers how long the pull takes. Using that answer is

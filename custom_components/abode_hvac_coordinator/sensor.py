@@ -401,7 +401,11 @@ class DemandForecastSensor(CoordinatorEntity[HvacCoordinator], SensorEntity):
 
     _attr_has_entity_name = True
     _attr_translation_key = "demand_forecast"
-    _attr_device_class = SensorDeviceClass.ENERGY
+    #: No device class. `energy` means metered consumption and Home Assistant
+    #: requires `total` or `total_increasing` with it, which this is not: it is
+    #: a projection of energy not yet used, and it goes down as often as up.
+    #: Declaring the device class produced a warning at every startup, and the
+    #: warning was right. The unit still says kWh.
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 2
