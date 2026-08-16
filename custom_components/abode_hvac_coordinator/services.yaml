@@ -1,0 +1,18 @@
+heading_home:
+  fields:
+    room_id:
+      required: true
+      example: office
+      selector:
+        text:
+    deadline:
+      selector:
+        datetime:
+
+clear_override:
+  fields:
+    room_id:
+      required: true
+      example: office
+      selector:
+        text:

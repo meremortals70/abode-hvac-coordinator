@@ -1,0 +1,119 @@
+# Progress against the integration quality scale.
+# Rule list taken from developers.home-assistant
+# docs/core/integration-quality-scale/_includes/tiers.json
+#
+# Note: a custom integration cannot be graded. "Custom" is a special tier
+# alongside Internal and Legacy. This file tracks compliance so the integration
+# is ready if it is ever submitted to core.
+
+rules:
+  # --- Bronze ---
+  action-setup: done
+  appropriate-polling:
+    status: exempt
+    comment: |
+      Evaluation is driven by state changes on the entities each room reads,
+      with a 30 second interval as a backstop. Nothing is polled from a device
+      or service.
+  brands: done
+  common-modules: done
+  config-flow-test-coverage: todo
+  config-flow: done
+  dependency-transparency:
+    status: exempt
+    comment: No external dependencies. requirements is empty.
+  docs-actions: done
+  docs-triggers:
+    status: exempt
+    comment: |
+      The integration defines no custom triggers. Standard state triggers on
+      its entities are documented in docs/examples.md.
+  docs-conditions:
+    status: exempt
+    comment: The integration defines no custom conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: |
+      Nothing is connected to. Configuration is a set of references to entities
+      that already exist in Home Assistant.
+  test-before-setup:
+    status: exempt
+    comment: |
+      No device or service to reach. A room whose source entities are missing
+      reports unavailable rather than failing setup.
+  unique-config-entry: done
+
+  # --- Silver ---
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: No authentication of any kind.
+  test-coverage: todo
+
+  # --- Gold ---
+  devices: done
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: Nothing is discovered; rooms are declared by the user.
+  discovery:
+    status: exempt
+    comment: |
+      A room is a decision the user makes about their house. There is nothing
+      on a network to find.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices:
+    status: exempt
+    comment: |
+      No devices are supported or unsupported. The integration consumes any
+      climate entity Home Assistant already has.
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices: done
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: exempt
+    comment: |
+      Three entities per room, all of them the reason the integration exists.
+      None is noisy enough to warrant being disabled by default.
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow:
+    status: exempt
+    comment: |
+      The config entry itself holds no settings: it is created empty and every
+      setting lives in the options flow, which offers add, edit and remove for
+      rooms and is reachable from the same integration page. A reconfigure step
+      would have nothing to reconfigure. A reviewer may reasonably disagree; if
+      so, the fix is to move room configuration into entry data and implement
+      async_step_reconfigure over it.
+  repair-issues: done
+  stale-devices: done
+
+  # --- Platinum ---
+  async-dependency:
+    status: exempt
+    comment: No external library. All integration code is async.
+  inject-websession:
+    status: exempt
+    comment: No HTTP calls are made.
+  strict-typing: todo

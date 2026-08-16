@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2B6D8D"/>
+      <stop offset="1" stop-color="#19475D"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <polygon points="128,44 208,116 48,116" fill="#F2C14E"/>
+  <rect x="68" y="116" width="120" height="88" fill="#FFFFFF"/>
+
+  <!-- Airflow, in place of the AI wordmark. Same navy as the letters. -->
+  <g fill="none" stroke="#18465C" stroke-width="14" stroke-linecap="round">
+    <path d="M86 142 C 107 122, 128 162, 149 142 C 158 133, 166 132, 172 137"/>
+    <path d="M86 178 C 107 158, 128 198, 149 178 C 158 169, 166 168, 172 173"/>
+  </g>
+</svg>

@@ -1,0 +1,243 @@
+"""Tariff, consumed from Abode Power Tariffs.
+
+Pure. No Home Assistant imports.
+
+This controller no longer holds a tariff of its own. The plan — periods, rates,
+prices, feed-in and the daily supply charge — belongs to the `abode_power_tariffs`
+integration, which publishes it as a forward interval series. This module turns
+that series into the two things the controller actually needs: what rules are in
+force right now, and how the next few hours are divided up.
+
+Constraints are absolute rules, not price hints. They are declared in the
+tariff, never hard-coded here. Each is consumed by whichever system owns the
+relevant actuator: grid_charge_battery by the battery automations,
+precool_opportunity and no_grid_import by this controller. An unrecognised
+constraint is carried through and reported, never silently dropped, so adding
+one needs no code change here.
+
+A constraint is never traded against price or comfort at runtime.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, time
+from typing import Any, Final
+
+#: Constraints this controller acts on. Anything else is passed through to the
+#: trace and reported as unrecognised, which is deliberate, not a gap.
+CONSTRAINT_NO_GRID_IMPORT: Final = "no_grid_import"
+CONSTRAINT_PRECOOL_OPPORTUNITY: Final = "precool_opportunity"
+CONSTRAINT_GRID_CHARGE_BATTERY: Final = "grid_charge_battery"
+
+KNOWN_CONSTRAINTS: Final = frozenset(
+    {
+        CONSTRAINT_NO_GRID_IMPORT,
+        CONSTRAINT_PRECOOL_OPPORTUNITY,
+        CONSTRAINT_GRID_CHARGE_BATTERY,
+    }
+)
+
+
+class TariffPayloadError(ValueError):
+    """The interval series could not be understood.
+
+    Raised rather than returning None so the reason reaches the log. A tariff
+    that cannot be parsed must not take the controller down: rooms still hold
+    their comfort bands, and only the window-driven behaviour is lost.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class Interval:
+    """One slice of the forward series, as published by Abode Power Tariffs.
+
+    Prices are dollars per kWh. That is the publisher's unit — see
+    `intervals.py` `Interval.as_dict` in `abode_power_tariffs`, which rounds
+    `per_kwh` and `export_per_kwh` to six decimal places in dollars. Nothing
+    here converts to cents; carrying two units through the code is how the
+    wrong one ends up on a dashboard.
+    """
+
+    start: datetime
+    end: datetime
+    rate: str
+    per_kwh: float | None
+    export_per_kwh: float | None
+    constraints: frozenset[str]
+    coasting_permitted: bool
+
+    def contains(self, at: datetime) -> bool:
+        """Whether an instant falls in this interval. End is exclusive."""
+        return self.start <= at < self.end
+
+    def unrecognised_constraints(self) -> frozenset[str]:
+        """Constraints on this interval this controller does not act on itself.
+
+        Reported rather than dropped, so a constraint meant for another system
+        is visible instead of silently ignored.
+        """
+        return frozenset(self.constraints) - KNOWN_CONSTRAINTS
+
+
+@dataclass(frozen=True, slots=True)
+class TariffWindow:
+    """A run of consecutive intervals sharing a rate and a rule set.
+
+    The forward series arrives at a fixed resolution — thirty minutes by
+    default — so a five-hour peak period is ten identical intervals. The demand
+    forecast wants the period, not the slices, so consecutive intervals that
+    agree on rate, constraints and coasting are collapsed back into one.
+    """
+
+    start: time
+    end: time
+    rate: str
+    per_kwh: float | None
+    constraints: frozenset[str]
+    coasting_permitted: bool
+
+
+def _as_datetime(value: Any, field: str) -> datetime:
+    """Parse an ISO-8601 timestamp from the service response."""
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError) as err:
+        raise TariffPayloadError(f"{field} is not a timestamp: {value!r}") from err
+
+
+def _as_optional_float(value: Any, field: str) -> float | None:
+    """A price, or None where the tariff carries none for that interval."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as err:
+        raise TariffPayloadError(f"{field} is not a number: {value!r}") from err
+
+
+def interval_from_response(raw: dict[str, Any]) -> Interval:
+    """Build one interval from the published service response shape.
+
+    Field names follow `abode_power_tariffs.get_intervals`: `start_time`,
+    `end_time`, `per_kwh`, `export_per_kwh`, `rate`, `constraints`,
+    `coasting_permitted`. `duration`, `allowance_kwh`, `day_pattern` and
+    `forecast` are published too and are not read here — nothing this
+    controller decides turns on them.
+    """
+    try:
+        rate = str(raw["rate"])
+    except KeyError as err:
+        raise TariffPayloadError("interval has no rate") from err
+
+    return Interval(
+        start=_as_datetime(raw.get("start_time"), "start_time"),
+        end=_as_datetime(raw.get("end_time"), "end_time"),
+        rate=rate,
+        per_kwh=_as_optional_float(raw.get("per_kwh"), "per_kwh"),
+        export_per_kwh=_as_optional_float(raw.get("export_per_kwh"), "export_per_kwh"),
+        constraints=frozenset(raw.get("constraints") or ()),
+        coasting_permitted=bool(raw.get("coasting_permitted", True)),
+    )
+
+
+class TariffSeries:
+    """The forward interval series, in order.
+
+    Replaces the schedule this controller used to hold itself. There is no
+    coverage validation here: completeness is the publishing integration's
+    responsibility, and duplicating the check would mean two places to fix when
+    a plan is wrong.
+    """
+
+    def __init__(self, intervals: tuple[Interval, ...], fetched_at: datetime) -> None:
+        """Hold the series and when it was fetched, so staleness is answerable."""
+        self._intervals = tuple(sorted(intervals, key=lambda i: i.start))
+        self.fetched_at = fetched_at
+
+    @classmethod
+    def from_response(
+        cls, response: dict[str, Any] | None, fetched_at: datetime
+    ) -> TariffSeries:
+        """Build a series from the raw service response."""
+        if not isinstance(response, dict):
+            raise TariffPayloadError(f"response is not a mapping: {type(response)}")
+        raw_intervals = response.get("intervals")
+        if not isinstance(raw_intervals, list):
+            raise TariffPayloadError("response carries no interval list")
+        if not raw_intervals:
+            raise TariffPayloadError("response carries an empty interval list")
+        return cls(
+            tuple(interval_from_response(raw) for raw in raw_intervals), fetched_at
+        )
+
+    @property
+    def intervals(self) -> tuple[Interval, ...]:
+        """Every interval in the series, earliest first."""
+        return self._intervals
+
+    @property
+    def covers_until(self) -> datetime | None:
+        """The end of the series, or None when it is empty."""
+        return self._intervals[-1].end if self._intervals else None
+
+    def interval_at(self, at: datetime) -> Interval | None:
+        """The interval in force at an instant, or None past the horizon."""
+        for interval in self._intervals:
+            if interval.contains(at):
+                return interval
+        return None
+
+    def windows(self) -> tuple[TariffWindow, ...]:
+        """Consecutive intervals collapsed into periods, for the forecast.
+
+        Two intervals join when they are contiguous and agree on rate,
+        constraints and coasting. Price is taken from the first of the run: a
+        period whose price changed partway through would not have been one
+        period in the plan that produced it.
+        """
+        windows: list[TariffWindow] = []
+        run_start: Interval | None = None
+        previous: Interval | None = None
+
+        for interval in self._intervals:
+            if (
+                previous is not None
+                and run_start is not None
+                and interval.start == previous.end
+                and interval.rate == previous.rate
+                and interval.constraints == previous.constraints
+                and interval.coasting_permitted == previous.coasting_permitted
+            ):
+                previous = interval
+                continue
+
+            if run_start is not None and previous is not None:
+                windows.append(_window(run_start, previous))
+            run_start = interval
+            previous = interval
+
+        if run_start is not None and previous is not None:
+            windows.append(_window(run_start, previous))
+        return tuple(windows)
+
+    def unrecognised_constraints(self) -> frozenset[str]:
+        """Every declared constraint this controller does not act on itself."""
+        found: set[str] = set()
+        for interval in self._intervals:
+            found |= interval.unrecognised_constraints()
+        return frozenset(found)
+
+
+def _window(first: Interval, last: Interval) -> TariffWindow:
+    """Collapse a run of intervals into the period they came from."""
+    return TariffWindow(
+        start=first.start.timetz().replace(tzinfo=None),
+        end=last.end.timetz().replace(tzinfo=None),
+        rate=first.rate,
+        per_kwh=first.per_kwh,
+        constraints=first.constraints,
+        coasting_permitted=first.coasting_permitted,
+    )

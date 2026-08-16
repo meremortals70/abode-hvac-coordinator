@@ -1,0 +1,61 @@
+{
+  "entity": {
+    "sensor": {
+      "mode": {
+        "default": "mdi:state-machine",
+        "state": {
+          "lockout": "mdi:lock",
+          "unoccupied": "mdi:home-outline",
+          "occupied": "mdi:home",
+          "sleep": "mdi:sleep",
+          "precondition": "mdi:home-clock",
+          "precool": "mdi:snowflake-alert",
+          "coast": "mdi:sail-boat"
+        }
+      },
+      "comfort_index": {
+        "default": "mdi:thermometer-lines"
+      },
+      "target_dry_bulb": {
+        "default": "mdi:thermometer-check"
+      },
+      "demand_forecast": {
+        "default": "mdi:transmission-tower-export"
+      },
+      "tariff_rate": {
+        "default": "mdi:cash-clock"
+      },
+      "active_constraints": {
+        "default": "mdi:gate"
+      },
+      "projected_cost": {
+        "default": "mdi:cash"
+      },
+      "outdoor_temperature": {
+        "default": "mdi:home-thermometer-outline"
+      },
+      "rooms_configured": {
+        "default": "mdi:home-group"
+      },
+      "settings": {
+        "default": "mdi:clipboard-list-outline"
+      },
+      "commanded_dry_bulb": {
+        "default": "mdi:thermostat-cog"
+      },
+      "dew_point": {
+        "default": "mdi:water-thermometer"
+      },
+      "outdoor_dew_point": {
+        "default": "mdi:water-thermometer-outline"
+      },
+      "stale_feeds": {
+        "default": "mdi:timer-alert-outline"
+      }
+    }
+  },
+  "services": {
+    "heading_home": "mdi:home-import-outline",
+    "clear_override": "mdi:close-circle-outline"
+  }
+}

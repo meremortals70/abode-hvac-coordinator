@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "room": {
+        "title": "Add your first room",
+        "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
+        "data": {
+          "name": "Room name",
+          "climate_entity_id": "Air conditioner",
+          "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
+          "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
+          "presence_entity_id": "Presence sensor (optional — leave empty for none)",
+          "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
+          "illuminance_entity_id": "Illuminance sensor (optional — recorded only, not used)",
+          "window_direction": "Which way the windows face (optional — leave empty for none)",
+          "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
+          "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
+          "cover_entity_ids": "Blinds (optional — leave empty for none)",
+          "lockout_reason": "Lockout",
+          "occupied_after_minutes": "Wait this long before starting (minutes)",
+          "vacant_after_minutes": "Wait this long after they leave before stopping (minutes)",
+          "warning_grace_minutes": "Warn this long before shutting down (minutes)",
+          "announce_before_shutdown": "Announce before shutting the room down",
+          "announce_target_entity_ids": "Announce through (optional — leave empty for none)",
+          "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
+          "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
+          "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
+          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)"
+        }
+      },
+      "bands": {
+        "title": "Comfort bands",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.",
+        "data": {
+          "occupied_low": "Occupied — lower bound",
+          "occupied_high": "Occupied — upper bound",
+          "sleep_low": "Sleep — lower bound (optional)",
+          "sleep_high": "Sleep — upper bound (optional)",
+          "precool_low": "Precool — lower bound (optional)",
+          "precool_high": "Precool — upper bound (optional)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "HVAC Coordinator is already set up."
+    },
+    "error": {
+      "band_inverted": "A band's lower bound must be below its upper bound."
+    }
+  },
+  "options": {
+    "step": {
+      "room": {
+        "title": "Room",
+        "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
+        "data": {
+          "name": "Room name",
+          "climate_entity_id": "Air conditioner",
+          "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
+          "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
+          "presence_entity_id": "Presence sensor (optional — leave empty for none)",
+          "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
+          "illuminance_entity_id": "Illuminance sensor (optional — recorded only, not used)",
+          "window_direction": "Which way the windows face (optional — leave empty for none)",
+          "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
+          "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
+          "cover_entity_ids": "Blinds (optional — leave empty for none)",
+          "lockout_reason": "Lockout",
+          "occupied_after_minutes": "Wait this long before starting (minutes)",
+          "vacant_after_minutes": "Wait this long after they leave before stopping (minutes)",
+          "warning_grace_minutes": "Warn this long before shutting down (minutes)",
+          "announce_before_shutdown": "Announce before shutting the room down",
+          "announce_target_entity_ids": "Announce through (optional — leave empty for none)",
+          "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
+          "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
+          "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
+          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)"
+        }
+      },
+      "bands": {
+        "title": "Comfort bands",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.",
+        "data": {
+          "occupied_low": "Occupied — lower bound",
+          "occupied_high": "Occupied — upper bound",
+          "sleep_low": "Sleep — lower bound (optional)",
+          "sleep_high": "Sleep — upper bound (optional)",
+          "precool_low": "Precool — lower bound (optional)",
+          "precool_high": "Precool — upper bound (optional)"
+        }
+      },
+      "init": {
+        "title": "Abode HVAC Coordinator",
+        "description": "{configuration}",
+        "menu_options": {
+          "rooms": "Rooms",
+          "global": "House configuration (tariff and outdoor feed)"
+        }
+      },
+      "edit_room": {
+        "title": "Edit a room",
+        "description": "Pick the room to change. Its current settings are prefilled.\n\n{configuration}",
+        "data": {
+          "room_id": "Room"
+        }
+      },
+      "remove_room": {
+        "title": "Remove a room",
+        "description": "The room's device and all its entities are removed with it.\n\n{configuration}",
+        "data": {
+          "room_id": "Room"
+        }
+      },
+      "outdoor": {
+        "title": "Outdoor temperature",
+        "description": "The outdoor temperature the thermal model learns against. Without it the model cannot learn heat loss, so rooms never coast and the demand forecast falls back to an assumed duty cycle.\n\nOne feed serves the whole house.",
+        "data": {
+          "outdoor_temperature_entity_id": "Outdoor temperature",
+          "outdoor_humidity_entity_id": "Outdoor humidity (optional — needed for free-cooling advice)"
+        }
+      },
+      "rooms": {
+        "title": "Rooms",
+        "description": "{configuration}",
+        "menu_options": {
+          "room": "Add a room",
+          "edit_room": "Edit a room",
+          "remove_room": "Remove a room"
+        }
+      },
+      "global": {
+        "title": "Global configuration",
+        "description": "These apply to the whole house, not to any one room.\n\n{configuration}",
+        "menu_options": {
+          "tariff": "Tariff (from Abode Power Tariffs)",
+          "outdoor": "Outdoor temperature feed"
+        }
+      },
+      "tariff": {
+        "title": "Tariff",
+        "description": "Your electricity plan is held by the Abode Power Tariffs integration, not here. Choose which of its entries this controller should read.\n\nPeriods, prices, feed-in and the daily supply charge are entered there, once. This controller reads the rate in force, the rules that apply during it, and the hours ahead.\n\nLeave it empty and the controller still holds every room to its comfort band. What it loses is the free-window precool, the no-import rule and the costed forecast.\n\n{tariff}",
+        "data": {
+          "tariff_config_entry_id": "Abode Power Tariffs entry"
+        }
+      }
+    },
+    "error": {
+      "band_inverted": "A band's lower bound must be below its upper bound."
+    },
+    "abort": {}
+  },
+  "entity": {
+    "sensor": {
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "lockout": "Lockout",
+          "unoccupied": "Unoccupied",
+          "occupied": "Occupied",
+          "sleep": "Sleep",
+          "precondition": "Precondition",
+          "precool": "Precool",
+          "coast": "Coast"
+        }
+      },
+      "comfort_index": {
+        "name": "Comfort index"
+      },
+      "target_dry_bulb": {
+        "name": "Target dry bulb"
+      },
+      "demand_forecast": {
+        "name": "Demand forecast"
+      },
+      "tariff_rate": {
+        "name": "Tariff rate"
+      },
+      "active_constraints": {
+        "name": "Active constraints"
+      },
+      "projected_cost": {
+        "name": "Projected cost"
+      },
+      "outdoor_temperature": {
+        "name": "Outdoor temperature"
+      },
+      "rooms_configured": {
+        "name": "Rooms configured"
+      },
+      "settings": {
+        "name": "Settings"
+      },
+      "commanded_dry_bulb": {
+        "name": "Commanded setpoint"
+      },
+      "dew_point": {
+        "name": "Dew point"
+      },
+      "outdoor_dew_point": {
+        "name": "Outdoor dew point"
+      },
+      "stale_feeds": {
+        "name": "Stale feeds"
+      }
+    }
+  },
+  "services": {
+    "heading_home": {
+      "name": "Heading home",
+      "description": "Brings a room to its comfort band ahead of arrival. This is the only thing that overrides an unoccupied room being off.",
+      "fields": {
+        "room_id": {
+          "name": "Room",
+          "description": "The room to bring to comfort."
+        },
+        "deadline": {
+          "name": "Deadline",
+          "description": "Optional. When the room should have reached its comfort band."
+        }
+      }
+    },
+    "clear_override": {
+      "name": "Clear override",
+      "description": "Drops any heading-home request for a room.",
+      "fields": {
+        "room_id": {
+          "name": "Room",
+          "description": "The room to clear."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "unknown_room": {
+      "message": "No room called {room_id} is configured."
+    }
+  },
+  "issues": {
+    "unrecognised_constraint": {
+      "title": "Tariff constraints this controller does not act on",
+      "description": "The tariff declares {constraints}, which this controller does not act on itself. They are passed through for whichever system owns that actuator. Nothing is broken; this is a note that something else has to consume them."
+    },
+    "room_without_bands": {
+      "title": "Rooms with no comfort bands",
+      "description": "{rooms} have no comfort bands configured, so they will never be actuated. Add bands from Configure, or set a lockout reason if that is deliberate."
+    },
+    "tariff_unavailable": {
+      "title": "The tariff could not be read",
+      "description": "Abode Power Tariffs did not return a plan: {reason}\n\nEvery room is still held to its comfort band. What is suspended is the free-window precool, the no-import rule and the costed forecast. The last series read is kept and used until a fetch succeeds."
+    }
+  },
+  "selector": {
+    "window_direction": {
+      "options": {
+        "north": "North",
+        "north_east": "North-east",
+        "east": "East",
+        "south_east": "South-east",
+        "south": "South",
+        "south_west": "South-west",
+        "west": "West",
+        "north_west": "North-west"
+      }
+    }
+  }
+}
