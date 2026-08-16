@@ -103,6 +103,7 @@ SENSORS: tuple[HvacSensorDescription, ...] = (
         unavailable_when_none=True,
         attributes_fn=lambda trace: {
             "outdoor_dew_point_c": trace.outdoor_dew_point_c,
+            "outdoor_apparent_c": trace.outdoor_apparent_c,
             "free_cooling_advised": trace.free_cooling_advised,
             "condensation_risk": trace.condensation_risk,
         },
@@ -294,6 +295,21 @@ HUB_SENSORS: tuple[HubSensorDescription, ...] = (
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
         value_fn=_projected_cost,
+    ),
+    HubSensorDescription(
+        key="outdoor_apparent_temperature",
+        translation_key="outdoor_apparent_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda c: c.outdoor_apparent_temperature(),
+        attributes_fn=lambda c: {
+            "wind_ms": (
+                None if (w := c.outdoor_wind_ms()) is None else round(w, 1)
+            ),
+            "wind_included": c.outdoor_wind_entity_id is not None,
+        },
     ),
     HubSensorDescription(
         key="outdoor_dew_point",

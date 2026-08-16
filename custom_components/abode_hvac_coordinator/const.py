@@ -84,6 +84,12 @@ CONF_OUTDOOR_TEMPERATURE_ENTITY: Final = "outdoor_temperature_entity_id"
 #: outdoor air that is cooler but wetter makes a subtropical room worse, and
 #: dry bulb alone cannot tell you which case you are in.
 CONF_OUTDOOR_HUMIDITY_ENTITY: Final = "outdoor_humidity_entity_id"
+
+#: Outdoor wind speed. Optional. Whatever unit the entity reports is converted;
+#: the Bureau's apparent temperature formula wants metres per second, and most
+#: Australian weather feeds publish km/h, so assuming the unit would make the
+#: figure wrong by a factor of 3.6.
+CONF_OUTDOOR_WIND_ENTITY: Final = "outdoor_wind_entity_id"
 CONF_HORIZON_HOURS: Final = "horizon_hours"
 CONF_OPENING_ENTITIES: Final = "opening_entity_ids"
 CONF_COVER_ENTITIES: Final = "cover_entity_ids"

@@ -256,6 +256,7 @@ def describe_global(
     tariff_title: str | None,
     outdoor_entity_id: str | None,
     outdoor_humidity_entity_id: str | None = None,
+    outdoor_wind_entity_id: str | None = None,
 ) -> str:
     """The house-wide settings, as readable lines."""
     return "\n".join(
@@ -271,8 +272,16 @@ def describe_global(
             + (
                 ""
                 if outdoor_humidity_entity_id
-                else " — without it there is no free-cooling advice, because "
-                "cooler outdoor air can still be wetter"
+                else " — without it there is no free-cooling advice at all"
+            ),
+            "",
+            "**Outdoor wind**",
+            f"  {outdoor_wind_entity_id or 'Nothing selected'}"
+            + (
+                ""
+                if outdoor_wind_entity_id
+                else " — still air is assumed, so a breezy evening will be "
+                "judged as though it were calm"
             ),
         ]
     )

@@ -2,17 +2,25 @@
 
 Pure. No Home Assistant imports.
 
-WHY DEW POINT AND NOT TEMPERATURE
----------------------------------
-Two questions this controller has to answer cannot be answered from dry bulb
-alone, and getting either wrong is expensive in a subtropical climate.
+TWO QUESTIONS, TWO TESTS
+------------------------
+**Will it feel better with the windows open?** Not "is it cooler outside" —
+dry bulb is the wrong comparison. What arrives through an open window is air at
+some temperature, carrying some humidity, moving at some speed, and all three
+change how the room feels. So the comparison is outdoor apparent temperature
+against the room's comfort index: the same Steadman formula evaluated outdoors
+with wind and indoors without. A 26 C breeze beats a still 26 C room, and dry
+bulb cannot see that.
 
-**Is opening a window worth it?** A Brisbane evening at 24 C outdoors against
-26 C indoors looks like free cooling. If the outdoor dew point is 22 C and the
-indoor dew point is 15 C, opening the window drops two degrees of dry bulb and
-loads the room with moisture the air conditioner then spends an hour removing.
-The room feels worse and the unit works harder. Dry bulb says open it; dew
-point says do not.
+**Will I regret it in an hour?** A separate question, and it is the one dry
+bulb *and* apparent temperature both get wrong. A Brisbane evening after rain
+can feel cooler on arrival while carrying far more water than the room holds.
+The breeze drops, the moisture stays, and the air conditioner spends an hour
+removing it. Apparent temperature says open up; dew point says you will pay for
+it. Dew point wins, because the felt benefit is transient and the latent load
+is not.
+
+Both tests must pass. Neither is redundant.
 
 **Will the coil, the duct or the glass sweat?** Condensation forms wherever a
 surface sits below the dew point of the air touching it. Aggressive setpoints
@@ -32,17 +40,34 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .hci import apparent_temperature
+
 #: Magnus coefficients over water, valid across the range a house sees.
 #: Sonntag 1990. Accurate to better than 0.1 C between -45 C and 60 C, which
 #: is far more than this needs.
 _MAGNUS_B = 17.62
 _MAGNUS_C = 243.12
 
-#: How much cooler and drier outdoors must be before opening up is advised.
+#: How much better outdoors must feel, in HCI, before opening up is advised.
 #: Small margins produce advice that flips on and off with sensor noise, and
 #: advice nobody can act on twice in a row is worse than none.
-FREE_COOLING_DRY_BULB_MARGIN_C = 2.0
+FREE_COOLING_MARGIN_HCI = 2.0
+
+#: How much drier outdoors must be at the dew point. Separate from the felt
+#: comparison and not tradeable against it: a room can feel better and still be
+#: taking on water.
 FREE_COOLING_DEW_POINT_MARGIN_C = 1.0
+
+#: Fraction of the free-stream wind that actually reaches a person in a room
+#: with the windows open. Outdoor wind is measured at ten metres in the clear;
+#: what gets through a window opening, past a flyscreen, around furniture and
+#: into the middle of a room is a fraction of it.
+#:
+#: A stated assumption rather than a setting. Using the full outdoor figure
+#: would overstate the benefit by roughly three degrees on a windy day, which
+#: is the difference between good advice and advice that sends you to open the
+#: windows on an evening you should not.
+WIND_PENETRATION = 0.3
 
 #: How close a surface may come to the dew point before it is called a risk.
 #: Not zero: the coldest surface in a room is never the one being measured, and
@@ -67,6 +92,9 @@ class FreeCooling:
     """Whether outdoor air would help, and why or why not."""
 
     advised: bool
+    #: Outdoor apparent temperature, on the comfort index scale, with the
+    #: damped wind term applied. None when the outdoor feeds are incomplete.
+    outdoor_apparent_c: float | None
     indoor_dew_point_c: float | None
     outdoor_dew_point_c: float | None
     reason: str
@@ -74,64 +102,89 @@ class FreeCooling:
 
 def free_cooling(
     *,
+    indoor_hci: float | None,
     indoor_c: float | None,
     indoor_rh: float | None,
     outdoor_c: float | None,
     outdoor_rh: float | None,
+    outdoor_wind_ms: float | None,
     demand: str | None,
 ) -> FreeCooling:
-    """Whether opening up would cool the room without loading it with water.
+    """Whether opening up would make the room feel better without wetting it.
 
-    Both tests must pass. Outdoor air that is cooler but wetter is the trap
-    this exists to catch, and it is the normal condition on a subtropical
-    evening after rain.
+    Two independent tests, both of which must pass. The felt comparison is on
+    the comfort index scale so that indoor and outdoor are the same quantity.
+    The dew point test is a veto: it is not traded against the felt benefit,
+    because the benefit stops when the breeze does and the moisture does not.
+
+    Wind is damped by `WIND_PENETRATION` before it is applied. The outdoor
+    figure is measured in the clear at ten metres; a room with the windows open
+    sees a fraction of it.
     """
     if demand != "cool":
         return FreeCooling(
             advised=False,
+            outdoor_apparent_c=None,
             indoor_dew_point_c=None,
             outdoor_dew_point_c=None,
             reason="free cooling: the room is not asking to be cooled",
         )
 
-    if None in (indoor_c, indoor_rh, outdoor_c, outdoor_rh):
+    if indoor_hci is None or None in (indoor_c, indoor_rh, outdoor_c, outdoor_rh):
         return FreeCooling(
             advised=False,
+            outdoor_apparent_c=None,
             indoor_dew_point_c=None,
             outdoor_dew_point_c=None,
-            reason="free cooling: needs indoor and outdoor temperature and humidity",
+            reason=(
+                "free cooling: needs a comfort reading indoors and both "
+                "temperature and humidity outdoors"
+            ),
         )
 
     assert indoor_c is not None and indoor_rh is not None
     assert outdoor_c is not None and outdoor_rh is not None
 
+    wind = (outdoor_wind_ms or 0.0) * WIND_PENETRATION
+    outdoor_at = apparent_temperature(outdoor_c, outdoor_rh, wind)
     indoor_dp = dew_point_c(indoor_c, indoor_rh)
     outdoor_dp = dew_point_c(outdoor_c, outdoor_rh)
 
-    cool_enough = outdoor_c <= indoor_c - FREE_COOLING_DRY_BULB_MARGIN_C
+    feels_better = outdoor_at <= indoor_hci - FREE_COOLING_MARGIN_HCI
     dry_enough = outdoor_dp <= indoor_dp - FREE_COOLING_DEW_POINT_MARGIN_C
 
-    if cool_enough and dry_enough:
+    breeze = (
+        f", {outdoor_wind_ms:.1f} m/s of wind included"
+        if outdoor_wind_ms
+        else ", no wind reading so still air assumed"
+    )
+
+    if feels_better and dry_enough:
         reason = (
-            f"free cooling: outdoors is {indoor_c - outdoor_c:.1f} C cooler and "
-            f"{indoor_dp - outdoor_dp:.1f} C drier at the dew point — opening up "
-            "would help"
+            f"free cooling: outdoors feels {indoor_hci - outdoor_at:.1f} better "
+            f"and is {indoor_dp - outdoor_dp:.1f} C drier at the dew point"
+            f"{breeze} — opening up would help"
         )
-    elif cool_enough:
+    elif feels_better:
         reason = (
-            f"free cooling: outdoors is {indoor_c - outdoor_c:.1f} C cooler but "
-            f"its dew point is {outdoor_dp:.1f} C against {indoor_dp:.1f} C "
-            "indoors — opening up would import moisture the unit then has to "
-            "remove"
+            f"free cooling: outdoors feels {indoor_hci - outdoor_at:.1f} better, "
+            f"but its dew point is {outdoor_dp:.1f} C against {indoor_dp:.1f} C "
+            "indoors — the breeze stops and the moisture stays"
+        )
+    elif dry_enough:
+        reason = (
+            f"free cooling: outdoors is drier, but feels {outdoor_at:.1f} "
+            f"against {indoor_hci:.1f} indoors{breeze} — not enough to help"
         )
     else:
         reason = (
-            f"free cooling: outdoors is {outdoor_c:.1f} C against {indoor_c:.1f} C "
-            "indoors, not cool enough to help"
+            f"free cooling: outdoors feels {outdoor_at:.1f} against "
+            f"{indoor_hci:.1f} indoors and is no drier{breeze}"
         )
 
     return FreeCooling(
-        advised=cool_enough and dry_enough,
+        advised=feels_better and dry_enough,
+        outdoor_apparent_c=round(outdoor_at, 1),
         indoor_dew_point_c=round(indoor_dp, 1),
         outdoor_dew_point_c=round(outdoor_dp, 1),
         reason=reason,

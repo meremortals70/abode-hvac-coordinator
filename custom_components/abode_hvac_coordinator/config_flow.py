@@ -40,6 +40,7 @@ from .const import (
     CONF_OPENING_ENTITIES,
     CONF_OUTDOOR_HUMIDITY_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_OUTDOOR_WIND_ENTITY,
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
     CONF_PRESENCE_ENTITY,
@@ -355,6 +356,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             self._tariff_title(),
             self._outdoor_entity_id(),
             self._outdoor_humidity_entity_id(),
+            self._outdoor_wind_entity_id(),
         )
 
     def _summary(self) -> str:
@@ -380,6 +382,9 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
     def _outdoor_humidity_entity_id(self) -> str | None:
         return self._stored(CONF_OUTDOOR_HUMIDITY_ENTITY)
+
+    def _outdoor_wind_entity_id(self) -> str | None:
+        return self._stored(CONF_OUTDOOR_WIND_ENTITY)
 
     def _tariff_entry_id(self) -> str | None:
         return self._stored(CONF_TARIFF_ENTRY_ID)
@@ -468,6 +473,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                 for key in (
                     CONF_OUTDOOR_TEMPERATURE_ENTITY,
                     CONF_OUTDOOR_HUMIDITY_ENTITY,
+                    CONF_OUTDOOR_WIND_ENTITY,
                 )
                 if (
                     value := self.config_entry.options.get(
@@ -491,6 +497,13 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                             domain="sensor", device_class="humidity"
                         )
                     ),
+                    vol.Optional(
+                        CONF_OUTDOOR_WIND_ENTITY
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="wind_speed"
+                        )
+                    ),
                 }
             )
             return self.async_show_form(
@@ -506,6 +519,9 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         )
         options[CONF_OUTDOOR_HUMIDITY_ENTITY] = user_input.get(
             CONF_OUTDOOR_HUMIDITY_ENTITY
+        )
+        options[CONF_OUTDOOR_WIND_ENTITY] = user_input.get(
+            CONF_OUTDOOR_WIND_ENTITY
         )
         options.setdefault(CONF_ROOMS, self._rooms)
         return self.async_create_entry(title="", data=options)

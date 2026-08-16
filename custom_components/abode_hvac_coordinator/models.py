@@ -168,6 +168,10 @@ class RoomInputs:
     #: whether opening a window would help.
     outdoor_c: float | None = None
     outdoor_relative_humidity: float | None = None
+    #: Outdoor wind, in metres per second, converted from whatever unit the
+    #: entity reports. None means no wind feed, which is treated as still air
+    #: rather than guessed at.
+    outdoor_wind_ms: float | None = None
     #: False while a heading-home request has a deadline far enough out that
     #: the model says the pull can wait. The room is still in PRECONDITION —
     #: the request stands — but nothing actuates yet.
@@ -233,6 +237,9 @@ class DecisionTrace:
     #: controller owns the air conditioner and the covers, not the windows.
     dew_point_c: float | None = None
     outdoor_dew_point_c: float | None = None
+    #: What outdoors feels like, on the same scale as `hci`, with the damped
+    #: wind term applied. This is the number the free-cooling advice turns on.
+    outdoor_apparent_c: float | None = None
     free_cooling_advised: bool = False
     #: True when the commanded setpoint sits near enough the room's dew point
     #: that surfaces may sweat. Reported, never used to refuse an actuation.
@@ -281,6 +288,7 @@ class DecisionTrace:
             ),
             "dew_point_c": self.dew_point_c,
             "outdoor_dew_point_c": self.outdoor_dew_point_c,
+            "outdoor_apparent_c": self.outdoor_apparent_c,
             "free_cooling_advised": self.free_cooling_advised,
             "condensation_risk": self.condensation_risk,
             "stale_feeds": list(self.stale_feeds),

@@ -113,10 +113,11 @@
       },
       "outdoor": {
         "title": "Outdoor temperature",
-        "description": "The outdoor temperature the thermal model learns against. Without it the model cannot learn heat loss, so rooms never coast and the demand forecast falls back to an assumed duty cycle.\n\nOne feed serves the whole house.",
+        "description": "Temperature feeds the thermal model. Humidity and wind feed the free-cooling advice: whether opening the windows would actually make a room feel better, rather than just letting warmer wetter air in.\n\nWind is converted from whatever unit your sensor reports. With no wind sensor, still air is assumed.",
         "data": {
           "outdoor_temperature_entity_id": "Outdoor temperature",
-          "outdoor_humidity_entity_id": "Outdoor humidity (optional — needed for free-cooling advice)"
+          "outdoor_humidity_entity_id": "Outdoor humidity (optional — needed for free-cooling advice)",
+          "outdoor_wind_entity_id": "Outdoor wind speed (optional — a breeze makes the same temperature feel cooler)"
         }
       },
       "rooms": {
@@ -201,6 +202,9 @@
       },
       "stale_feeds": {
         "name": "Stale feeds"
+      },
+      "outdoor_apparent_temperature": {
+        "name": "Outdoor apparent temperature"
       }
     }
   },

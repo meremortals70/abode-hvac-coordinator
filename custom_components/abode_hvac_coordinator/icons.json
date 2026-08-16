@@ -51,6 +51,9 @@
       },
       "stale_feeds": {
         "default": "mdi:timer-alert-outline"
+      },
+      "outdoor_apparent_temperature": {
+        "default": "mdi:sun-thermometer-outline"
       }
     }
   },

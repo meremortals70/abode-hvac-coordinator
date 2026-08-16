@@ -98,6 +98,13 @@ SUN_RADIANT_HCI = 3.0
 #: to the lightly ventilated room Steadman's wind-zero case assumes.
 STILL_AIR_HCI = 1.0
 
+#: Steadman's wind coefficient, in HCI per metre per second. The Bureau of
+#: Meteorology's non-radiation apparent temperature is
+#: `AT = Ta + 0.33e - 0.70ws - 4.00`, which is exactly the index below with
+#: this term restored. Indoors it is dropped because wind is zero; outdoors it
+#: is the difference between a still 26 C and a breezy one.
+WIND_COEFF = 0.70
+
 #: How much hotter a running heat load in the room makes it feel, in HCI. A
 #: workstation and its monitors put out a few hundred watts, most of it into
 #: the person sitting in front of it.
@@ -169,6 +176,30 @@ def comfort_index(
     if heat_load:
         base += HEAT_LOAD_HCI
     return base
+
+
+def apparent_temperature(
+    temp_c: float, relative_humidity: float, wind_ms: float = 0.0
+) -> float:
+    """Outdoor apparent temperature, on the same scale as the comfort index.
+
+    The Bureau of Meteorology's non-radiation form of Steadman apparent
+    temperature. `comfort_index` above is this same expression with the wind
+    term dropped, which is why an outdoor figure and an indoor one can be
+    compared directly: they are one formula evaluated under two conditions,
+    not two indices that happen to use the same units.
+
+    Radiation is not included. The Bureau publishes a radiation form as well,
+    but it needs net absorbed radiation per unit body area, which no household
+    weather feed supplies, and inventing it would make the outdoor figure less
+    trustworthy than the indoor one it is being compared against.
+    """
+    return (
+        temp_c
+        + _E_COEFF * vapour_pressure_hpa(temp_c, relative_humidity)
+        - WIND_COEFF * max(wind_ms, 0.0)
+        + _OFFSET
+    )
 
 
 def dry_bulb_for_index(

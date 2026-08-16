@@ -398,16 +398,22 @@ def evaluate_room(
 
     trace.actuator = select_actuator(mode, band, hci, inputs, trace)
 
+    # The felt comparison uses the room's own comfort index, corrections and
+    # all. A sunlit room feels hotter than its air temperature, which makes
+    # opening up more attractive, and the index is where that already lives.
     advice = free_cooling(
+        indoor_hci=hci,
         indoor_c=inputs.temperature_c,
         indoor_rh=inputs.relative_humidity,
         outdoor_c=inputs.outdoor_c,
         outdoor_rh=inputs.outdoor_relative_humidity,
+        outdoor_wind_ms=inputs.outdoor_wind_ms,
         demand=trace.demand,
     )
     trace.free_cooling_advised = advice.advised
     trace.dew_point_c = advice.indoor_dew_point_c
     trace.outdoor_dew_point_c = advice.outdoor_dew_point_c
+    trace.outdoor_apparent_c = advice.outdoor_apparent_c
     if advice.advised:
         trace.reasons.append(advice.reason)
     elif advice.outdoor_dew_point_c is not None:

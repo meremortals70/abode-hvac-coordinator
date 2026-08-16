@@ -13,7 +13,11 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    ATTR_UNIT_OF_MEASUREMENT,
+    UnitOfSpeed,
+)
 from homeassistant.core import (
     Event,
     EventStateChangedData,
@@ -34,6 +38,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import SpeedConverter
 
 from .actuator import Actuator, mean_cover_position, supported_hvac_modes
 from .const import (
@@ -55,6 +60,7 @@ from .const import (
     CONF_OPENING_ENTITIES,
     CONF_OUTDOOR_HUMIDITY_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_OUTDOOR_WIND_ENTITY,
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
     CONF_PRESENCE_ENTITY,
@@ -86,7 +92,7 @@ from .forecast import (
     build_forecast,
 )
 from .grace import Announcement, GraceSettings, GraceState, evaluate_grace
-from .hci import ComfortBand, dry_bulb_for_index
+from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index
 from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
 from .modes import evaluate_room
 from .psychro import dew_point_c
@@ -151,6 +157,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.outdoor_humidity_entity_id: str | None = config_entry.options.get(
             CONF_OUTDOOR_HUMIDITY_ENTITY,
             config_entry.data.get(CONF_OUTDOOR_HUMIDITY_ENTITY),
+        )
+        self.outdoor_wind_entity_id: str | None = config_entry.options.get(
+            CONF_OUTDOOR_WIND_ENTITY,
+            config_entry.data.get(CONF_OUTDOOR_WIND_ENTITY),
         )
         #: Layer 2 state, one per room. Not persisted: a trim is only valid
         #: for the conditions that produced it.
@@ -593,6 +603,50 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """The outdoor temperature, for the house-wide sensor."""
         return self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
 
+    def outdoor_wind_ms(self) -> float | None:
+        """Outdoor wind in metres per second, whatever unit the entity uses.
+
+        The unit is read from the entity rather than assumed. Steadman's
+        formula wants m/s and most Australian weather feeds publish km/h, so
+        assuming would make the apparent temperature wrong by a factor of 3.6
+        — and wrong in the direction that advises opening the windows on an
+        evening you should not.
+        """
+        if self.outdoor_wind_entity_id is None:
+            return None
+        raw = self._number(self.outdoor_wind_entity_id, OUTDOOR_TOLERANCE)
+        if raw is None:
+            return None
+        state = self.hass.states.get(self.outdoor_wind_entity_id)
+        unit = (
+            state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
+        )
+        if unit in (None, UnitOfSpeed.METERS_PER_SECOND):
+            return raw
+        try:
+            return SpeedConverter.convert(
+                raw, unit, UnitOfSpeed.METERS_PER_SECOND
+            )
+        except (HomeAssistantError, ValueError) as err:
+            LOGGER.warning(
+                "%s reports wind in %s, which cannot be converted to m/s (%s); "
+                "still air assumed",
+                self.outdoor_wind_entity_id,
+                unit,
+                err,
+            )
+            return None
+
+    def outdoor_apparent_temperature(self) -> float | None:
+        """What outdoors feels like, on the comfort index scale."""
+        temp = self.outdoor_reading()
+        humidity = self._number(self.outdoor_humidity_entity_id, OUTDOOR_TOLERANCE)
+        if temp is None or humidity is None:
+            return None
+        return round(
+            apparent_temperature(temp, humidity, self.outdoor_wind_ms() or 0.0), 1
+        )
+
     def outdoor_dew_point(self) -> float | None:
         """Outdoor dew point, where both outdoor feeds are configured."""
         temp = self.outdoor_reading()
@@ -810,6 +864,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             outdoor_relative_humidity=self._number(
                 self.outdoor_humidity_entity_id, OUTDOOR_TOLERANCE
             ),
+            outdoor_wind_ms=self.outdoor_wind_ms(),
             precondition_ready=plan is None or plan.start_now,
             previous_mode=self._previous_mode.get(room.room_id),
             mode_changed_at=self._mode_changed_at.get(room.room_id),
