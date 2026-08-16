@@ -11,7 +11,6 @@
           "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
           "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
-          "illuminance_entity_id": "Illuminance sensor (optional — recorded only, not used)",
           "window_direction": "Which way the windows face (optional — leave empty for none)",
           "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
           "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
@@ -60,7 +59,6 @@
           "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
           "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
-          "illuminance_entity_id": "Illuminance sensor (optional — recorded only, not used)",
           "window_direction": "Which way the windows face (optional — leave empty for none)",
           "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
           "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
@@ -134,7 +132,8 @@
         "description": "These apply to the whole house, not to any one room.\n\n{configuration}",
         "menu_options": {
           "tariff": "Tariff (from Abode Power Tariffs)",
-          "outdoor": "Outdoor temperature feed"
+          "outdoor": "Outdoor temperature, humidity and wind",
+          "forecast": "Weather forecast"
         }
       },
       "tariff": {
@@ -142,6 +141,13 @@
         "description": "Your electricity plan is held by the Abode Power Tariffs integration, not here. Choose which of its entries this controller should read.\n\nPeriods, prices, feed-in and the daily supply charge are entered there, once. This controller reads the rate in force, the rules that apply during it, and the hours ahead.\n\nLeave it empty and the controller still holds every room to its comfort band. What it loses is the free-window precool, the no-import rule and the costed forecast.\n\n{tariff}",
         "data": {
           "tariff_config_entry_id": "Abode Power Tariffs entry"
+        }
+      },
+      "forecast": {
+        "title": "Weather forecast",
+        "description": "Precool banks thermal mass in a free or cheap window against a load arriving later. Deciding whether that load exists needs the forecast, not the current conditions: at 11:00 on the day of a 38 degree afternoon it is often 26 outside, and comparing right now says there is nothing coming.\n\nAny weather entity with an hourly forecast will do. Leave it empty and precool falls back to comparing conditions now, which is what this controller did before it could see ahead.",
+        "data": {
+          "weather_entity_id": "Weather entity"
         }
       }
     },
@@ -205,6 +211,9 @@
       },
       "outdoor_apparent_temperature": {
         "name": "Outdoor apparent temperature"
+      },
+      "forecast_peak": {
+        "name": "Forecast peak"
       }
     }
   },
@@ -251,6 +260,10 @@
     "tariff_unavailable": {
       "title": "The tariff could not be read",
       "description": "Abode Power Tariffs did not return a plan: {reason}\n\nEvery room is still held to its comfort band. What is suspended is the free-window precool, the no-import rule and the costed forecast. The last series read is kept and used until a fetch succeeds."
+    },
+    "forecast_unavailable": {
+      "title": "The weather forecast could not be read",
+      "description": "The weather entity did not return an hourly forecast: {reason}\n\nEvery room is still held to its comfort band. Precool falls back to comparing current conditions, which will under-use a free window on a day that heats up later. The last forecast read is kept and used until a fetch succeeds."
     }
   },
   "selector": {

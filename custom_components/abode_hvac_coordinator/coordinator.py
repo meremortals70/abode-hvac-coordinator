@@ -54,7 +54,6 @@ from .const import (
     CONF_FAN_ENTITY,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
-    CONF_ILLUMINANCE_ENTITY,
     CONF_LOCKOUT_REASON,
     CONF_OCCUPIED_AFTER,
     CONF_OPENING_ENTITIES,
@@ -71,9 +70,11 @@ from .const import (
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
     CONF_WARNING_GRACE,
+    CONF_WEATHER_ENTITY,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
     EVALUATION_INTERVAL,
+    ISSUE_FORECAST_UNAVAILABLE,
     ISSUE_NO_BANDS,
     ISSUE_TARIFF_UNAVAILABLE,
     ISSUE_UNRECOGNISED_CONSTRAINT,
@@ -84,6 +85,9 @@ from .const import (
     TARIFF_REFRESH_INTERVAL,
     TARIFF_RESOLUTION_MINUTES,
     TARIFF_SERVICE_GET_INTERVALS,
+    WEATHER_DOMAIN,
+    WEATHER_REFRESH_INTERVAL,
+    WEATHER_SERVICE_GET_FORECASTS,
 )
 from .forecast import (
     DEFAULT_HORIZON_HOURS,
@@ -121,6 +125,12 @@ from .tariff import (
     TariffSeries,
 )
 from .thermal import Observation, ThermalModel
+from .weather import (
+    DEMAND_LOOKAHEAD,
+    ForecastPayloadError,
+    WeatherTrajectory,
+    demand_ahead,
+)
 
 if TYPE_CHECKING:
     from . import HvacConfigEntry
@@ -173,6 +183,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._stale: dict[str, list[str]] = {}
         #: Why a heading-home room is not actuating yet, for the trace.
         self._precondition_reason: dict[str, str] = {}
+        #: Which weather entity supplies the hourly forecast, and the
+        #: trajectory read from it. None means precool falls back to comparing
+        #: current conditions.
+        self.weather_entity_id: str | None = config_entry.options.get(
+            CONF_WEATHER_ENTITY, config_entry.data.get(CONF_WEATHER_ENTITY)
+        )
+        self.trajectory: WeatherTrajectory | None = None
+        #: Why each room is or is not precooling, for the trace.
+        self._demand_reason: dict[str, str] = {}
         #: Learned thermal behaviour, one per room, restored from the store.
         self.models: dict[str, ThermalModel] = {}
         #: The last reading of each room, so the next evaluation can measure
@@ -214,6 +233,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     async def async_prepare(self) -> None:
         """Fetch the tariff, subscribe to entities, and raise any issues."""
         await self._async_refresh_tariff()
+        await self._async_refresh_forecast()
+        if self.weather_entity_id:
+            self.config_entry.async_on_unload(
+                async_track_time_interval(
+                    self.hass,
+                    self._async_forecast_tick,
+                    WEATHER_REFRESH_INTERVAL,
+                )
+            )
         if self.tariff_entry_id:
             self.config_entry.async_on_unload(
                 async_track_time_interval(
@@ -301,6 +329,63 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING,
             translation_key=ISSUE_TARIFF_UNAVAILABLE,
+            translation_placeholders={"reason": reason},
+        )
+
+    async def _async_forecast_tick(self, now: datetime) -> None:
+        """Refetch the forecast on the interval timer, then re-evaluate."""
+        await self._async_refresh_forecast()
+        await self.async_request_refresh()
+
+    async def _async_refresh_forecast(self) -> None:
+        """Fetch the hourly forecast from the configured weather entity.
+
+        A failure holds the trajectory already in hand, for the same reason a
+        failed tariff fetch does: a momentary reload of a weather integration
+        must not turn into every room losing its precool decision.
+        """
+        if not self.weather_entity_id:
+            self.trajectory = None
+            return
+
+        try:
+            response = await self.hass.services.async_call(
+                WEATHER_DOMAIN,
+                WEATHER_SERVICE_GET_FORECASTS,
+                {ATTR_ENTITY_ID: self.weather_entity_id, "type": "hourly"},
+                blocking=True,
+                return_response=True,
+            )
+        except (ServiceNotFound, HomeAssistantError) as err:
+            self._async_forecast_issue(str(err))
+            return
+
+        try:
+            self.trajectory = WeatherTrajectory.from_response(
+                dict(response) if response else None, dt_util.utcnow()
+            )
+        except ForecastPayloadError as err:
+            self._async_forecast_issue(f"the forecast could not be read: {err}")
+            return
+
+        LOGGER.debug(
+            "Forecast refreshed: %d hours, covering to %s",
+            len(self.trajectory.points),
+            self.trajectory.covers_until,
+        )
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_FORECAST_UNAVAILABLE)
+
+    @callback
+    def _async_forecast_issue(self, reason: str) -> None:
+        """Raise a repair issue naming why the forecast could not be read."""
+        LOGGER.warning("Weather forecast could not be read: %s", reason)
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_FORECAST_UNAVAILABLE,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_FORECAST_UNAVAILABLE,
             translation_placeholders={"reason": reason},
         )
 
@@ -399,6 +484,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 trace.reasons.append(reason)
             if reason := self._precondition_reason.get(room.room_id):
                 trace.rejected.append(reason)
+            if reason := self._demand_reason.pop(room.room_id, None):
+                if trace.mode is Mode.PRECOOL:
+                    trace.reasons.append(reason)
+                elif "precool" in reason:
+                    trace.rejected.append(reason)
             trace.stale_feeds = self._stale.get(room.room_id, [])
             self._regulate(room, inputs, trace, now)
             self._guard_cycling(room, trace, now)
@@ -557,24 +647,36 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             upper_c=upper_c,
         )
 
-    def _demand_ahead(self, room: RoomConfig) -> bool:
+    def _demand_ahead(self, room: RoomConfig, now: datetime) -> bool:
         """Whether this room is forecast to need cooling later today.
 
-        Precool banks thermal mass against a load that is coming. Without a
-        load coming it is just spending energy early, so this gates it.
+        Precool banks thermal mass against a load that is coming. The question
+        is not whether it is hot now — at 11:00 in the free window it usually
+        is not — but whether the afternoon is going to arrive. Answering it
+        from current conditions is what left the free window unused on exactly
+        the days it was worth the most.
         """
+        indoor = self._number(
+            room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
+        )
+        verdict = demand_ahead(
+            self.trajectory, now=now, indoor_c=indoor
+        )
+        if self.trajectory is not None:
+            self._demand_reason[room.room_id] = verdict.reason
+            return verdict.demand_ahead
+
+        # No forecast configured. Fall back to what the controller did before
+        # it had one, and say in the trace that it is a fallback.
+        self._demand_reason[room.room_id] = verdict.reason
         model = self.model_for(room.room_id)
-        indoor = self._number(room.temperature_entity_id)
-        outdoor = self._number(self.outdoor_entity_id)
+        outdoor = self.outdoor_reading()
         if indoor is None or outdoor is None:
             return False
-
         drift = model.drift_rate(
             indoor, outdoor, direct_sun=self._direct_sun(room) is True
         )
         if drift is None:
-            # Not learned yet. Outdoor above indoor is the honest fallback: the
-            # room will warm, even if we cannot say how fast.
             return outdoor > indoor + PRECOOL_DEMAND_MARGIN_C
         return drift > 0
 
@@ -602,6 +704,22 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def outdoor_reading(self) -> float | None:
         """The outdoor temperature, for the house-wide sensor."""
         return self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
+
+    def forecast_peak(self) -> float | None:
+        """The hottest hour the forecast can see, for the house-wide sensor."""
+        if self.trajectory is None:
+            return None
+        now = dt_util.utcnow()
+        peak = self.trajectory.peak_between(now, now + DEMAND_LOOKAHEAD)
+        return None if peak is None else round(peak[0], 1)
+
+    def forecast_peak_at(self) -> str | None:
+        """When that peak falls."""
+        if self.trajectory is None:
+            return None
+        now = dt_util.utcnow()
+        peak = self.trajectory.peak_between(now, now + DEMAND_LOOKAHEAD)
+        return None if peak is None else peak[1].isoformat()
 
     def outdoor_wind_ms(self) -> float | None:
         """Outdoor wind in metres per second, whatever unit the entity uses.
@@ -814,6 +932,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._previous_mode.pop(room_id, None)
                 self._mode_changed_at.pop(room_id, None)
                 self._precondition_reason.pop(room_id, None)
+                self._demand_reason.pop(room_id, None)
                 self._previous.pop(room_id, None)
                 self.store.forget_room(room_id)
                 if device := registry.async_get_device(
@@ -844,9 +963,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
             ),
             presence=self._graced_presence(room, now),
-            illuminance_lux=self._number(
-                room.illuminance_entity_id, INDOOR_TOLERANCE, room.room_id
-            ),
             direct_sun=self._direct_sun(room),
             heat_load=self._bool(room.heat_load_entity_id) is True,
             air_moving=self._air_moving(room),
@@ -870,11 +986,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             mode_changed_at=self._mode_changed_at.get(room.room_id),
             heading_home=room.room_id in self._heading_home,
             precondition_deadline=self._heading_home.get(room.room_id),
+            k_sensible_c_per_hour=self._learned(room.room_id, "k_sensible"),
+            k_latent_rh_per_hour=self._learned(room.room_id, "k_latent"),
             predicted_to_hold=self._predicted_to_hold(room),
-            forecast_demand_ahead=self._demand_ahead(room),
+            forecast_demand_ahead=self._demand_ahead(room, now),
             sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
             is True,
         )
+
+    def _learned(self, room_id: str, name: str) -> float | None:
+        """A learned coefficient, or None until it has converged.
+
+        None is what tells the evaluator to fall back rather than to trust a
+        number the filter has not settled on. Handing over an unconverged
+        coefficient would look like knowledge and behave like noise.
+        """
+        coefficient = getattr(self.model_for(room_id), name)
+        return coefficient.value if coefficient.converged else None
 
     def _direct_sun(self, room: RoomConfig) -> bool | None:
         """Whether the sun is on this room's windows.
@@ -1056,7 +1184,6 @@ def _watched_entities(rooms: dict[str, RoomConfig]) -> set[str]:
                 room.temperature_entity_id,
                 room.humidity_entity_id,
                 room.presence_entity_id,
-                room.illuminance_entity_id,
                 room.direct_sun_entity_id,
                 room.heat_load_entity_id,
                 room.air_movement_entity_id,
@@ -1118,7 +1245,6 @@ def _room_from_raw(
         humidity_entity_id=raw.get(CONF_HUMIDITY_ENTITY),
         presence_entity_id=raw.get(CONF_PRESENCE_ENTITY),
         sleep_schedule_entity_id=raw.get(CONF_SLEEP_SCHEDULE_ENTITY),
-        illuminance_entity_id=raw.get(CONF_ILLUMINANCE_ENTITY),
         direct_sun_entity_id=raw.get(CONF_DIRECT_SUN_ENTITY),
         window_direction=raw.get(CONF_WINDOW_DIRECTION),
         overhang_projection_m=raw.get(CONF_OVERHANG_PROJECTION),

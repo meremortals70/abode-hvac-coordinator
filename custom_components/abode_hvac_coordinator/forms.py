@@ -22,7 +22,6 @@ from .const import (
     CONF_FAN_ENTITY,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
-    CONF_ILLUMINANCE_ENTITY,
     CONF_LOCKOUT_REASON,
     CONF_OCCUPIED_AFTER,
     CONF_OPENING_ENTITIES,
@@ -71,7 +70,6 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_HUMIDITY_ENTITY: user_input.get(CONF_HUMIDITY_ENTITY),
         CONF_PRESENCE_ENTITY: user_input.get(CONF_PRESENCE_ENTITY),
         CONF_SLEEP_SCHEDULE_ENTITY: user_input.get(CONF_SLEEP_SCHEDULE_ENTITY),
-        CONF_ILLUMINANCE_ENTITY: user_input.get(CONF_ILLUMINANCE_ENTITY),
         CONF_DIRECT_SUN_ENTITY: user_input.get(CONF_DIRECT_SUN_ENTITY),
         CONF_WINDOW_DIRECTION: user_input.get(CONF_WINDOW_DIRECTION),
         CONF_OVERHANG_PROJECTION: user_input.get(CONF_OVERHANG_PROJECTION),
@@ -257,6 +255,7 @@ def describe_global(
     outdoor_entity_id: str | None,
     outdoor_humidity_entity_id: str | None = None,
     outdoor_wind_entity_id: str | None = None,
+    weather_entity_id: str | None = None,
 ) -> str:
     """The house-wide settings, as readable lines."""
     return "\n".join(
@@ -282,6 +281,15 @@ def describe_global(
                 if outdoor_wind_entity_id
                 else " — still air is assumed, so a breezy evening will be "
                 "judged as though it were calm"
+            ),
+            "",
+            "**Weather forecast**",
+            f"  {weather_entity_id or 'Nothing selected'}"
+            + (
+                ""
+                if weather_entity_id
+                else " — precool falls back to comparing conditions right now, "
+                "which at midday cannot see the afternoon coming"
             ),
         ]
     )

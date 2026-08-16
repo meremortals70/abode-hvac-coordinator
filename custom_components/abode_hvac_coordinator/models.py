@@ -77,7 +77,6 @@ class RoomConfig:
     #: A schedule, input_boolean or binary_sensor that is on while this room
     #: is in its sleeping hours. Without one, SLEEP is never entered.
     sleep_schedule_entity_id: str | None = None
-    illuminance_entity_id: str | None = None
     #: A binary sensor that is on while something in the room is generating
     #: heat — a workstation, a server, a dryer. Radiant and convective heat a
     #: wall sensor barely sees but a person sitting next to it certainly does.
@@ -138,6 +137,11 @@ class RoomInputs:
     #: Declared on the active tariff window, not inferred from price.
     precool_opportunity: bool = False
     no_grid_import: bool = False
+    #: Learned rates, from the thermal model. None until that coefficient has
+    #: converged. Together with the index sensitivities these decide dry mode
+    #: against cooling on the merits, rather than on a humidity threshold.
+    k_sensible_c_per_hour: float | None = None
+    k_latent_rh_per_hour: float | None = None
     #: Thermal model verdict. None until the model has converged for this room,
     #: in which case COAST is never entered and the fallback holds the band.
     predicted_to_hold: bool | None = None
@@ -151,10 +155,6 @@ class RoomInputs:
     #: Set by the heading-home request. The only thing that brings an
     #: unoccupied room back on.
     heading_home: bool = False
-    #: Room illuminance in lux, where a sensor exists. Recorded, not acted on.
-    #: It cannot tell you whether a cover is doing its job: a semi-transparent
-    #: blind reads bright when fully closed.
-    illuminance_lux: float | None = None
     #: Whether the sun is currently on this room's windows. Geometry, not light
     #: level — sun position against the window aspect. None when unknown.
     direct_sun: bool | None = None

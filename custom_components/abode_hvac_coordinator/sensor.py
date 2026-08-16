@@ -322,6 +322,28 @@ HUB_SENSORS: tuple[HubSensorDescription, ...] = (
         value_fn=lambda c: c.outdoor_dew_point(),
     ),
     HubSensorDescription(
+        key="forecast_peak",
+        translation_key="forecast_peak",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda c: c.forecast_peak(),
+        attributes_fn=lambda c: {
+            "source": c.weather_entity_id or "Nothing selected",
+            "peak_at": c.forecast_peak_at(),
+            "fetched_at": (
+                c.trajectory.fetched_at.isoformat() if c.trajectory else None
+            ),
+            "covers_until": (
+                c.trajectory.covers_until.isoformat()
+                if c.trajectory and c.trajectory.covers_until
+                else None
+            ),
+            "hours": len(c.trajectory.points) if c.trajectory else 0,
+        },
+    ),
+    HubSensorDescription(
         key="stale_feeds",
         translation_key="stale_feeds",
         state_class=SensorStateClass.MEASUREMENT,
@@ -504,7 +526,6 @@ class RoomSettingsSensor(HvacRoomEntity, SensorEntity):
             "sleep_schedule": _configured(room.sleep_schedule_entity_id),
             "heat_source": _configured(room.heat_load_entity_id),
             "air_movement": _configured(room.air_movement_entity_id),
-            "illuminance_sensor": _configured(room.illuminance_entity_id),
             "sun_on_window_sensor": _configured(room.direct_sun_entity_id),
             "windows_face": _configured(room.window_direction),
             "overhang_projection_m": room.overhang_projection_m or "None",

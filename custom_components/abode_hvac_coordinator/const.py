@@ -36,7 +36,6 @@ CONF_TEMPERATURE_ENTITY: Final = "temperature_entity_id"
 CONF_HUMIDITY_ENTITY: Final = "humidity_entity_id"
 CONF_PRESENCE_ENTITY: Final = "presence_entity_id"
 CONF_SLEEP_SCHEDULE_ENTITY: Final = "sleep_schedule_entity_id"
-CONF_ILLUMINANCE_ENTITY: Final = "illuminance_entity_id"
 CONF_DIRECT_SUN_ENTITY: Final = "direct_sun_entity_id"
 CONF_WINDOW_DIRECTION: Final = "window_direction"
 CONF_OVERHANG_PROJECTION: Final = "overhang_projection_m"
@@ -90,6 +89,19 @@ CONF_OUTDOOR_HUMIDITY_ENTITY: Final = "outdoor_humidity_entity_id"
 #: Australian weather feeds publish km/h, so assuming the unit would make the
 #: figure wrong by a factor of 3.6.
 CONF_OUTDOOR_WIND_ENTITY: Final = "outdoor_wind_entity_id"
+
+#: The weather entity supplying the hourly forecast. Optional. Without it
+#: precool falls back to comparing current conditions, which is what the
+#: controller did before the forecast existed and is stated as such.
+CONF_WEATHER_ENTITY: Final = "weather_entity_id"
+
+#: How often the forecast is refetched. Hourly forecasts do not change faster
+#: than this, and precool decisions turn on the shape of the day rather than
+#: on any one hour.
+WEATHER_REFRESH_INTERVAL: Final = timedelta(minutes=30)
+
+WEATHER_DOMAIN: Final = "weather"
+WEATHER_SERVICE_GET_FORECASTS: Final = "get_forecasts"
 CONF_HORIZON_HOURS: Final = "horizon_hours"
 CONF_OPENING_ENTITIES: Final = "opening_entity_ids"
 CONF_COVER_ENTITIES: Final = "cover_entity_ids"
@@ -140,4 +152,5 @@ ATTR_DEADLINE: Final = "deadline"
 
 ISSUE_UNRECOGNISED_CONSTRAINT: Final = "unrecognised_constraint"
 ISSUE_TARIFF_UNAVAILABLE: Final = "tariff_unavailable"
+ISSUE_FORECAST_UNAVAILABLE: Final = "forecast_unavailable"
 ISSUE_NO_BANDS: Final = "room_without_bands"

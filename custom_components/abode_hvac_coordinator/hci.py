@@ -178,6 +178,34 @@ def comfort_index(
     return base
 
 
+def sensitivity_to_temperature(temp_c: float, relative_humidity: float) -> float:
+    """How much the index moves per degree of dry bulb, at fixed humidity.
+
+    Not 1.0. Cooling the air at constant relative humidity also lowers the
+    vapour pressure, so a degree of cooling buys more than a degree of index.
+    This is what makes the sensible route worth comparing against the latent
+    one on its own terms rather than by a humidity threshold.
+    """
+    saturation = _VAPOUR_A * math.exp((_VAPOUR_B * temp_c) / (_VAPOUR_C + temp_c))
+    # d(es)/dT for the Magnus form.
+    d_saturation = saturation * (
+        (_VAPOUR_B * _VAPOUR_C) / ((_VAPOUR_C + temp_c) ** 2)
+    )
+    return 1.0 + _E_COEFF * (relative_humidity / 100.0) * d_saturation
+
+
+def sensitivity_to_humidity(temp_c: float) -> float:
+    """How much the index moves per percentage point of relative humidity.
+
+    Depends on temperature only: at a fixed dry bulb, each point of relative
+    humidity adds a fixed slice of the saturation vapour pressure. This is why
+    a single humidity threshold cannot decide between drying and cooling —
+    65% at 22 C and 65% at 30 C move the index by very different amounts.
+    """
+    saturation = _VAPOUR_A * math.exp((_VAPOUR_B * temp_c) / (_VAPOUR_C + temp_c))
+    return _E_COEFF * saturation / 100.0
+
+
 def apparent_temperature(
     temp_c: float, relative_humidity: float, wind_ms: float = 0.0
 ) -> float:

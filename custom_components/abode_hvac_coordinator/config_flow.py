@@ -33,7 +33,6 @@ from .const import (
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_HUMIDITY_ENTITY,
-    CONF_ILLUMINANCE_ENTITY,
     CONF_LOCKOUT_REASON,
     CONF_LOCKOUT_REASONS,
     CONF_OCCUPIED_AFTER,
@@ -51,6 +50,7 @@ from .const import (
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
     CONF_WARNING_GRACE,
+    CONF_WEATHER_ENTITY,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
     NOT_LOCKED_OUT,
@@ -91,9 +91,6 @@ ROOM_SCHEMA = vol.Schema(
             selector.EntitySelectorConfig(
                 domain=["schedule", "input_boolean", "binary_sensor"]
             )
-        ),
-        vol.Optional(CONF_ILLUMINANCE_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor", device_class="illuminance")
         ),
         vol.Optional(CONF_DIRECT_SUN_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="binary_sensor")
@@ -343,7 +340,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         return self.async_show_menu(
             step_id="global",
             description_placeholders={"configuration": self._global_summary()},
-            menu_options=["tariff", "outdoor"],
+            menu_options=["tariff", "outdoor", "forecast"],
         )
 
     def _rooms_summary(self) -> str:
@@ -357,6 +354,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             self._outdoor_entity_id(),
             self._outdoor_humidity_entity_id(),
             self._outdoor_wind_entity_id(),
+            self._weather_entity_id(),
         )
 
     def _summary(self) -> str:
@@ -385,6 +383,9 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
     def _outdoor_wind_entity_id(self) -> str | None:
         return self._stored(CONF_OUTDOOR_WIND_ENTITY)
+
+    def _weather_entity_id(self) -> str | None:
+        return self._stored(CONF_WEATHER_ENTITY)
 
     def _tariff_entry_id(self) -> str | None:
         return self._stored(CONF_TARIFF_ENTRY_ID)
@@ -460,6 +461,38 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
         options = dict(self.config_entry.options)
         options[CONF_TARIFF_ENTRY_ID] = user_input.get(CONF_TARIFF_ENTRY_ID)
+        options.setdefault(CONF_ROOMS, self._rooms)
+        return self.async_create_entry(title="", data=options)
+
+    async def async_step_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The weather entity supplying the hourly forecast.
+
+        Precool is the decision that turns on this. Without it the controller
+        compares current conditions, which at 11:00 on the day of a 38 C
+        afternoon says there is no load coming.
+        """
+        if user_input is None:
+            current = self._weather_entity_id()
+            schema = vol.Schema(
+                {
+                    vol.Optional(CONF_WEATHER_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="weather")
+                    )
+                }
+            )
+            return self.async_show_form(
+                step_id="forecast",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, {CONF_WEATHER_ENTITY: current}
+                )
+                if current
+                else schema,
+            )
+
+        options = dict(self.config_entry.options)
+        options[CONF_WEATHER_ENTITY] = user_input.get(CONF_WEATHER_ENTITY)
         options.setdefault(CONF_ROOMS, self._rooms)
         return self.async_create_entry(title="", data=options)
 

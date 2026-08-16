@@ -30,6 +30,8 @@ from .hci import (
     comfort_index,
     dry_bulb_for_index,
     radiant_load,
+    sensitivity_to_humidity,
+    sensitivity_to_temperature,
 )
 from .models import (
     BAND_MODES,
@@ -133,14 +135,19 @@ def band_in_force(
 #: this a fan is just noise. Fixed internal, not a setting.
 FAN_MARGIN_HCI = 0.5
 
-#: PLACEHOLDER. Indoor relative humidity above which the load is treated as
-#: latent enough that dry mode beats cooling for the same draw.
+#: Fallback humidity threshold, used only while the thermal model has not
+#: converged. Once `k_sensible` and `k_latent` are known the decision is made
+#: on the merits and this number is not consulted.
 #:
-#: This is a stand-in. Architecture section 8 has the thermal model learning
-#: the sensible and latent terms separately, and once it does, that split makes
-#: this decision properly. A single humidity threshold cannot: 65% at 22 C and
-#: 65% at 30 C are different loads. Replace when the model converges.
-DRY_MODE_RH_THRESHOLD = 65.0
+#: It is a poor test and that is the point of replacing it: 65% at 22 C and 65%
+#: at 30 C are different loads, because a point of relative humidity moves the
+#: comfort index by 0.087 at the first and 0.140 at the second.
+DRY_MODE_RH_FALLBACK = 65.0
+
+#: How much faster cooling must be than drying before it is preferred. Dry mode
+#: runs the compressor at a lower duty for the same effect, so a tie goes to
+#: drying; cooling has to actually win to be chosen.
+DRY_MODE_ADVANTAGE = 1.25
 
 #: How near an extreme a cover counts as already there, in percent. A blind at
 #: 3% is shut for our purposes; commanding it to 0 achieves nothing, and
@@ -163,6 +170,69 @@ def _demand_direction(mode: Mode, band: ComfortBand, hci: float) -> str | None:
     if hci < band.low:
         return "heat"
     return None
+
+
+def _latent_route(
+    inputs: RoomInputs, overshoot: float, trace: DecisionTrace
+) -> str | None:
+    """Whether drying closes the comfort gap faster than cooling would.
+
+    Returns the reason to dry, or None having recorded why not.
+
+    Both routes are measured in hours to close the same excess:
+
+        cooling   excess / (k_sensible  x  dHCI/dT)
+        drying    excess / (k_latent    x  dHCI/dRH)
+
+    `k_sensible` is degrees per hour and `k_latent` is humidity points per
+    hour; the sensitivities convert each into index units per hour so the two
+    are comparable. Nothing here is a threshold.
+    """
+    if inputs.temperature_c is None or inputs.relative_humidity is None:
+        trace.rejected.append("dry: no reading to judge the load with")
+        return None
+
+    sensible_rate = inputs.k_sensible_c_per_hour
+    latent_rate = inputs.k_latent_rh_per_hour
+
+    if sensible_rate is None or latent_rate is None:
+        # Not learned yet. The humidity threshold is a poor test and it is what
+        # there is until the filter converges. Saying so keeps the fallback
+        # visible rather than looking like a decision.
+        if inputs.relative_humidity >= DRY_MODE_RH_FALLBACK:
+            return (
+                f"dry: {inputs.relative_humidity:.0f}% humidity and the model "
+                "has not converged, falling back to the humidity threshold"
+            )
+        trace.rejected.append(
+            f"dry: {inputs.relative_humidity:.0f}% is below the "
+            f"{DRY_MODE_RH_FALLBACK:.0f}% fallback threshold, and the model has "
+            "not converged enough to judge the load properly"
+        )
+        return None
+
+    cooling_per_hour = sensible_rate * sensitivity_to_temperature(
+        inputs.temperature_c, inputs.relative_humidity
+    )
+    drying_per_hour = latent_rate * sensitivity_to_humidity(inputs.temperature_c)
+
+    if drying_per_hour <= 0:
+        trace.rejected.append("dry: this room has never shown a latent response")
+        return None
+
+    if cooling_per_hour > drying_per_hour * DRY_MODE_ADVANTAGE:
+        trace.rejected.append(
+            f"dry: cooling closes {cooling_per_hour:.2f} HCI per hour against "
+            f"{drying_per_hour:.2f} for drying — the load is sensible"
+        )
+        return None
+
+    hours = overshoot / drying_per_hour if drying_per_hour else 0.0
+    return (
+        f"dry: drying closes {drying_per_hour:.2f} HCI per hour against "
+        f"{cooling_per_hour:.2f} for cooling, about {hours * 60:.0f} min — "
+        "the load is latent"
+    )
 
 
 def _covers_can_help(demand: str, position: float | None) -> bool:
@@ -284,17 +354,19 @@ def select_actuator(
 
     # --- 3. Dry mode. A latent-dominated load costs far less to shift with dry
     # mode on a low fan than with cooling.
-    latent = (
-        inputs.relative_humidity is not None
-        and inputs.relative_humidity >= DRY_MODE_RH_THRESHOLD
-    )
+    #
+    # Which route is faster is answered from what the room has actually taught
+    # the model, not from a humidity number. The comfort excess is the same
+    # either way; what differs is how fast each actuator closes it, and that is
+    # the learned rate multiplied by how much the index moves per unit of what
+    # that actuator changes.
     if not inputs.can_dry:
         trace.rejected.append("dry: this unit has no dry mode")
-    elif latent:
-        trace.reasons.append("dry: load is latent, dehumidify rather than cool")
-        return ActuatorStep.DRY
     else:
-        trace.rejected.append("dry: load is sensible, not latent")
+        route = _latent_route(inputs, overshoot, trace)
+        if route:
+            trace.reasons.append(route)
+            return ActuatorStep.DRY
 
     # --- 4. Compressor. Everything cheaper has been ruled out above.
     if not inputs.can_cool:

@@ -54,6 +54,9 @@
       },
       "outdoor_apparent_temperature": {
         "default": "mdi:sun-thermometer-outline"
+      },
+      "forecast_peak": {
+        "default": "mdi:weather-sunny-alert"
       }
     }
   },

@@ -103,6 +103,8 @@ sustained absence shuts it down. Coming back cancels it.
 | [Regulation](docs/regulation.md) | Layer 2: why the commanded setpoint is not the solved target |
 | [Free cooling](docs/free-cooling.md) | Feels-like, when opening up helps, and condensation risk |
 | [Stale feeds](docs/staleness.md) | Why a sensor that is reporting is not necessarily current |
+| [Forecast-driven precool](docs/forecast-driven-precool.md) | Banking against the afternoon rather than the moment |
+| [Drying against cooling](docs/latent-and-sensible.md) | Why one humidity threshold could never decide it |
 | [Thermal model](docs/thermal-model.md) | What it learns about your house |
 | [Demand forecast](docs/demand-forecast.md) | The battery contract, and why it stops there |
 
