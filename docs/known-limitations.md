@@ -10,9 +10,18 @@ you were told about.
 Assistant installed, and the integration loads and unloads cleanly in the test
 harness. None of that tells you a compressor did the right thing.
 
-0.6.0 crashed on setup. 0.8.0 crashed the evaluation loop the first time a
-weather forecast was configured. Both are fixed and both had tests written
-against them afterwards, which is the wrong order.
+Three faults have been found only by running it:
+
+- 0.6.0 crashed on setup.
+- 0.8.0 crashed the evaluation loop the first time a weather forecast was
+  configured.
+- 0.8.3 fixed a thermal model that could never gain a single sample, because
+  the learning anchor was reset on every 30-second evaluation and the minimum
+  usable interval is 60 seconds. Nothing reported it — the model simply stayed
+  unconverged, and everything depending on it stayed unavailable.
+
+All three are fixed and all three had tests written afterwards, which is the
+wrong order.
 
 Treat the first week as a test and read this page before relying on it.
 

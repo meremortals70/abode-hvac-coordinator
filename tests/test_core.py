@@ -2619,3 +2619,45 @@ class TestNaiveTimestampsDoNotCrashTheLoop(unittest.TestCase):
         }
         series = TariffSeries.from_response(response, NOW, self.BRISBANE)
         self.assertEqual(series.windows()[0].start, time(16, 0))
+
+
+class TestDewPointIsAlwaysPublished(unittest.TestCase):
+    """A live install showed `dew_point_c: null` on a room with both sensors.
+
+    Free cooling declines to compute it when the room is not asking to be
+    cooled, and condensation declines when there is no setpoint. An unoccupied
+    room hits both, so it published nothing — despite having the readings, and
+    despite an empty shut-up room being exactly where mould grows.
+    """
+
+    def _trace(self, **overrides):
+        base = {
+            "now": NOW,
+            "temperature_c": 21.0,
+            "relative_humidity": 78.0,
+            "presence": False,
+        }
+        base.update(overrides)
+        room = RoomConfig(
+            room_id="office",
+            name="Office",
+            climate_entity_id="climate.office",
+            bands={Mode.OCCUPIED: ComfortBand(24.0, 27.0)},
+        )
+        return evaluate_room(room, RoomInputs(**base))
+
+    def test_an_unoccupied_room_still_publishes_its_dew_point(self):
+        trace = self._trace()
+        self.assertEqual(trace.mode, Mode.UNOCCUPIED)
+        self.assertIsNotNone(trace.dew_point_c)
+
+    def test_the_value_is_correct(self):
+        trace = self._trace()
+        self.assertAlmostEqual(trace.dew_point_c, _psychro.dew_point_c(21.0, 78.0), 1)
+
+    def test_a_room_with_no_humidity_reading_publishes_nothing(self):
+        self.assertIsNone(self._trace(relative_humidity=None).dew_point_c)
+
+    def test_an_occupied_room_cooling_still_publishes_it(self):
+        trace = self._trace(temperature_c=29.0, relative_humidity=70.0, presence=True)
+        self.assertIsNotNone(trace.dew_point_c)

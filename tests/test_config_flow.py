@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from unittest.mock import patch
+
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.abode_hvac_coordinator.const import (
@@ -347,3 +351,54 @@ async def test_a_naive_forecast_does_not_take_the_evaluation_loop_down(
     assert coordinator.trajectory is not None
     for point in coordinator.trajectory.points:
         assert point.at.tzinfo is not None
+
+
+async def test_the_model_accumulates_samples_at_the_real_evaluation_interval(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Diagnostics from a live install showed `samples: 0` on every coefficient.
+
+    The learning anchor was replaced on every evaluation, so the measured
+    interval was always the 30-second evaluation period — below the 60-second
+    minimum an observation needs to carry information over sensor
+    quantisation. Every observation was discarded, the model never converged,
+    and coast, the dry-versus-cool split, precool sizing and the heading-home
+    estimate were all permanently unavailable with nothing reporting a fault.
+
+    **This test must tick at 30 seconds, not at a convenient larger number.**
+    A first version advanced two minutes per cycle and passed against the
+    broken code, because at two minutes the interval clears the minimum even
+    when the anchor is reset every time. It proved nothing.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            "outdoor_temperature_entity_id": "sensor.outdoor",
+        },
+    )
+    hass.states.async_set("sensor.outdoor", "32.0")
+    hass.states.async_set("sensor.test_temperature", "25.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    room_id = next(iter(coordinator.rooms))
+
+    start = dt_util.utcnow()
+    for step in range(1, 11):
+        hass.states.async_set("sensor.test_temperature", f"{25.0 + step * 0.05:.2f}")
+        hass.states.async_set("sensor.test_humidity", f"{60.0 + step * 0.1:.2f}")
+        with patch(
+            "homeassistant.util.dt.utcnow",
+            return_value=start + timedelta(seconds=30 * step),
+        ):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+    assert coordinator.model_for(room_id).k_loss.samples > 0, (
+        "five minutes of 30-second evaluations produced no observation; the "
+        "learning anchor is being reset every cycle"
+    )

@@ -41,7 +41,7 @@ from .models import (
     RoomConfig,
     RoomInputs,
 )
-from .psychro import condensation_risk, free_cooling
+from .psychro import condensation_risk, dew_point_c, free_cooling
 from .scheduling import ramped_band
 
 
@@ -501,5 +501,22 @@ def evaluate_room(
         trace.dew_point_c = risk.dew_point_c
     if risk.reason:
         trace.reasons.append(risk.reason)
+
+    # The dew point is a property of the air in the room, not of any decision
+    # about it. Both paths above can decline to compute it — free cooling when
+    # the room is not asking to be cooled, condensation when there is no
+    # setpoint to compare against — which left an unoccupied room publishing
+    # nothing despite having both readings.
+    #
+    # That is exactly backwards: a shut-up room nobody is in is where mould
+    # grows. If the readings exist, the dew point is published.
+    if (
+        trace.dew_point_c is None
+        and inputs.temperature_c is not None
+        and inputs.relative_humidity is not None
+    ):
+        trace.dew_point_c = round(
+            dew_point_c(inputs.temperature_c, inputs.relative_humidity), 1
+        )
 
     return trace

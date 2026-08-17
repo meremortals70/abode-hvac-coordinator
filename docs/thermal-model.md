@@ -28,9 +28,16 @@ feels cool.
 
 ## How it learns
 
-A scalar Kalman update per coefficient, one observation per evaluation
-interval: what the room actually did, measured at both ends, against what the
-model predicted.
+A scalar Kalman update per coefficient: what the room actually did, measured at
+both ends, against what the model predicted.
+
+**An observation spans several evaluations, not one.** Evaluation runs every
+thirty seconds and an interval shorter than a minute carries no information
+over sensor quantisation, so the anchor is held until the interval is long
+enough rather than replaced each cycle. It is also reset without observing
+whenever the compressor or dry mode changes state inside the interval, because
+an interval that spans a change teaches nothing reliable about either side of
+it.
 
 Each coefficient learns only from intervals where it was the thing driving. An
 interval with the compressor running teaches nothing reliable about passive heat

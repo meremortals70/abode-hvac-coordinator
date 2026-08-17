@@ -124,7 +124,16 @@ from .tariff import (
     TariffPayloadError,
     TariffSeries,
 )
-from .thermal import Observation, ThermalModel
+from .thermal import (
+    MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
+)
+from .thermal import (
+    MIN_INTERVAL_HOURS as MIN_LEARNING_INTERVAL_HOURS,
+)
+from .thermal import (
+    Observation,
+    ThermalModel,
+)
 from .weather import (
     DEMAND_LOOKAHEAD,
     ForecastPayloadError,
@@ -578,46 +587,85 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._previous_mode[room_id] = mode
 
     def _learn(self, room: RoomConfig, inputs: RoomInputs, now: datetime) -> None:
-        """Fold the interval since the last evaluation into the room's model.
+        """Fold the interval since the last usable anchor into the room's model.
 
         What the room actually did is measured at both ends; nothing here is
         inferred from what was commanded.
+
+        **The anchor is held, not replaced every cycle.** Evaluation runs every
+        thirty seconds and an observation needs at least sixty to carry any
+        information over sensor quantisation. Replacing the anchor each time
+        made every interval exactly one evaluation period long, so every
+        observation was discarded as too short and no coefficient ever gained a
+        sample. Nothing reported it: the model simply stayed unconverged
+        forever, and coast, the dry-versus-cool split, precool sizing and the
+        heading-home estimate were all permanently unavailable.
+
+        So the anchor advances only when it has been used, or when holding it
+        any longer would make it useless.
         """
-        previous = self._previous.get(room.room_id)
-        current = (
-            now,
-            inputs.temperature_c,
-            inputs.relative_humidity,
-            self._compressor_direction(room),
-            self._is_drying(room),
-        )
-        if inputs.temperature_c is None or inputs.relative_humidity is None:
+        temperature = inputs.temperature_c
+        humidity = inputs.relative_humidity
+        compressor = self._compressor_direction(room)
+        drying = self._is_drying(room)
+
+        if temperature is None or humidity is None:
             # No reading at this end of the interval. Drop the anchor rather
-            # than learning from a gap.
+            # than learning across a gap.
             self._previous.pop(room.room_id, None)
             return
 
-        self._previous[room.room_id] = current  # type: ignore[assignment]
+        previous = self._previous.get(room.room_id)
         if previous is None:
+            self._previous[room.room_id] = (
+                now, temperature, humidity, compressor, drying
+            )
             return
 
-        started, start_c, start_rh, compressor, drying = previous
+        started, start_c, start_rh, start_compressor, start_drying = previous
         if start_c is None or start_rh is None:
+            self._previous[room.room_id] = (
+                now, temperature, humidity, compressor, drying
+            )
+            return
+
+        if compressor != start_compressor or drying != start_drying:
+            # What was driving the room changed inside the interval, so it
+            # teaches nothing reliable about either state. Start again from
+            # here rather than attributing the whole interval to one of them.
+            self._previous[room.room_id] = (
+                now, temperature, humidity, compressor, drying
+            )
             return
 
         elapsed = (now - started).total_seconds() / 3600.0
+        if elapsed < MIN_LEARNING_INTERVAL_HOURS:
+            # Too short to mean anything yet. Hold the anchor and let it grow.
+            return
+
+        if elapsed > MAX_LEARNING_INTERVAL_HOURS:
+            # Stale — Home Assistant was asleep, or a sensor was out. Something
+            # almost certainly changed inside it.
+            self._previous[room.room_id] = (
+                now, temperature, humidity, compressor, drying
+            )
+            return
+
         self.model_for(room.room_id).observe(
             Observation(
                 elapsed_hours=elapsed,
                 indoor_start_c=start_c,
-                indoor_end_c=inputs.temperature_c,
+                indoor_end_c=temperature,
                 humidity_start=start_rh,
-                humidity_end=inputs.relative_humidity,
-                outdoor_c=self._number(self.outdoor_entity_id),
+                humidity_end=humidity,
+                outdoor_c=self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE),
                 direct_sun=inputs.direct_sun is True,
-                compressor=compressor,
-                drying=drying,
+                compressor=start_compressor,
+                drying=start_drying,
             )
+        )
+        self._previous[room.room_id] = (
+            now, temperature, humidity, compressor, drying
         )
 
     def _predicted_to_hold(self, room: RoomConfig) -> bool | None:
@@ -722,6 +770,16 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def outdoor_reading(self) -> float | None:
         """The outdoor temperature, for the house-wide sensor."""
         return self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
+
+    def regulation_state(self) -> dict[str, RegulatorState]:
+        """Layer 2 state per room, for diagnostics.
+
+        Exposed deliberately. A commanded setpoint that differs from the solved
+        target is the single most confusing thing this controller does, and a
+        diagnostics file that cannot show why is a diagnostics file that costs
+        an evening.
+        """
+        return dict(self._regulators)
 
     def forecast_peak(self) -> float | None:
         """The hottest hour the forecast can see, for the house-wide sensor."""

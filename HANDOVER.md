@@ -1,6 +1,6 @@
 # Handover
 
-**Version 0.8.2. The architecture is complete.**
+**Version 0.8.3. The architecture is complete.**
 
 Every gap identified against the v0.3 proposal at v0.5.3 is closed. See
 `ARCHITECTURE-GAPS.md` for the ledger, including the one closed as not
@@ -31,6 +31,7 @@ Abode Power Tariffs, and an hourly weather forecast.
 | 0.8.0 | Forecast-driven precool. Learned latent/sensible actuator choice. Illuminance removed |
 | 0.8.1 | Fixed a crash on the first forecast: naive timestamps against an aware clock. Same fault fixed latent in the tariff. Tariff windows converted to local wall time |
 | 0.8.2 | Documentation corrected against the code — 18 files. The §5 rule stated precisely and enforced by a test |
+| 0.8.3 | **The thermal model could never learn.** The learning anchor was replaced every evaluation, so every interval was 30 s against a 60 s minimum and every observation was discarded. Dew point now published whenever the readings exist. Diagnostics completed |
 
 ## Installing
 
@@ -49,8 +50,8 @@ screen in terms of what is lost without it rather than left blank.
 |---|---|
 | `ruff check custom_components tests` | clean |
 | `mypy --strict`, all 23 modules, Home Assistant installed | clean |
-| Pure test suite | 269 passing |
-| Home Assistant side tests | 18 passing |
+| Pure test suite | 271 passing |
+| Home Assistant side tests | 21 passing |
 | Home Assistant log during those tests | no warnings, no errors |
 | Purity of the fifteen pure modules | enforced by parsing imports |
 | Step / string / placeholder / entity / icon cross-checks | clean |

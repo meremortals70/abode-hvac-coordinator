@@ -29,6 +29,12 @@ async def async_get_config_entry_diagnostics(
                 "presence_entity_id": room.presence_entity_id,
                 "opening_entity_ids": list(room.opening_entity_ids),
                 "cover_entity_ids": list(room.cover_entity_ids),
+                "sleep_schedule_entity_id": room.sleep_schedule_entity_id,
+                "direct_sun_entity_id": room.direct_sun_entity_id,
+                "heat_load_entity_id": room.heat_load_entity_id,
+                "window_direction": room.window_direction,
+                "overhang_projection_m": room.overhang_projection_m,
+                "overhang_height_m": room.overhang_height_m,
                 "lockout_reason": room.lockout_reason,
                 "bands": {
                     str(mode): {"low": band.low, "high": band.high}
@@ -78,6 +84,41 @@ async def async_get_config_entry_diagnostics(
             coordinator.forecast.as_attributes() if coordinator.forecast else None
         ),
         "outdoor_temperature_entity_id": coordinator.outdoor_entity_id,
+        "outdoor_humidity_entity_id": coordinator.outdoor_humidity_entity_id,
+        "outdoor_wind_entity_id": coordinator.outdoor_wind_entity_id,
+        "outdoor_apparent_c": coordinator.outdoor_apparent_temperature(),
+        "outdoor_dew_point_c": coordinator.outdoor_dew_point(),
+        "weather": {
+            "entity_id": coordinator.weather_entity_id,
+            "fetched_at": (
+                coordinator.trajectory.fetched_at.isoformat()
+                if coordinator.trajectory
+                else None
+            ),
+            "covers_until": (
+                coordinator.trajectory.covers_until.isoformat()
+                if coordinator.trajectory and coordinator.trajectory.covers_until
+                else None
+            ),
+            "hours": (
+                len(coordinator.trajectory.points) if coordinator.trajectory else 0
+            ),
+            "peak_c": coordinator.forecast_peak(),
+            "peak_at": coordinator.forecast_peak_at(),
+        },
+        "regulation": {
+            room_id: {
+                "trim_c": round(state.trim_c, 3),
+                "running": state.running,
+                "changed_at": (
+                    state.changed_at.isoformat() if state.changed_at else None
+                ),
+                "updated_at": (
+                    state.updated_at.isoformat() if state.updated_at else None
+                ),
+            }
+            for room_id, state in coordinator.regulation_state().items()
+        },
         "traces": {
             room_id: trace.as_attributes()
             for room_id, trace in (coordinator.data or {}).items()

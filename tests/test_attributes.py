@@ -212,6 +212,7 @@ class TestOutdoorApparentTemperatureIsNeverAnInput(unittest.TestCase):
         "psychro.py": "the free-cooling comparison — the one permitted use",
         "coordinator.py": "reads the outdoor feeds and computes the figure",
         "sensor.py": "publishes it as a diagnostic entity, does not decide on it",
+        "diagnostics.py": "reports it in the diagnostics file, does not decide on it",
     }
 
     def test_only_the_permitted_modules_reference_it(self):
