@@ -305,7 +305,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         try:
             self.tariff = TariffSeries.from_response(
-                dict(response) if response else None, dt_util.utcnow()
+                dict(response) if response else None,
+                dt_util.utcnow(),
+                dt_util.DEFAULT_TIME_ZONE,
             )
         except TariffPayloadError as err:
             self._async_tariff_issue(f"the interval series could not be read: {err}")
@@ -362,7 +364,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         try:
             self.trajectory = WeatherTrajectory.from_response(
-                dict(response) if response else None, dt_util.utcnow()
+                dict(response) if response else None,
+                dt_util.utcnow(),
+                dt_util.DEFAULT_TIME_ZONE,
             )
         except ForecastPayloadError as err:
             self._async_forecast_issue(f"the forecast could not be read: {err}")
@@ -659,9 +663,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         indoor = self._number(
             room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
         )
-        verdict = demand_ahead(
-            self.trajectory, now=now, indoor_c=indoor
-        )
+        try:
+            verdict = demand_ahead(self.trajectory, now=now, indoor_c=indoor)
+        except TypeError as err:
+            # A forecast this cannot compare against must cost the room its
+            # precool decision, not the whole evaluation. The first version of
+            # this raised straight out of the update loop and took every room
+            # down over one integration's timestamp format.
+            LOGGER.warning(
+                "The forecast could not be compared against the clock (%s); "
+                "precool is falling back to current conditions",
+                err,
+            )
+            self.trajectory = None
+            self._async_forecast_issue(
+                f"its timestamps could not be compared against the clock: {err}"
+            )
+            verdict = demand_ahead(None, now=now, indoor_c=indoor)
         if self.trajectory is not None:
             self._demand_reason[room.room_id] = verdict.reason
             return verdict.demand_ahead

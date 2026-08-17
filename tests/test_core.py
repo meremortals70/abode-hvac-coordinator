@@ -48,6 +48,12 @@ BANDS = {
     Mode.PRECOOL: ComfortBand(25.0, 28.0),
 }
 
+#: The wall clock the tariff fixture belongs to. A window is a wall-clock
+#: concept, so the series has to be told which clock, or a 16:00 peak built at
+#: +10:00 collapses to an 06:00 window.
+FIXTURE_TZ = timezone(timedelta(hours=10))
+
+
 #: A day as Abode Power Tariffs publishes it: half-hourly, dollars per kWh.
 def _response(day: str = "2026-08-08", tz: str = "+10:00") -> dict:
     """Build a half-hourly response for one day. Fixture values only."""
@@ -411,7 +417,7 @@ class TestTariffSeries(unittest.TestCase):
     """The series replaces the schedule this controller used to hold itself."""
 
     def setUp(self):
-        self.series = TariffSeries.from_response(_response(), NOW)
+        self.series = TariffSeries.from_response(_response(), NOW, FIXTURE_TZ)
 
     def _at(self, hour: int, minute: int = 0):
         return datetime(
@@ -451,7 +457,9 @@ class TestSeriesCollapsesToPeriods(unittest.TestCase):
     """Forty-eight slices are two periods. The forecast wants the periods."""
 
     def setUp(self):
-        self.windows = TariffSeries.from_response(_response(), NOW).windows()
+        self.windows = TariffSeries.from_response(
+            _response(), NOW, FIXTURE_TZ
+        ).windows()
 
     def test_consecutive_identical_intervals_become_one_window(self):
         self.assertEqual(len(self.windows), 2)
@@ -474,13 +482,13 @@ class TestSeriesCollapsesToPeriods(unittest.TestCase):
         # window that repriced partway through was not one period in the plan.
         response = _response()
         response["intervals"][4]["per_kwh"] = 0.30
-        windows = TariffSeries.from_response(response, NOW).windows()
+        windows = TariffSeries.from_response(response, NOW, FIXTURE_TZ).windows()
         self.assertEqual(len(windows), 2)
 
     def test_a_gap_in_the_series_starts_a_new_window(self):
         response = _response()
         del response["intervals"][6]
-        windows = TariffSeries.from_response(response, NOW).windows()
+        windows = TariffSeries.from_response(response, NOW, FIXTURE_TZ).windows()
         self.assertEqual(len(windows), 3)
 
 
@@ -490,13 +498,13 @@ class TestUnrecognisedConstraints(unittest.TestCase):
     def test_a_constraint_this_controller_does_not_act_on_is_surfaced(self):
         response = _response()
         response["intervals"][0]["constraints"] = ["grid_charge_battery"]
-        series = TariffSeries.from_response(response, NOW)
+        series = TariffSeries.from_response(response, NOW, FIXTURE_TZ)
         self.assertEqual(series.unrecognised_constraints(), frozenset())
 
     def test_an_unknown_constraint_is_named(self):
         response = _response()
         response["intervals"][0]["constraints"] = ["run_the_pool_pump"]
-        series = TariffSeries.from_response(response, NOW)
+        series = TariffSeries.from_response(response, NOW, FIXTURE_TZ)
         self.assertIn("run_the_pool_pump", series.unrecognised_constraints())
 
 
@@ -551,7 +559,7 @@ class TestSeriesFeedsTheForecast(unittest.TestCase):
     """What the series produces must be what build_forecast accepts."""
 
     def test_collapsed_windows_are_the_shape_the_forecast_takes(self):
-        windows = TariffSeries.from_response(_response(), NOW).windows()
+        windows = TariffSeries.from_response(_response(), NOW, FIXTURE_TZ).windows()
         shaped = [(w.start, w.end, w.rate, w.constraints) for w in windows]
         for start, end, rate, constraints in shaped:
             self.assertIsInstance(start, time)
@@ -2531,3 +2539,83 @@ class TestLatentRouteUsesTheLearnedRates(unittest.TestCase):
         self.assertTrue(
             any("never shown a latent response" in r for r in trace.rejected)
         )
+
+
+class TestNaiveTimestampsDoNotCrashTheLoop(unittest.TestCase):
+    """A forecast without an offset took every room down. It must not.
+
+    `TypeError: can't compare offset-naive and offset-aware datetimes`, raised
+    out of `peak_between` and straight through the update loop, so one
+    integration's timestamp format stopped the whole controller.
+    """
+
+    BRISBANE = timezone(timedelta(hours=10))
+
+    def test_a_naive_forecast_point_is_made_aware(self):
+        point = _weather.point_from_forecast(
+            {"datetime": "2026-08-08T14:00:00", "temperature": 33.0},
+            self.BRISBANE,
+        )
+        self.assertIsNotNone(point.at.tzinfo)
+
+    def test_a_naive_forecast_can_be_compared_against_an_aware_clock(self):
+        response = {
+            "forecast": [
+                {"datetime": f"2026-08-08T{h:02d}:00:00", "temperature": 24.0 + h}
+                for h in range(12, 20)
+            ]
+        }
+        trajectory = _weather.WeatherTrajectory.from_response(
+            response, NOW, self.BRISBANE
+        )
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=self.BRISBANE)
+        # The call that raised.
+        peak = trajectory.peak_between(now, now + timedelta(hours=10))
+        self.assertIsNotNone(peak)
+
+    def test_a_naive_timestamp_is_read_as_local_not_utc(self):
+        # Assuming UTC would move a Brisbane afternoon ten hours and still look
+        # plausible, which is worse than the crash because nothing reports it.
+        point = _weather.point_from_forecast(
+            {"datetime": "2026-08-08T14:00:00", "temperature": 33.0},
+            self.BRISBANE,
+        )
+        self.assertEqual(point.at.utcoffset(), timedelta(hours=10))
+
+    def test_an_offset_that_is_present_is_left_alone(self):
+        point = _weather.point_from_forecast(
+            {"datetime": "2026-08-08T14:00:00+00:00", "temperature": 33.0},
+            self.BRISBANE,
+        )
+        self.assertEqual(point.at.utcoffset(), timedelta(0))
+
+    def test_a_naive_tariff_interval_is_made_aware(self):
+        interval = interval_from_response(
+            {
+                "start_time": "2026-08-08T16:00:00",
+                "end_time": "2026-08-08T16:30:00",
+                "rate": "peak",
+            },
+            self.BRISBANE,
+        )
+        self.assertIsNotNone(interval.start.tzinfo)
+        self.assertTrue(
+            interval.contains(datetime(2026, 8, 8, 16, 10, tzinfo=self.BRISBANE))
+        )
+
+    def test_tariff_windows_are_local_wall_time_not_utc(self):
+        # A 16:00 peak carried in UTC collapses to a 06:00 window, which the
+        # demand forecast would compare against the local clock and believe.
+        response = {
+            "intervals": [
+                {
+                    "start_time": "2026-08-08T06:00:00+00:00",
+                    "end_time": "2026-08-08T06:30:00+00:00",
+                    "rate": "peak",
+                    "constraints": ["no_grid_import"],
+                    "coasting_permitted": False,
+                }
+            ]
+        }
+        series = TariffSeries.from_response(response, NOW, self.BRISBANE)
+        self.assertEqual(series.windows()[0].start, time(16, 0))

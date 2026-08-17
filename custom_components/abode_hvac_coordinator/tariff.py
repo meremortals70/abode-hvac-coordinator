@@ -21,7 +21,7 @@ A constraint is never traded against price or comfort at runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import UTC, datetime, time, tzinfo
 from typing import Any, Final
 
 #: Constraints this controller acts on. Anything else is passed through to the
@@ -98,14 +98,32 @@ class TariffWindow:
     coasting_permitted: bool
 
 
-def _as_datetime(value: Any, field: str) -> datetime:
-    """Parse an ISO-8601 timestamp from the service response."""
+def _as_datetime(value: Any, field: str, default_tz: tzinfo) -> datetime:
+    """Parse an interval timestamp, and guarantee it is timezone-aware.
+
+    Abode Power Tariffs generates its intervals in Home Assistant's local
+    timezone, so in practice these arrive with an offset. This does not rely on
+    that: a naive timestamp compared against an aware `utcnow()` raises
+    `TypeError` and takes down the whole evaluation loop, which is exactly what
+    the forecast did the first time it was configured.
+
+    Naive values are attached to the caller's timezone rather than assumed UTC.
+    A tariff period is a wall-clock concept — "peak starts at four" — so local
+    is the right reading, and assuming UTC would shift every window by ten
+    hours in Brisbane without reporting anything.
+    """
     if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value))
-    except (TypeError, ValueError) as err:
-        raise TariffPayloadError(f"{field} is not a timestamp: {value!r}") from err
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError) as err:
+            raise TariffPayloadError(
+                f"{field} is not a timestamp: {value!r}"
+            ) from err
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=default_tz)
+    return parsed
 
 
 def _as_optional_float(value: Any, field: str) -> float | None:
@@ -118,7 +136,9 @@ def _as_optional_float(value: Any, field: str) -> float | None:
         raise TariffPayloadError(f"{field} is not a number: {value!r}") from err
 
 
-def interval_from_response(raw: dict[str, Any]) -> Interval:
+def interval_from_response(
+    raw: dict[str, Any], default_tz: tzinfo = UTC
+) -> Interval:
     """Build one interval from the published service response shape.
 
     Field names follow `abode_power_tariffs.get_intervals`: `start_time`,
@@ -133,8 +153,8 @@ def interval_from_response(raw: dict[str, Any]) -> Interval:
         raise TariffPayloadError("interval has no rate") from err
 
     return Interval(
-        start=_as_datetime(raw.get("start_time"), "start_time"),
-        end=_as_datetime(raw.get("end_time"), "end_time"),
+        start=_as_datetime(raw.get("start_time"), "start_time", default_tz),
+        end=_as_datetime(raw.get("end_time"), "end_time", default_tz),
         rate=rate,
         per_kwh=_as_optional_float(raw.get("per_kwh"), "per_kwh"),
         export_per_kwh=_as_optional_float(raw.get("export_per_kwh"), "export_per_kwh"),
@@ -152,14 +172,29 @@ class TariffSeries:
     a plan is wrong.
     """
 
-    def __init__(self, intervals: tuple[Interval, ...], fetched_at: datetime) -> None:
-        """Hold the series and when it was fetched, so staleness is answerable."""
+    def __init__(
+        self,
+        intervals: tuple[Interval, ...],
+        fetched_at: datetime,
+        local_tz: tzinfo = UTC,
+    ) -> None:
+        """Hold the series, when it was fetched, and the wall clock it belongs to.
+
+        The timezone is needed because a tariff window is a wall-clock concept.
+        Collapsing intervals into periods takes the time-of-day off each end,
+        and doing that on a UTC-aware timestamp would produce a window that
+        starts at 06:00 for a period the plan calls 16:00.
+        """
         self._intervals = tuple(sorted(intervals, key=lambda i: i.start))
         self.fetched_at = fetched_at
+        self.local_tz = local_tz
 
     @classmethod
     def from_response(
-        cls, response: dict[str, Any] | None, fetched_at: datetime
+        cls,
+        response: dict[str, Any] | None,
+        fetched_at: datetime,
+        default_tz: tzinfo = UTC,
     ) -> TariffSeries:
         """Build a series from the raw service response."""
         if not isinstance(response, dict):
@@ -170,7 +205,9 @@ class TariffSeries:
         if not raw_intervals:
             raise TariffPayloadError("response carries an empty interval list")
         return cls(
-            tuple(interval_from_response(raw) for raw in raw_intervals), fetched_at
+            tuple(interval_from_response(raw, default_tz) for raw in raw_intervals),
+            fetched_at,
+            default_tz,
         )
 
     @property
@@ -215,12 +252,12 @@ class TariffSeries:
                 continue
 
             if run_start is not None and previous is not None:
-                windows.append(_window(run_start, previous))
+                windows.append(_window(run_start, previous, self.local_tz))
             run_start = interval
             previous = interval
 
         if run_start is not None and previous is not None:
-            windows.append(_window(run_start, previous))
+            windows.append(_window(run_start, previous, self.local_tz))
         return tuple(windows)
 
     def unrecognised_constraints(self) -> frozenset[str]:
@@ -231,11 +268,16 @@ class TariffSeries:
         return frozenset(found)
 
 
-def _window(first: Interval, last: Interval) -> TariffWindow:
-    """Collapse a run of intervals into the period they came from."""
+def _window(first: Interval, last: Interval, local_tz: tzinfo) -> TariffWindow:
+    """Collapse a run of intervals into the period they came from.
+
+    Converted to local wall time before the time-of-day is taken. The demand
+    forecast compares these against the local clock, so a window carried in UTC
+    would be ten hours out in Brisbane and would still look plausible.
+    """
     return TariffWindow(
-        start=first.start.timetz().replace(tzinfo=None),
-        end=last.end.timetz().replace(tzinfo=None),
+        start=first.start.astimezone(local_tz).time(),
+        end=last.end.astimezone(local_tz).time(),
         rate=first.rate,
         per_kwh=first.per_kwh,
         constraints=first.constraints,

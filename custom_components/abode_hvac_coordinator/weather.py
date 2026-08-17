@@ -33,7 +33,7 @@ as one, and far better than assuming every hour of daylight is cloudless.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
 #: How far ahead precool looks for a load worth banking against. An evening
@@ -103,14 +103,34 @@ class ForecastPoint:
         return None
 
 
-def _as_datetime(value: Any) -> datetime:
-    """Parse the ISO-8601 timestamp Home Assistant puts on each point."""
+def _as_datetime(value: Any, default_tz: tzinfo) -> datetime:
+    """Parse a forecast timestamp, and guarantee it is timezone-aware.
+
+    Home Assistant's weather spec says forecast datetimes carry an offset, and
+    most integrations honour it. Some do not, and a naive timestamp compared
+    against an aware `utcnow()` raises `TypeError` — which is how this crashed
+    the whole evaluation loop the first time a forecast was configured, taking
+    every room down with it rather than only the forecast.
+
+    A naive value is therefore attached to the caller's timezone rather than
+    assumed to be UTC. A weather forecast without an offset is far more likely
+    to be local wall time, and guessing UTC would silently shift the whole day
+    by ten hours in Brisbane — worse than the crash, because nothing would
+    report it.
+
+    `default_tz` is required rather than defaulted. A silent default is how
+    this class of fault hides.
+    """
     if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value))
-    except (TypeError, ValueError) as err:
-        raise ForecastPayloadError(f"not a timestamp: {value!r}") from err
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError) as err:
+            raise ForecastPayloadError(f"not a timestamp: {value!r}") from err
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=default_tz)
+    return parsed
 
 
 def _as_float(value: Any) -> float | None:
@@ -123,7 +143,9 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def point_from_forecast(raw: dict[str, Any]) -> ForecastPoint:
+def point_from_forecast(
+    raw: dict[str, Any], default_tz: tzinfo = UTC
+) -> ForecastPoint:
     """Build one point from a Home Assistant `Forecast` dict.
 
     Field names follow `homeassistant.components.weather.Forecast` after unit
@@ -135,7 +157,7 @@ def point_from_forecast(raw: dict[str, Any]) -> ForecastPoint:
     if temperature is None:
         raise ForecastPayloadError("forecast point carries no temperature")
     return ForecastPoint(
-        at=_as_datetime(raw.get("datetime")),
+        at=_as_datetime(raw.get("datetime"), default_tz),
         temperature_c=temperature,
         humidity=_as_float(raw.get("humidity")),
         cloud_coverage=_as_float(raw.get("cloud_coverage")),
@@ -169,7 +191,10 @@ class WeatherTrajectory:
 
     @classmethod
     def from_response(
-        cls, response: dict[str, Any] | None, fetched_at: datetime
+        cls,
+        response: dict[str, Any] | None,
+        fetched_at: datetime,
+        default_tz: tzinfo = UTC,
     ) -> WeatherTrajectory:
         """Build from the `weather.get_forecasts` response.
 
@@ -199,7 +224,7 @@ class WeatherTrajectory:
         points: list[ForecastPoint] = []
         for raw in raw_list:
             if isinstance(raw, dict):
-                points.append(point_from_forecast(raw))
+                points.append(point_from_forecast(raw, default_tz))
         if not points:
             raise ForecastPayloadError("no usable points in the forecast list")
         return cls(tuple(points), fetched_at)

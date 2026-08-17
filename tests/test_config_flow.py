@@ -305,3 +305,45 @@ async def test_the_forecast_step_stores_only_the_weather_entity(
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["weather_entity_id"] is None
+
+
+async def test_a_naive_forecast_does_not_take_the_evaluation_loop_down(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The 0.8.0 crash, reproduced end to end.
+
+    A weather integration returning forecast timestamps without an offset
+    raised `TypeError` out of `peak_between`, through `_async_update_data`, and
+    took every room with it. The forecast is allowed to fail; the controller is
+    not.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, "weather_entity_id": "weather.home"},
+    )
+
+    naive = {
+        "weather.home": {
+            "forecast": [
+                {"datetime": f"2026-08-08T{h:02d}:00:00", "temperature": 24.0 + h}
+                for h in range(8, 20)
+            ]
+        }
+    }
+
+    async def _forecasts(call):
+        return naive
+
+    hass.services.async_register(
+        "weather", "get_forecasts", _forecasts, supports_response="only"
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.last_update_success
+    assert coordinator.trajectory is not None
+    for point in coordinator.trajectory.points:
+        assert point.at.tzinfo is not None
