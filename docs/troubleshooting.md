@@ -33,12 +33,29 @@ lockout reason if the room is deliberately inactive.
 The room has no sleep schedule configured. Without one the sleep band is dead
 config. Add a Schedule helper and select it as the room's sleep schedule.
 
-## Coast and precool never happen
+## Coast never happens
 
-Correct, currently. Both need modules that are not built — the thermal model
-and the demand forecast. The trace says
-`coast: thermal model has not converged for this room`. See
-[Known limitations](known-limitations.md).
+Both the thermal model and the demand forecast are built, so this is almost
+always convergence rather than a fault. The trace says
+`coast: thermal model has not converged for this room`, and it needs 20 samples
+per coefficient with the variance down before it will answer. Until then the
+band is simply held — the hysteresis fallback, working as intended.
+
+Coasting also stops the moment the tariff window does not permit it.
+
+## Precool never happens
+
+Three things must all be true, and the trace names which one failed:
+
+- the tariff declares `precool_opportunity` on the current interval — check
+  `sensor.active_constraints`
+- a weather entity is configured, under Configure → House configuration →
+  Weather forecast
+- the forecast peak over the next ten hours is at least 3 °C above the room
+
+Without a weather entity precool falls back to comparing current conditions,
+which at midday cannot see the afternoon coming. The trace says it is falling
+back rather than simply reporting no demand.
 
 ## Covers are never used
 

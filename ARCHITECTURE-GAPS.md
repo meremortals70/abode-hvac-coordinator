@@ -60,6 +60,20 @@ as a separate veto. Wind is damped to 30% before it is believed. See
 Wind chill was considered and rejected: the Bureau's apparent temperature
 already contains the wind term, and the JAG/TI index is undefined above 10 °C.
 
+**Settled by Jason:** apparent temperature is the correct basis for the
+free-cooling comparison.
+
+Proposal v0.3 §5's rule is that the outdoor figure is **never part of the
+internal computation** — not the comfort index, not the dry-bulb target solved
+from it, not the thermal model. That stands, and the code honours it: three
+call sites, being the free-cooling test, the diagnostic sensor, and the
+definition.
+
+What §5 does not forbid is the comparison itself, and one is required — whether
+to open the windows. That question is how a room will feel with outdoor air in
+it against how it feels now, and it cannot be answered otherwise. The dew point
+remains a separate veto.
+
 ### 5. Deadline-aware preconditioning — CLOSED in 0.6.0
 
 Built in `scheduling.py`. The thermal model already answered how long a pull

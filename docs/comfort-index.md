@@ -82,9 +82,31 @@ feels against its `hci`, `hci_air_only` and `radiant_fraction`.
 **It is not a temperature.** It is reported in HCI, not °C. 25 HCI is not 25 °C.
 At 50% humidity, 25 HCI is about 24 °C dry bulb; at 80% it is about 21.5 °C.
 
-**It is not the BoM outdoor apparent temperature.** That figure carries a wind
-term and is a different quantity. It is an input to the demand forecast. It must
-never be compared with the indoor index.
+**It is not the BoM outdoor apparent temperature, and the outdoor figure never
+enters this computation.** The comfort index is built from indoor temperature
+and indoor relative humidity, plus the radiant, still-air and heat-load
+corrections. Nothing outdoors is an input to it, and nothing outdoors is an
+input to the dry-bulb target solved from it or to the thermal model.
+
+That rule is about the *internal computation*. It does not forbid comparing the
+two, and one comparison is required: whether opening the windows would help.
+That question is precisely "how will this room feel with outdoor air in it
+against how it feels now", and it cannot be answered any other way.
+
+The comparison is legitimate because the two are one formula:
+
+```
+indoor  HCI = Ta + 0.33e            - 4.00   + corrections
+outdoor AT  = Ta + 0.33e - 0.70·ws  - 4.00
+```
+
+The index is the Bureau's expression with the wind term dropped, because
+indoors wind is zero. Restoring it gives the same quantity under different
+conditions rather than a different quantity sharing a unit. A test asserts the
+two stay identical at zero wind; if that ever drifts, the comparison has
+silently stopped meaning anything.
+
+So: never an input, once a comparison. See [Free cooling](free-cooling.md).
 
 ## The scale
 

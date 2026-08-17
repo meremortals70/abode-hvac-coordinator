@@ -11,7 +11,13 @@ how the room feels. A 26 °C breeze beats a still 26 °C room and dry bulb canno
 see the difference.
 
 So the comparison is **outdoor apparent temperature against the room's comfort
-index** — the same Steadman formula evaluated under two conditions:
+index** — the same Steadman formula evaluated under two conditions.
+
+This is the **only** place the outdoor figure meets the indoor one. It is a
+comparison, not an input: outdoor apparent temperature is never part of the
+comfort index, never part of the dry-bulb target solved from it, and never part
+of the thermal model. Three call sites in the whole component — this test, the
+diagnostic sensor, and the definition itself.
 
 | | Formula |
 |---|---|

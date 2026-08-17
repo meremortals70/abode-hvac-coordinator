@@ -64,8 +64,9 @@ process noise eventually stops learning.
 | Consumer | What it asks |
 |---|---|
 | `COAST` | Does the band hold unaided over the next hour? |
-| `PRECOOL` | Is the room forecast to warm later? |
-| Heading home | How long to reach comfort? |
+| `PRECOOL` | How far to overshoot. Whether a load is coming is the weather forecast's answer, not the model's |
+| Heading home | How long to reach comfort, and therefore when to start |
+| Dry against cool | Which closes the comfort gap faster, from `k_sensible` and `k_latent` |
 | Demand forecast | How much energy over the horizon? |
 
 ## Seeing its state

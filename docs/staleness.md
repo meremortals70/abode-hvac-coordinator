@@ -32,7 +32,7 @@ a setting would mean asking a question nobody can answer.
 
 | Feed | Tolerance | Why |
 |---|---|---|
-| Indoor temperature, humidity, illuminance | 2 hours | most report on change with a heartbeat well inside an hour |
+| Indoor temperature and humidity | 2 hours | most report on change with a heartbeat well inside an hour |
 | Outdoor temperature and humidity | 3 hours | often a weather integration on a fifteen- or thirty-minute poll; has to clear a couple of misses |
 | Presence | 6 hours | an mmWave sensor in a room nobody enters legitimately says nothing for a long time |
 | Openings and covers | 26 hours | contact sensors are quiet by nature but heartbeat daily |

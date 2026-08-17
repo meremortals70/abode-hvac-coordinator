@@ -92,7 +92,7 @@ vendor concepts.** See [Demand forecast](demand-forecast.md).
 
 ## The coordinator device
 
-Everything house-wide appears as a sensor on a single **HVAC Coordinator**
+Everything house-wide appears as a sensor on a single **Abode HVAC Coordinator**
 device, so a setting you entered once is visible without reopening the form
 that set it.
 

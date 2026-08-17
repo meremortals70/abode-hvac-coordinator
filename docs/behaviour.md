@@ -119,6 +119,11 @@ occupied mode rather than switching the air conditioning off, and the trace says
 comfort index without both, and the controller will not act on a guess. The
 comfort index entity goes unavailable rather than showing a stale number.
 
+**A sensor that stops reporting without going unavailable is treated the same
+way.** Home Assistant keeps the last state of a device that has silently left
+the network, so every reading carries an age and one past its tolerance is
+treated as absent rather than as a value. See [Stale feeds](staleness.md).
+
 Either way the log records the transition once, when it happens and when it
 recovers — not every 30 seconds.
 
@@ -139,6 +144,16 @@ trying the free option first is to not spend compressor energy alongside it. If
 the room is still out of band next cycle and the blind has no travel left, the
 compressor is reached properly.
 
+## Precool starts
+
+Not from the weather outside now, but from the hourly forecast. At 11:00 on the
+day of a 38 °C afternoon it is often 26 °C outside and 25 °C indoors, and
+comparing current conditions says there is no load coming — which left the free
+window unused on exactly the days it was worth the most.
+
+The test is instead the hottest hour in the next ten against the room right
+now. See [Forecast-driven precool](forecast-driven-precool.md).
+
 ## Precool ends
 
 Precool drives to the **lower** bound of the band, then stops. It does not keep
@@ -152,9 +167,10 @@ permitted it is gone.
 
 Nothing arbitrates. Each room is evaluated independently against its own band.
 
-For rooms on separate outdoor units that is correct. For two rooms sharing one
-compressor it is a real gap — see
-[Known limitations](known-limitations.md).
+For rooms on separate outdoor units that is correct. For two heads sharing one
+compressor it is unhandled, and settled as not applicable here: the rooms
+concerned both face west, will be hot at the same time, and rarely run
+together. See [Known limitations](known-limitations.md).
 
 ## Falling asleep
 

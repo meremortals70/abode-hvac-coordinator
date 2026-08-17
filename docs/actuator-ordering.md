@@ -56,8 +56,10 @@ Skipped when:
   extreme), which is what lets the ordering escalate
 
 **The gate is sun geometry, not light level.** A semi-transparent blind reads
-bright when it is fully closed, so illuminance would report nothing to block at
-exactly the moment the blind is already blocking.
+bright when it is fully closed, so a light sensor would report nothing to block
+at exactly the moment the blind is already blocking. The controller took an
+illuminance reading until 0.8.0 and acted on it nowhere; the field was removed
+rather than left looking like an input.
 
 The controller works this out itself, from the sun position Home Assistant
 already publishes and the direction you told it the room's windows face. **No
@@ -82,7 +84,14 @@ room actually was.
 ## 3. Dry
 
 A latent-dominated load costs far less to shift with dry mode on a low fan than
-with cooling. Selected when indoor humidity is at or above 65%.
+with cooling.
+
+Which route is faster is answered from the two rates the thermal model has
+learned for this room, not from a humidity number. Both are converted into
+comfort index closed per hour and compared directly; cooling has to be 25%
+faster to be chosen, because dry mode gets the same effect at lower duty. While
+either rate is unconverged a 65% humidity threshold applies and the trace says
+it is falling back. See [Drying against cooling](latent-and-sensible.md).
 
 **Heating skips dry entirely.** Dry mode does not add heat.
 
@@ -101,9 +110,12 @@ the only cheaper step, so heating goes covers → compressor.
 | Compressor | `cool` or `heat`, plus the setpoint, a mixing fan mode and a mixing swing mode |
 | Nothing, in lockout or unoccupied | `climate.set_hvac_mode` to `off` |
 
-Setpoints go through the standard `climate.set_temperature`. Versatile
-Thermostat has no service of its own for it, so this works identically against
-a Versatile Thermostat wrapper or a bare manufacturer entity.
+Setpoints go through the standard `climate.set_temperature`, so this works
+identically against a bare manufacturer entity or any wrapper over one.
+
+The setpoint sent is not the solved target: Layer 2 trims it until the room
+sensor reaches the target, because the unit regulates against its own
+return-air thermistor. See [Regulation](regulation.md).
 
 **Choosing covers turns the climate entity off** for that cycle. Trying the
 free option first means not spending compressor energy alongside it. If the
@@ -152,12 +164,14 @@ An unchanged decision is not re-sent.
 |---|---|---|
 | Fan margin | 0.5 HCI | Fixed internal |
 | Cover travel margin | 5% | Fixed internal |
-| Dry mode humidity | 65% | **Placeholder** |
+| Dry-mode advantage | 25% | Fixed internal |
+| Dry mode humidity | 65% | Fallback only, until the model converges |
 
 These are not settings and will not become settings. Exposing tuning parameters
 is how configuration becomes unusable.
 
-The one marked placeholder is a stand-in for the thermal model: a single
-humidity threshold cannot distinguish a latent load from a sensible one. 65% at
-22 °C and 65% at 30 °C are different loads. The model learns the sensible and
-latent terms separately, and that split will make this decision properly.
+The humidity threshold was the primary test until 0.8.0 and was wrong: it
+cannot distinguish a latent load from a sensible one, because 65% at 22 °C and
+65% at 30 °C are different loads. The model learns the sensible and latent
+terms separately and that split now makes the decision. The threshold survives
+only as the fallback while a room's rates are still converging.

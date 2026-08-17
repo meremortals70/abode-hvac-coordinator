@@ -51,9 +51,18 @@ The -4.00 constant is kept so the scale matches the convention the BoM feed
 already uses. It is a constant offset: it shifts every HCI number by the same
 amount and changes no decision. The band defaults are set against this scale.
 
-DO NOT COMPARE HCI TO THE BoM OUTDOOR APPARENT TEMPERATURE.
-The outdoor figure carries a wind term and is a different quantity.
-Architecture proposal v0.3, section 5.
+THE OUTDOOR APPARENT TEMPERATURE IS NEVER AN INPUT TO THIS COMPUTATION.
+Not to the index, not to the dry-bulb target solved from it, not to the thermal
+model. The index is built from indoor temperature and indoor relative humidity
+and nothing else. Architecture proposal v0.3, section 5.
+
+It is *compared* against the index in exactly one place — the free-cooling test
+in `psychro.py`, which has to answer how a room will feel with outdoor air in
+it. That is legitimate because `apparent_temperature()` below is this same
+expression with the wind term restored, so the two are one quantity under two
+conditions. A test asserts they stay identical at zero wind.
+
+Never an input. Once a comparison.
 """
 
 from __future__ import annotations

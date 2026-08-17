@@ -8,7 +8,7 @@ already in Home Assistant's state machine.
 Every room is re-evaluated when:
 
 1. **Any entity a room reads changes state** — its temperature, humidity,
-   presence, illuminance, sleep schedule, or any of its openings
+   presence, sleep schedule, or any of its openings
 2. **Every 30 seconds**, as a backstop
 3. **An action is called** — heading home or clear override refresh immediately
 4. **The configuration changes**, which reloads the integration

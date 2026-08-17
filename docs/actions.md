@@ -33,9 +33,16 @@ The action takes **no target**. There is one comfort definition per room and it
 is the band. Preconditioning drives to the middle of the occupied band; a room
 with no occupied band configured is left alone and the trace says so.
 
-The deadline is recorded but not yet acted on. Working out when to start in
-order to arrive on time is the thermal model's job, and the model is not built.
-Without it, preconditioning starts immediately.
+The deadline is acted on. The thermal model estimates how long the pull takes,
+adds a fifteen-minute margin, and the room waits until then rather than starting
+the moment the request arrives — so a deadline four hours out costs nothing
+until it is close. The room is in `PRECONDITION` the whole time and the trace
+says how long it is waiting.
+
+Three cases start immediately regardless: no deadline given, a deadline inside
+thirty minutes, or a thermal model that has not converged enough to estimate.
+The last is the important one — an early start wastes energy, a late one
+defeats the request.
 
 Raises an error naming the room if no such room is configured.
 

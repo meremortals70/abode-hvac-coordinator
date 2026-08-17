@@ -5,9 +5,10 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.5.3 — not yet proven
-> Everything described here is built and unit tested. None of it has run for
-> long against real hardware. Treat your first week as a test and read
+> ### Status: v0.8.1 — alpha, not proven
+> The architecture is built and 284 tests pass. **Nothing since v0.5.3 has been
+> confirmed working on real hardware**, and two releases shipped with faults
+> that only appeared on first install. Treat your first week as a test and read
 > [Known limitations](docs/known-limitations.md) before you rely on it.
 
 ---
@@ -57,11 +58,22 @@ integration afterwards.
 |---|---|
 | Mode | What the room is doing, and the full reasoning in its attributes |
 | Comfort index | How the room actually feels, in HCI |
-| Target dry bulb | What the air conditioner is being asked for |
+| Target dry bulb | What the comfort index solved for |
+| Commanded setpoint | What was actually sent, and how far the outer loop moved it |
+| Dew point | Indoor dew point, free-cooling advice and condensation risk |
 
-Plus one for the whole house: **Demand forecast** — how much energy the air
-conditioning expects to want over the next eight hours, for your battery
-automations to read.
+And for the whole house:
+
+| Entity | Shows |
+|---|---|
+| Demand forecast | Projected HVAC energy over eight hours, for your battery automations |
+| Tariff rate | The rate in force, and the periods ahead |
+| Active constraints | Which tariff rules apply right now |
+| Projected cost | The forecast energy priced per period |
+| Outdoor temperature, apparent temperature, dew point | The outdoor picture |
+| Forecast peak | The hottest hour ahead, and when |
+| Stale feeds | Sensors reporting values too old to act on |
+| Rooms configured | How many, and which |
 
 ---
 

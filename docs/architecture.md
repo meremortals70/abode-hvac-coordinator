@@ -325,7 +325,7 @@ against the pure test suite only. See [Known limitations](known-limitations.md).
 | Preconditioning | Started immediately | Starts when the model says the pull needs to start |
 | Sleep transition | Stepped | Ramped over an hour |
 | Domain | `hvac_coordinator` | `abode_hvac_coordinator` |
-| Feels-like | Not computed | Outdoor apparent temperature, Bureau formula with wind |
+| Feels-like | Not computed | Outdoor apparent temperature, Bureau formula with wind, compared against the indoor index |
 | Precool demand | Current outdoor vs indoor | Hourly forecast peak over ten hours |
 | Dry vs cool | One humidity threshold | Learned rates converted to index per hour |
 | Illuminance | Recorded, unused | Removed |

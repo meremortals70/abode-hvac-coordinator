@@ -22,14 +22,14 @@ list.
 3. Choose **Custom repositories**
 4. In **Repository**, paste:
    ```
-   https://github.com/meremortals70/hvac-coordinator
+   https://github.com/meremortals70/abode-hvac-coordinator
    ```
 5. In **Type**, choose **Integration**
 6. Click **Add**, then close the dialog
 
 HACS now watches this repository. To install what it found:
 
-7. Back on the HACS page, search for **HVAC Coordinator**
+7. Back on the HACS page, search for **Abode HVAC Coordinator**
 8. Click it, then **Download**
 9. Accept the version it offers
 10. **Restart Home Assistant** — Settings → System → top right → Restart
@@ -53,7 +53,7 @@ newer version and HACS is not offering it, open the repository in HACS and use
 ## Set up
 
 1. **Settings → Devices & Services → Add Integration**
-2. Search for **HVAC Coordinator** and select it
+2. Search for **Abode HVAC Coordinator** and select it
 3. Describe your first room and its entities
 4. Set its comfort bands
 
@@ -64,7 +64,7 @@ configured". Rooms live inside the single entry.
 
 ## Add, edit or remove a room
 
-**Settings → Devices & Services → HVAC Coordinator → Configure**
+**Settings → Devices & Services → Abode HVAC Coordinator → Configure**
 
 A menu offers add, edit and remove. Editing prefills the room's current
 settings. Removing a room takes its device and entities with it.
@@ -80,7 +80,6 @@ Adding and editing are the same two steps. First the room and its entities:
 | Presence sensor | No | Without it, presence reads unknown and the room holds occupied |
 | Sleep schedule | No | Without it, the sleep band is never used |
 | Sun on this room's windows | No | Without it, falls back to sun above horizon |
-| Illuminance sensor | No | Recorded, not acted on |
 | Windows and doors | No | Any one open suspends the room |
 | Blinds | No | Without any, covers are never used |
 | Lockout | No | Leave on "Not locked out". Choosing any reason means the room is never actuated |
@@ -90,24 +89,31 @@ occupied 24–27, sleep 21–24 — and are meant to be adjusted. Clear both box
 a mode you do not want: an office with no sleeping hours should clear the sleep
 pair. See [Comfort index](comfort-index.md) for what the numbers mean.
 
+**House-wide settings live under Configure → House configuration**, separately
+from any room: which Abode Power Tariffs entry to read, the outdoor
+temperature, humidity and wind feeds, and a weather entity for the forecast.
+Each screen states what is lost if you leave it empty.
+
 Repeat Configure for each room. Adding a room with a name that slugs to an
 existing room id replaces that room.
 
 ## Verify it is working
 
-Each room becomes a **device** with three entities under it. Check
-**Settings → Devices & Services → HVAC Coordinator → devices**:
+Each room becomes a **device** with its own entities. Check
+**Settings → Devices & Services → Abode HVAC Coordinator → devices**:
 
 - `sensor.<room>_mode` — should show a mode, not `unknown`
 - `sensor.<room>_comfort_index` — should show a number
 - `sensor.<room>_target_dry_bulb` — should show a temperature
+- `sensor.<room>_commanded_setpoint` — what was actually sent, which will differ
+  from the target once the outer loop has learned your unit's offset
 
 Open the mode sensor's attributes. The `reasons` and `rejected` lists explain
 the current decision. If they do not make sense, that is a bug worth reporting.
 
 ## Remove
 
-**Settings → Devices & Services → HVAC Coordinator → three-dot menu → Delete**
+**Settings → Devices & Services → Abode HVAC Coordinator → three-dot menu → Delete**
 
 This removes the config entry, every room device, every entity, and the stored
 thermal model state. Nothing is left behind in `.storage`.

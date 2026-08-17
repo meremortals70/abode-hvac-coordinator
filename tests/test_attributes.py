@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 SRC = Path(__file__).resolve().parents[1] / "custom_components" / "abode_hvac_coordinator"
 
@@ -186,3 +187,60 @@ class TestPureModulesStayPure(unittest.TestCase):
             set(),
             "a module exists that is neither declared pure nor declared impure",
         )
+
+
+class TestOutdoorApparentTemperatureIsNeverAnInput(unittest.TestCase):
+    """Proposal v0.3 §5: never part of the internal computation.
+
+    The outdoor figure carries a wind term and describes conditions outside the
+    building. It has no business in the comfort index, in the dry-bulb target
+    solved from it, or in the thermal model — all three describe the room.
+
+    It is *compared* against the index in one place, the free-cooling test,
+    which has to answer how the room will feel with outdoor air in it. That is
+    a comparison, not an input, and the distinction is the whole rule.
+
+    This test exists because the difference is easy to erode: someone reaches
+    for `apparent_temperature` in a fourth place, it looks reasonable, and the
+    rule is gone with nothing reporting it.
+    """
+
+    #: Where it is legitimately allowed to appear, and why. Adding to this set
+    #: should feel like a decision, because it is one.
+    PERMITTED: ClassVar[dict[str, str]] = {
+        "hci.py": "its definition",
+        "psychro.py": "the free-cooling comparison — the one permitted use",
+        "coordinator.py": "reads the outdoor feeds and computes the figure",
+        "sensor.py": "publishes it as a diagnostic entity, does not decide on it",
+    }
+
+    def test_only_the_permitted_modules_reference_it(self):
+        found = {
+            path.name
+            for path in SRC.glob("*.py")
+            if "apparent_temperature" in path.read_text()
+        }
+        self.assertEqual(
+            found - set(self.PERMITTED),
+            set(),
+            "outdoor apparent temperature reached a module that must not use it",
+        )
+
+    def test_the_comfort_index_does_not_call_it(self):
+        """`comfort_index` and the inverse solve must not touch the outdoor figure."""
+        tree = ast.parse((SRC / "hci.py").read_text())
+        for name in ("comfort_index", "dry_bulb_for_index"):
+            fn = next(
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == name
+            )
+            called = {
+                n.func.id
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            }
+            self.assertNotIn("apparent_temperature", called, f"{name} calls it")
+
+    def test_the_thermal_model_does_not_reference_it(self):
+        self.assertNotIn("apparent_temperature", (SRC / "thermal.py").read_text())

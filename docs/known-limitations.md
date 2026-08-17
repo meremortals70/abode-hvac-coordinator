@@ -3,22 +3,23 @@
 Written plainly, because a limitation you discover yourself is worse than one
 you were told about.
 
-## Nothing has been run
+## Nothing has been proven on real hardware
 
-**v0.4.0 has never been installed in Home Assistant, never loaded, and never
-actuated anything.** The decision logic is unit tested — 128 tests over the pure
-modules — but the Home Assistant surface has not been exercised. Treat the first
-install as a test.
+**No release from 0.6.0 onward has been confirmed working in Jason's house.**
+284 tests pass, `mypy --strict` is clean across all 23 modules with Home
+Assistant installed, and the integration loads and unloads cleanly in the test
+harness. None of that tells you a compressor did the right thing.
 
-## Actuation is wired but unproven
+0.6.0 crashed on setup. 0.8.0 crashed the evaluation loop the first time a
+weather forecast was configured. Both are fixed and both had tests written
+against them afterwards, which is the wrong order.
 
-The controller now carries out its decisions: it sets the climate entity's HVAC
-mode, temperature and fan mode, and moves covers.
+Treat the first week as a test and read this page before relying on it.
 
-**It has never done this against a real unit.** Every service call was written
-against the service definitions read from source — Home Assistant's own climate
-and cover components — but reading a schema is not the same as watching a
-compressor start.
+## Actuation is unproven against a real unit
+
+Every service call was written against the service definitions read from
+source. Reading a schema is not the same as watching a compressor start.
 
 Two things reduce the blast radius, and neither removes it:
 
@@ -27,37 +28,24 @@ Two things reduce the blast radius, and neither removes it:
 - Unchanged decisions are not re-sent, so a stable room is not commanded every
   30 seconds.
 
-Watch the first day. A room in lockout should command nothing at all, which is
-the cheapest way to confirm the gate works before trusting the rest.
+A room in lockout should command nothing at all. That is the cheapest way to
+confirm the gate works before trusting the rest.
 
-## Two modes cannot be entered
+## Covers are written directly, not through Adaptive Cover Pro
 
-| Mode | Waiting on |
-|---|---|
-| `COAST` | The thermal model. `predicted_to_hold` is always unknown |
-| `PRECOOL` | The demand forecast. `forecast_demand_ahead` is always false |
+The architecture delegates cover control to Adaptive Cover Pro and has Layer 3
+set intent only. The component instead calls `cover.set_cover_position`
+itself, and Adaptive Cover Pro appears nowhere in it.
 
-## There is no demand forecast
+If you run Adaptive Cover Pro on the same covers, both write to them. Nothing
+will error; the blinds will simply behave oddly. Either take those covers out
+of Adaptive Cover Pro's scope, or leave them out of this controller's room
+configuration — not both.
 
-The vendor-neutral projected-energy sensor described in the architecture is not
-built, so nothing downstream can read what this controller expects to draw.
+## Seeded comfort bands may not match your specification
 
-Both are implemented and tested. They are waiting on inputs.
-
-## The deadline on heading home is recorded, not acted on
-
-The model can now answer how long a room takes to reach comfort, but
-preconditioning still starts immediately rather than working backwards from the
-deadline. The arithmetic exists; the scheduling around it does not.
-
-## Two thresholds are placeholders
-
-The dry-mode humidity threshold and the solar gain lux threshold are stand-ins
-for decisions the thermal model should make.
-
-The lux threshold is the weaker of the two, and it **will be wrong in rooms
-whose illuminance sensor is not near the window** — what a sensor reads depends
-entirely on where it sits. Detail in [Actuator ordering](actuator-ordering.md).
+Rooms are seeded occupied 24–27 HCI and sleep 21–24. Change them in the UI if
+you want different numbers; they are starting values, not a recommendation.
 
 ## Wind penetration is a stated assumption, not a measurement
 
@@ -149,8 +137,10 @@ Deliberate, and not changing. See [Architecture](architecture.md).
 ## Multi-head units
 
 No arbitration between heads sharing a compressor. Each room is evaluated
-independently. In a climate where rooms on a shared compressor will not want
-opposing modes this is harmless; elsewhere it is a real gap.
+independently.
+
+Settled as not applicable here: the rooms concerned both face west, will be hot
+at the same time, and rarely run together. Recorded rather than left open.
 
 ## Single instance
 

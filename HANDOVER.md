@@ -1,6 +1,6 @@
 # Handover
 
-**Version 0.8.0. The architecture is complete.**
+**Version 0.8.2. The architecture is complete.**
 
 Every gap identified against the v0.3 proposal at v0.5.3 is closed. See
 `ARCHITECTURE-GAPS.md` for the ledger, including the one closed as not
@@ -29,6 +29,8 @@ Abode Power Tariffs, and an hourly weather forecast.
 | 0.6.1 | Fixed a crash on setup, an impossible sensor device class, and two config-flow tests that had never been run |
 | 0.7.0 | Free cooling rebuilt on apparent temperature rather than dry bulb, with the dew point kept as a veto. Optional wind feed with unit conversion |
 | 0.8.0 | Forecast-driven precool. Learned latent/sensible actuator choice. Illuminance removed |
+| 0.8.1 | Fixed a crash on the first forecast: naive timestamps against an aware clock. Same fault fixed latent in the tariff. Tariff windows converted to local wall time |
+| 0.8.2 | Documentation corrected against the code — 18 files. The §5 rule stated precisely and enforced by a test |
 
 ## Installing
 
@@ -47,8 +49,8 @@ screen in terms of what is lost without it rather than left blank.
 |---|---|
 | `ruff check custom_components tests` | clean |
 | `mypy --strict`, all 23 modules, Home Assistant installed | clean |
-| Pure test suite | 261 passing |
-| Home Assistant side tests | 16 passing |
+| Pure test suite | 269 passing |
+| Home Assistant side tests | 18 passing |
 | Home Assistant log during those tests | no warnings, no errors |
 | Purity of the fifteen pure modules | enforced by parsing imports |
 | Step / string / placeholder / entity / icon cross-checks | clean |

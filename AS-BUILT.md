@@ -1,6 +1,6 @@
 # As built
 
-**Version 0.8.0.** What exists, module by module. Not a design document — see
+**Version 0.8.2.** What exists, module by module. Not a design document — see
 `docs/architecture.md` for why any of it is shaped this way.
 
 ## Pure modules — fifteen, no Home Assistant imports
@@ -62,7 +62,7 @@ read; the weather forecast could not be read.
 
 ## Tests
 
-259 in the pure suite and 16 against a real Home Assistant, all passing, run with `python3 -m unittest discover -s
+269 in the pure suite and 18 against a real Home Assistant, all passing, run with `python3 -m unittest discover -s
 tests`. The Home Assistant side tests require
 `pytest-homeassistant-custom-component` and have not been run here.
 
