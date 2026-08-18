@@ -1,56 +1,35 @@
 # Attribution
 
-Recorded at the moment code was written or adapted, not retrofitted.
+Abode Power Tariffs is original work. The architecture, the domain model and the
+design decisions behind it are the author's own, written to solve a problem
+Home Assistant had no clean answer for: a single, canonical source of truth for
+a household's electricity tariff plan.
 
-## Original work
+No code, wording, plan data or tariff structure has been taken from another
+project.
 
-All code in `custom_components/hvac_coordinator/` is original to this project
-and released under Apache 2.0.
+Licensed under the Apache License 2.0. See `LICENSE`.
 
-## Referenced, not copied
+## Dependencies
 
-**Home Assistant core** — Apache 2.0
-Read `homeassistant/helpers/storage.py`, `homeassistant/helpers/event.py`,
-`homeassistant/config_entries.py`, `homeassistant/helpers/device_registry.py`
-and `homeassistant/exceptions.py` on the `dev` branch to verify API signatures
-rather than relying on documentation. No source copied.
+None. The integration has no third-party runtime requirements. Development
+needs only ruff, mypy, voluptuous and coverage, pinned in
+`requirements_test.txt`.
 
-**Home Assistant developer documentation** — the integration quality scale rule
-set in `custom_components/hvac_coordinator/quality_scale.yaml` follows the rule
-identifiers published in
-`docs/core/integration-quality-scale/_includes/tiers.json`. The status and
-comment against each rule are this project's own assessment.
+## Interoperability
 
-## Prior art this project learns from
+Two published shapes are matched deliberately, so that consumers already written
+against them work here without being rewritten. Neither project is affiliated
+with this one and no code from either is used.
 
-Named because the design is a reaction to them, not because code was taken.
+- The forward series on the price sensors uses the `{start, end, value}` shape
+  that [evcc](https://evcc.io/) reads from a Home Assistant sensor attribute.
+- The `get_intervals` response uses the field names of Home Assistant's Amber
+  Electric integration.
 
-**Dual Smart Thermostat** — the configuration discipline in this project exists
-because of it. Its options list is individually defensible and collectively
-unusable. It also drives toggle entities rather than climate entities, which is
-what made it unsuitable here.
+## Home Assistant
 
-**Versatile Thermostat** — the regulation layer this design assumes at Layer 2.
-Its centralised load shedding is deliberately not used: energy decisions depend
-on tariff state and stored energy, which a regulator has no view of.
-
-**RoomMind** — the thermal model approach. Per-room state estimation with an
-extended Kalman filter, solar gain from sun position, a convergence criterion,
-and hysteresis fallback until converged. The latent term is this project's
-addition; models built for heating climates do not need one.
-
-**Adaptive Cover Pro** — read for how cover automations reason about sun
-geometry. This project **replaces** it rather than depending on it: cover
-decisions, sun-on-glass and the commands themselves are all its own. No code
-was taken.
-
-## Science
-
-**Steadman apparent temperature** — the comfort index. R.G. Steadman's shaded
-apparent temperature formulation, evaluated at zero wind speed for indoor use.
-
-**ASHRAE Standard 55** — the comfort band table is derived from its sedentary,
-still-air comfort zone, converted onto the apparent temperature scale.
-
-Neither is code and neither is copied; both are cited so the numbers can be
-checked against their source.
+Built as a custom integration for [Home Assistant](https://www.home-assistant.io/),
+against its public integration APIs, and tracked against its integration quality
+scale in `custom_components/abode_power_tariffs/quality_scale.yaml`. Not
+affiliated with or endorsed by the Home Assistant project or Nabu Casa.

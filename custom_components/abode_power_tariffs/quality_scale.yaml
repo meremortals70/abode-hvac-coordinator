@@ -1,0 +1,157 @@
+though: >
+  A custom integration cannot be graded by Home Assistant; Custom is its own
+  tier. This file tracks the 54 scaled rules anyway, because the rules are the
+  standard whether or not anyone is marking the work.
+rules:
+  # ---------------------------------------------------------------- bronze
+  action-setup: done
+  appropriate-polling:
+    status: exempt
+    comment: >
+      Nothing is polled. The next window boundary is scheduled with
+      async_track_point_in_time and the schedule is recomputed on firing.
+  brands:
+    status: todo
+    comment: >
+      brand/ is present in the repository. The HACS store listing will show no
+      icon regardless, because HACS fetches from its own CDN and does not fall
+      back to the local brands API.
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage:
+    status: done
+    comment: >
+      The setup flow is driven end to end against thin Home Assistant stubs in
+      tests/test_config_flow.py: every screen, both timetable passes, both
+      feed-in modes, the loop escapes, the validation refusals, and the
+      traceback screen. The options flow is covered in tests/test_runtime.py:
+      every menu entry, add, edit, remove and duplicate, and the branches for
+      an empty plan.
+  dependency-transparency:
+    status: done
+    comment: No third-party requirements at all.
+  docs-actions: done
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: >
+      No custom triggers. The constraint binary sensors are the trigger
+      surface and are ordinary state triggers.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: >
+      There is nothing to connect to. The plan is validated instead, and an
+      invalid plan cannot be saved.
+  test-before-setup:
+    status: done
+    comment: >
+      ConfigEntryNotReady is raised when the stored plan cannot be read; an
+      invalid but readable plan raises a repair issue and still sets up.
+  unique-config-entry:
+    status: done
+    comment: The channel name is the unique id.
+
+  # ---------------------------------------------------------------- silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable:
+    status: done
+    comment: >
+      Entities are unavailable when no window resolves. An expired plan stays
+      available deliberately, because removing the price entity would stop
+      Energy dashboard cost tracking silently.
+  integration-owner: done
+  log-when-unavailable:
+    status: done
+    comment: >
+      The holiday and import energy sensors log once on going unavailable and
+      once on returning, not on every update.
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: There is no authentication.
+  test-coverage:
+    status: todo
+    comment: >
+      270 tests, 91% line and branch coverage measured with coverage.py against
+      thin Home Assistant stubs. Six modules are at 100%; the lowest are
+      config_flow.py and coordinator.py. The rule asks for 95% per module under
+      pytest-homeassistant-custom-component, which is listed in
+      requirements_test.txt but is not what these run against, so this is
+      recorded as measured rather than claimed. Core submission will need the
+      suite rewritten against the real harness.
+
+  # ------------------------------------------------------------------ gold
+  devices: done
+  diagnostics: done
+  discovery:
+    status: exempt
+    comment: A tariff plan cannot be discovered.
+  discovery-update-info:
+    status: exempt
+    comment: Nothing is discovered.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices:
+    status: exempt
+    comment: No devices.
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: One service device per channel; nothing appears at runtime.
+  entity-category:
+    status: exempt
+    comment: >
+      Every entity is primary. Prices, the rate and the constraints are the
+      point of the integration, not diagnostics about it.
+  entity-device-class:
+    status: done
+    comment: >
+      Enum, timestamp, monetary and energy where they apply. The price sensors
+      deliberately carry no device class: there is none for a unit price, and
+      the Energy dashboard matches on the unit.
+  entity-disabled-by-default:
+    status: exempt
+    comment: >
+      Nothing is noisy or rarely useful. The supply charge pair is created only
+      when asked for rather than created and disabled.
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow:
+    status: done
+    comment: The options flow edits everything; nothing is fixed at setup but the name.
+  repair-issues:
+    status: done
+    comment: An invalid stored plan raises one, naming every problem.
+  stale-devices:
+    status: exempt
+    comment: The device is the channel and is removed with the entry.
+
+  # -------------------------------------------------------------- platinum
+  async-dependency:
+    status: done
+    comment: No dependency at all; every code path is async or pure computation.
+  inject-websession:
+    status: exempt
+    comment: The integration makes no network requests.
+  strict-typing:
+    status: done
+    comment: >
+      mypy strict is clean on the seven pure modules. The Home Assistant
+      modules are fully annotated and are checked in an environment with Home
+      Assistant installed.

@@ -1,0 +1,25 @@
+get_intervals:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: abode_power_tariffs
+    hours:
+      required: false
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 168
+          unit_of_measurement: h
+          mode: box
+    resolution_minutes:
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: min
+          mode: box
