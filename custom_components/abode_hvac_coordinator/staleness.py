@@ -51,6 +51,12 @@ PRESENCE_TOLERANCE = timedelta(hours=6)
 #: opens for a week is normal — but they heartbeat daily.
 CONTACT_TOLERANCE = timedelta(hours=26)
 
+#: Battery charge, solar output and house load, for the power-aware
+#: compressor decision. These describe *right now*, re-checked every cycle
+#: rather than forecast, so the tolerance is tight: a battery reading from
+#: half an hour ago is not "the battery", it is a different number.
+POWER_TOLERANCE = timedelta(minutes=15)
+
 
 @dataclass(frozen=True, slots=True)
 class Freshness:

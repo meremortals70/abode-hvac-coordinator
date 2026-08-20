@@ -52,6 +52,26 @@ CONF_ANNOUNCE_TARGETS: Final = "announce_target_entity_ids"
 CONF_HEAT_LOAD_ENTITY: Final = "heat_load_entity_id"
 CONF_FAN_ENTITY: Final = "air_movement_entity_id"
 
+#: Per-room. Whether this integration is allowed to move this room's covers at
+#: all. True by default — every room configured before this option existed
+#: keeps its current behaviour unchanged. A room whose blinds are set for
+#: privacy or glare rather than solar gain can be excluded without also
+#: removing the cover entities from its configuration.
+CONF_ALLOW_COVER_CONTROL: Final = "allow_cover_control"
+
+# --- power-aware operation, read against the battery boundary in the
+# architecture doc: this integration never writes to a battery, it only
+# reads what it needs to decide whether it may keep running. House-level,
+# all optional, all off unless every one of them is configured. ------------
+
+CONF_BATTERY_SOC_ENTITY: Final = "battery_soc_entity_id"
+CONF_BATTERY_CAPACITY_KWH: Final = "battery_capacity_kwh"
+CONF_SOLAR_POWER_ENTITY: Final = "solar_power_entity_id"
+CONF_HOUSE_LOAD_ENTITY: Final = "house_load_entity_id"
+#: How much of the battery this decision may not touch. A policy figure the
+#: installer enters — not derived, not defaulted from the capacity.
+CONF_RESERVE_MARGIN_KWH: Final = "reserve_margin_kwh"
+
 # --- tariff, read from Abode Power Tariffs ------------------------------
 
 #: The domain that owns the plan. This integration reads from it and never

@@ -508,6 +508,62 @@ class TestUnrecognisedConstraints(unittest.TestCase):
         self.assertIn("run_the_pool_pump", series.unrecognised_constraints())
 
 
+class TestHoursUntilClear(unittest.TestCase):
+    """How long a room needs carrying on battery or solar before a constraint lifts."""
+
+    def _at(self, hour: int, minute: int = 0):
+        return datetime(
+            2026, 8, 8, hour, minute, tzinfo=timezone(timedelta(hours=10))
+        )
+
+    def test_zero_when_the_constraint_is_not_currently_in_force(self):
+        # off_peak, 00:00-12:00, carries neither constraint in the fixture.
+        series = TariffSeries.from_response(_response(), NOW, FIXTURE_TZ)
+        self.assertEqual(
+            series.hours_until_clear("no_grid_import", self._at(3)), 0.0
+        )
+
+    def test_counts_forward_to_the_interval_that_drops_the_constraint(self):
+        # The standard one-day fixture's peak runs right to the edge of the
+        # fetched series, so it can never demonstrate clearing — extend it
+        # with the next day's first off-peak slot, six hours after 18:00.
+        response = _response()
+        response["intervals"].append(
+            {
+                "start_time": "2026-08-09T00:00:00+10:00",
+                "end_time": "2026-08-09T00:30:00+10:00",
+                "duration": 30,
+                "per_kwh": 0.225,
+                "export_per_kwh": 0.05,
+                "rate": "off_peak",
+                "constraints": [],
+                "coasting_permitted": True,
+                "allowance_kwh": None,
+                "day_pattern": "Every day",
+                "forecast": False,
+            }
+        )
+        series = TariffSeries.from_response(response, NOW, FIXTURE_TZ)
+        self.assertAlmostEqual(
+            series.hours_until_clear("no_grid_import", self._at(18)), 6.0
+        )
+
+    def test_none_when_the_series_never_clears_within_its_horizon(self):
+        response = _response()
+        for interval in response["intervals"]:
+            interval["constraints"] = ["no_grid_import"]
+        series = TariffSeries.from_response(response, NOW, FIXTURE_TZ)
+        self.assertIsNone(
+            series.hours_until_clear("no_grid_import", self._at(18))
+        )
+
+    def test_a_constraint_never_declared_reads_as_already_clear(self):
+        series = TariffSeries.from_response(_response(), NOW, FIXTURE_TZ)
+        self.assertEqual(
+            series.hours_until_clear("grid_charge_battery", self._at(18)), 0.0
+        )
+
+
 class TestMalformedTariffPayloads(unittest.TestCase):
     """A bad payload must say why, not fail silently or take rooms down."""
 
@@ -1031,6 +1087,111 @@ class TestUnitCapabilities(unittest.TestCase):
         self.assertIs(trace.actuator, ActuatorStep.NONE)
 
 
+class TestCoverControlOverride(unittest.TestCase):
+    """A per-room tick that keeps semi-transparent blinds still, always."""
+
+    def _hot_room(self, **overrides):
+        inputs = {
+            "now": NOW,
+            "temperature_c": 33.0,
+            "relative_humidity": 35.0,
+            "presence": True,
+            "has_covers": True,
+            "direct_sun": True,
+            "cover_position": 100.0,
+        }
+        inputs.update(overrides)
+        return evaluate_room(room(), RoomInputs(**inputs))
+
+    def test_disabled_override_skips_covers_even_when_they_would_help(self):
+        trace = self._hot_room(allow_cover_control=False)
+        self.assertIsNot(trace.actuator, ActuatorStep.COVERS)
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertTrue(any("control disabled" in r for r in trace.rejected))
+
+    def test_default_is_enabled_and_unchanged(self):
+        """No override configured behaves exactly as before this field existed."""
+        trace = self._hot_room()
+        self.assertIs(trace.actuator, ActuatorStep.COVERS)
+
+    def test_override_disabled_on_a_room_with_no_covers_configured(self):
+        """The two rejections are distinct reasons, not the same one twice."""
+        trace = self._hot_room(has_covers=False, allow_cover_control=False)
+        self.assertIsNot(trace.actuator, ActuatorStep.COVERS)
+        self.assertTrue(any("none configured" in r for r in trace.rejected))
+        self.assertFalse(any("control disabled" in r for r in trace.rejected))
+
+
+class TestPowerAvailability(unittest.TestCase):
+    """The inline power-aware compressor gate inside select_actuator itself.
+
+    `power_available` arrives on RoomInputs already resolved by the
+    coordinator — these tests exercise only what select_actuator does with
+    it, not how the coordinator computes it.
+    """
+
+    def _hot(self, **overrides):
+        inputs = {
+            "now": NOW,
+            "temperature_c": 33.0,
+            "relative_humidity": 80.0,
+            "presence": True,
+            # Isolates the compressor step: without this, the latent load at
+            # 80% RH routes to dry mode before the power gate is reached.
+            "can_dry": False,
+        }
+        inputs.update(overrides)
+        return evaluate_room(room(), RoomInputs(**inputs))
+
+    def _cold(self, **overrides):
+        inputs = {
+            "now": NOW,
+            "temperature_c": 14.0,
+            "relative_humidity": 50.0,
+            "presence": True,
+        }
+        inputs.update(overrides)
+        return evaluate_room(room(), RoomInputs(**inputs))
+
+    def test_power_unavailable_blocks_cooling(self):
+        trace = self._hot(power_available=False)
+        self.assertEqual(trace.demand, "cool")
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertTrue(
+            any("no grid import permitted" in r for r in trace.rejected)
+        )
+
+    def test_power_unavailable_blocks_heating(self):
+        trace = self._cold(power_available=False)
+        self.assertEqual(trace.demand, "heat")
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertTrue(
+            any("no grid import permitted" in r for r in trace.rejected)
+        )
+
+    def test_default_is_available_and_unchanged(self):
+        """No power management configured behaves as before this field existed."""
+        trace = self._hot()
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_power_unavailable_does_not_block_covers_or_fan(self):
+        """The gate sits at the compressor step, not earlier in the ladder."""
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=33.0,
+                relative_humidity=35.0,
+                presence=True,
+                has_covers=True,
+                direct_sun=True,
+                cover_position=100.0,
+                power_available=False,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COVERS)
+
+
 _hci = importlib.import_module("hvac_core.hci")
 _thermal = importlib.import_module("hvac_core.thermal")
 _forecast = importlib.import_module("hvac_core.forecast")
@@ -1198,6 +1359,45 @@ class TestThermalPrediction(unittest.TestCase):
             32.0, 25.0, 38.0, direct_sun=False, hours=4.0, rated_kw=1.2
         )
         self.assertLess(easy, hard)
+
+    def test_a_direction_the_unit_cannot_do_contributes_nothing(self):
+        # 20 C indoor, 24 C target: this is a heating pull. A cooling-only
+        # unit will never be commanded to attempt it. Outdoor held equal to
+        # the target so the hold phase (a separate question) contributes
+        # nothing here and the pull phase is isolated.
+        model = self._converged()
+        cooling_only = model.energy_for(
+            20.0, 24.0, 24.0, direct_sun=False, hours=8.0, rated_kw=3.0,
+            can_heat=False, can_cool=True,
+        )
+        self.assertEqual(cooling_only, 0.0)
+
+    def test_a_capable_unit_is_unaffected_by_the_flags(self):
+        model = self._converged()
+        bidirectional = model.energy_for(
+            32.0, 25.0, 38.0, direct_sun=False, hours=4.0, rated_kw=1.2,
+            can_heat=True, can_cool=True,
+        )
+        default = model.energy_for(
+            32.0, 25.0, 38.0, direct_sun=False, hours=4.0, rated_kw=1.2
+        )
+        self.assertEqual(bidirectional, default)
+
+    def test_hold_phase_only_counts_a_correctable_drift_direction(self):
+        # Target 24, outdoor 18: the room drifts down toward 18 while holding
+        # at 24, so holding needs heating. A cooling-only unit contributes
+        # nothing to the hold phase; a bidirectional one does.
+        model = self._converged()
+        cooling_only = model.energy_for(
+            24.0, 24.0, 18.0, direct_sun=False, hours=8.0, rated_kw=3.0,
+            can_heat=False, can_cool=True,
+        )
+        bidirectional = model.energy_for(
+            24.0, 24.0, 18.0, direct_sun=False, hours=8.0, rated_kw=3.0,
+            can_heat=True, can_cool=True,
+        )
+        self.assertEqual(cooling_only, 0.0)
+        self.assertGreater(bidirectional, 0.0)
 
 
 class TestThermalPersistence(unittest.TestCase):

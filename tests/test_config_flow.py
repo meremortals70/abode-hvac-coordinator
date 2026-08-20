@@ -12,8 +12,14 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.abode_hvac_coordinator.const import (
+    CONF_ALLOW_COVER_CONTROL,
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITY,
+    CONF_HOUSE_LOAD_ENTITY,
+    CONF_RESERVE_MARGIN_KWH,
     CONF_ROOMS,
+    CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     DOMAIN,
 )
@@ -154,7 +160,7 @@ async def test_setup_stores_no_tariff_of_its_own(
 async def test_the_house_menu_offers_the_three_house_wide_settings(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """Tariff, outdoor feeds and forecast. The window editing steps are gone."""
+    """Tariff, outdoor feeds, forecast and power. The window editing steps are gone."""
     mock_config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -167,7 +173,7 @@ async def test_the_house_menu_offers_the_three_house_wide_settings(
         result["flow_id"], {"next_step_id": "global"}
     )
     assert result["type"] is FlowResultType.MENU
-    assert set(result["menu_options"]) == {"tariff", "outdoor", "forecast"}
+    assert set(result["menu_options"]) == {"tariff", "outdoor", "forecast", "power"}
 
 
 async def test_the_outdoor_step_collects_both_feeds(
@@ -309,6 +315,111 @@ async def test_the_forecast_step_stores_only_the_weather_entity(
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["weather_entity_id"] is None
+
+
+async def test_the_room_step_offers_the_cover_control_override(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """The tick that keeps a semi-transparent blind still, defaulted on."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert set(result["data_schema"].schema).issuperset(
+        {CONF_ALLOW_COVER_CONTROL}
+    )
+    default_field = next(
+        key
+        for key in result["data_schema"].schema
+        if str(key) == CONF_ALLOW_COVER_CONTROL
+    )
+    assert default_field.default() is True
+
+
+async def test_disabling_cover_control_is_stored_on_the_room(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """Ticking it off for one room reaches the stored RoomConfig."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "Office",
+            CONF_CLIMATE_ENTITY: "climate.office",
+            CONF_ALLOW_COVER_CONTROL: False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COVER_CONTROL] is False
+
+
+async def test_the_power_step_stores_all_five_fields(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Vendor-neutral entity pickers plus the two numeric settings."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "power"
+    fields = {str(key) for key in result["data_schema"].schema}
+    assert fields == {
+        CONF_BATTERY_SOC_ENTITY,
+        CONF_BATTERY_CAPACITY_KWH,
+        CONF_SOLAR_POWER_ENTITY,
+        CONF_HOUSE_LOAD_ENTITY,
+        CONF_RESERVE_MARGIN_KWH,
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+            CONF_BATTERY_CAPACITY_KWH: 13.5,
+            CONF_SOLAR_POWER_ENTITY: "sensor.solar_power",
+            CONF_HOUSE_LOAD_ENTITY: "sensor.house_load",
+            CONF_RESERVE_MARGIN_KWH: 2.0,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BATTERY_SOC_ENTITY] == "sensor.battery_soc"
+    assert result["data"][CONF_BATTERY_CAPACITY_KWH] == 13.5
+    assert result["data"][CONF_SOLAR_POWER_ENTITY] == "sensor.solar_power"
+    assert result["data"][CONF_HOUSE_LOAD_ENTITY] == "sensor.house_load"
+    assert result["data"][CONF_RESERVE_MARGIN_KWH] == 2.0
+
+
+async def test_the_power_step_leaves_the_feature_unconfigured_by_default(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Nothing submitted is nothing engaged — comfort alone still runs."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power"}
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BATTERY_SOC_ENTITY] is None
+    assert result["data"][CONF_RESERVE_MARGIN_KWH] is None
 
 
 async def test_a_naive_forecast_does_not_take_the_evaluation_loop_down(

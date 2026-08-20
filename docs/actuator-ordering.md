@@ -50,10 +50,19 @@ it when the room is too cold.
 Skipped when:
 
 - The room has no covers configured
+- Cover control is disabled for this room — see below
 - There is no way to tell whether the sun is on the room
 - The sun is not on the room — moving a blind at night achieves nothing
 - The covers are already where they need to be (within 5% of the useful
   extreme), which is what lets the ordering escalate
+
+**Cover control can be turned off per room**, independent of whether covers
+are configured. A semi-transparent blind kept for privacy or glare must not
+be moved just because it is capable of being moved — the room simply
+escalates straight past the covers step, exactly as if it had none
+configured, and the trace records the distinct reason
+`covers: control disabled for this room` rather than
+`covers: none configured for this room`.
 
 **The gate is sun geometry, not light level.** A semi-transparent blind reads
 bright when it is fully closed, so a light sensor would report nothing to block
@@ -99,6 +108,15 @@ it is falling back. See [Drying against cooling](latent-and-sensible.md).
 
 Reached only when everything above has been ruled out. For heating, covers are
 the only cheaper step, so heating goes covers → compressor.
+
+**Skipped when the room may not run it from the grid right now.** If power
+management is configured and the tariff's `no_grid_import` constraint is in
+force for this room's interval, the compressor step is refused unless solar
+or the battery can cover it — checked inline here, the same way `can_heat`
+and `can_cool` are checked, not as a separate step. See
+[Tariff](tariff.md#no_grid_import-what-it-actually-does). The trace records
+`compressor: no grid import permitted, and battery/solar cannot cover this
+room's projected need`.
 
 ## What is actually called
 

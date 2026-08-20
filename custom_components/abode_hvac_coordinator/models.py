@@ -99,6 +99,10 @@ class RoomConfig:
     overhang_height_m: float | None = None
     opening_entity_ids: tuple[str, ...] = ()
     cover_entity_ids: tuple[str, ...] = ()
+    #: Whether this integration may move this room's covers at all. True by
+    #: default. A room whose blinds are set for privacy or glare rather than
+    #: solar gain can be excluded without removing the cover entities.
+    allow_cover_control: bool = True
     #: How long presence must hold before starting, how long vacancy must
     #: hold before stopping, and whether to announce first. Seeded with
     #: defaults so a room works without touching them.
@@ -194,6 +198,19 @@ class RoomInputs:
     #: have somewhere to go: without this the selector picks covers every cycle
     #: on an already-shut room and never escalates.
     cover_position: float | None = None
+    #: Whether this room's covers are under this integration's direction at
+    #: all. Distinct from `has_covers`: a room can have covers configured
+    #: (for their position or for other automations) while telling this
+    #: integration not to move them.
+    allow_cover_control: bool = True
+    #: Whether the compressor may draw power right now. True unless the
+    #: tariff currently forbids grid import for this interval *and* the
+    #: house has battery/solar readings configured *and* neither covers this
+    #: room's projected need until the window lifts or solar catches up.
+    #: True (unaffected) whenever power-aware operation is not configured —
+    #: this is an added constraint, never a substitute for the ordinary
+    #: capability checks.
+    power_available: bool = True
 
 
 @dataclass(slots=True)

@@ -24,7 +24,8 @@
           "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
           "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
-          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)"
+          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
+          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)"
         }
       },
       "bands": {
@@ -72,7 +73,8 @@
           "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
           "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
-          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)"
+          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
+          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)"
         }
       },
       "bands": {
@@ -133,7 +135,8 @@
         "menu_options": {
           "tariff": "Tariff (from Abode Power Tariffs)",
           "outdoor": "Outdoor temperature, humidity and wind",
-          "forecast": "Weather forecast"
+          "forecast": "Weather forecast",
+          "power": "Power-aware operation (optional)"
         }
       },
       "tariff": {
@@ -148,6 +151,17 @@
         "description": "Precool banks thermal mass in a free or cheap window against a load arriving later. Deciding whether that load exists needs the forecast, not the current conditions: at 11:00 on the day of a 38 degree afternoon it is often 26 outside, and comparing right now says there is nothing coming.\n\nAny weather entity with an hourly forecast will do. Leave it empty and precool falls back to comparing conditions now, which is what this controller did before it could see ahead.",
         "data": {
           "weather_entity_id": "Weather entity"
+        }
+      },
+      "power": {
+        "title": "Power-aware operation",
+        "description": "Optional, and inactive until every field below is set. This integration never writes to your battery — see Architecture — it only reads these to decide whether the compressor may keep running when the tariff currently forbids grid import.\n\n{power}",
+        "data": {
+          "battery_soc_entity_id": "Battery charge sensor (percentage)",
+          "battery_capacity_kwh": "Battery usable capacity (kWh)",
+          "solar_power_entity_id": "Solar output sensor",
+          "house_load_entity_id": "House load sensor (total current draw)",
+          "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)"
         }
       }
     },

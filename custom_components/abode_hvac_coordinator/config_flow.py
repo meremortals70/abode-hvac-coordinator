@@ -24,14 +24,18 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFl
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
     CONF_BAND_HIGH,
     CONF_BAND_LOW,
     CONF_BANDS,
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITY,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
+    CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_LOCKOUT_REASON,
     CONF_LOCKOUT_REASONS,
@@ -43,9 +47,11 @@ from .const import (
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
     CONF_PRESENCE_ENTITY,
+    CONF_RESERVE_MARGIN_KWH,
     CONF_ROOM_ID,
     CONF_ROOMS,
     CONF_SLEEP_SCHEDULE_ENTITY,
+    CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
@@ -65,6 +71,7 @@ from .forms import (
     default_grace_suggestions,
     describe_configuration,
     describe_global,
+    describe_power,
     describe_rooms,
     extend_lockout_reasons,
     known_lockout_reasons,
@@ -101,6 +108,9 @@ ROOM_SCHEMA = vol.Schema(
         vol.Optional(CONF_COVER_ENTITIES): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="cover", multiple=True)
         ),
+        vol.Optional(
+            CONF_ALLOW_COVER_CONTROL, default=True
+        ): selector.BooleanSelector(),
     }
 )
 
@@ -120,6 +130,16 @@ def _minutes_selector() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=0, max=120, step=1, unit_of_measurement="min",
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def _kwh_selector() -> selector.NumberSelector:
+    """A kWh box, for the battery capacity and reserve margin."""
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0, max=100, step=0.1, unit_of_measurement="kWh",
             mode=selector.NumberSelectorMode.BOX,
         )
     )
@@ -340,7 +360,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         return self.async_show_menu(
             step_id="global",
             description_placeholders={"configuration": self._global_summary()},
-            menu_options=["tariff", "outdoor", "forecast"],
+            menu_options=["tariff", "outdoor", "forecast", "power"],
         )
 
     def _rooms_summary(self) -> str:
@@ -386,6 +406,21 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
     def _weather_entity_id(self) -> str | None:
         return self._stored(CONF_WEATHER_ENTITY)
+
+    def _battery_soc_entity_id(self) -> str | None:
+        return self._stored(CONF_BATTERY_SOC_ENTITY)
+
+    def _battery_capacity_kwh(self) -> str | None:
+        return self._stored(CONF_BATTERY_CAPACITY_KWH)
+
+    def _solar_entity_id(self) -> str | None:
+        return self._stored(CONF_SOLAR_POWER_ENTITY)
+
+    def _house_load_entity_id(self) -> str | None:
+        return self._stored(CONF_HOUSE_LOAD_ENTITY)
+
+    def _reserve_margin_kwh(self) -> str | None:
+        return self._stored(CONF_RESERVE_MARGIN_KWH)
 
     def _tariff_entry_id(self) -> str | None:
         return self._stored(CONF_TARIFF_ENTRY_ID)
@@ -556,6 +591,81 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         options[CONF_OUTDOOR_WIND_ENTITY] = user_input.get(
             CONF_OUTDOOR_WIND_ENTITY
         )
+        options.setdefault(CONF_ROOMS, self._rooms)
+        return self.async_create_entry(title="", data=options)
+
+    async def async_step_power(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Battery and solar readings for the power-aware compressor decision.
+
+        All five optional, and nothing engages unless every one of them is
+        set: `no_grid_import` is observed but not acted on until then, exactly
+        as before this existed. This integration never writes to the battery
+        — see Architecture — it only reads what it needs to decide whether it
+        may keep running.
+        """
+        if user_input is None:
+            suggested = {
+                key: value
+                for key in (
+                    CONF_BATTERY_SOC_ENTITY,
+                    CONF_BATTERY_CAPACITY_KWH,
+                    CONF_SOLAR_POWER_ENTITY,
+                    CONF_HOUSE_LOAD_ENTITY,
+                    CONF_RESERVE_MARGIN_KWH,
+                )
+                if (
+                    value := self.config_entry.options.get(
+                        key, self.config_entry.data.get(key)
+                    )
+                )
+            }
+            schema = vol.Schema(
+                {
+                    vol.Optional(CONF_BATTERY_SOC_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="battery"
+                        )
+                    ),
+                    vol.Optional(CONF_BATTERY_CAPACITY_KWH): _kwh_selector(),
+                    vol.Optional(CONF_SOLAR_POWER_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="power"
+                        )
+                    ),
+                    vol.Optional(CONF_HOUSE_LOAD_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="power"
+                        )
+                    ),
+                    vol.Optional(CONF_RESERVE_MARGIN_KWH): _kwh_selector(),
+                }
+            )
+            return self.async_show_form(
+                step_id="power",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested)
+                if suggested
+                else schema,
+                description_placeholders={
+                    "power": describe_power(
+                        self._battery_soc_entity_id(),
+                        self._battery_capacity_kwh(),
+                        self._solar_entity_id(),
+                        self._house_load_entity_id(),
+                        self._reserve_margin_kwh(),
+                    )
+                },
+            )
+
+        options = dict(self.config_entry.options)
+        options[CONF_BATTERY_SOC_ENTITY] = user_input.get(CONF_BATTERY_SOC_ENTITY)
+        options[CONF_BATTERY_CAPACITY_KWH] = user_input.get(
+            CONF_BATTERY_CAPACITY_KWH
+        )
+        options[CONF_SOLAR_POWER_ENTITY] = user_input.get(CONF_SOLAR_POWER_ENTITY)
+        options[CONF_HOUSE_LOAD_ENTITY] = user_input.get(CONF_HOUSE_LOAD_ENTITY)
+        options[CONF_RESERVE_MARGIN_KWH] = user_input.get(CONF_RESERVE_MARGIN_KWH)
         options.setdefault(CONF_ROOMS, self._rooms)
         return self.async_create_entry(title="", data=options)
 

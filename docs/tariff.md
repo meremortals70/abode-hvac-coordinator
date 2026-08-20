@@ -53,13 +53,50 @@ Three are acted on here:
 | Constraint | What this controller does |
 |---|---|
 | `precool_opportunity` | may enter PRECOOL, if the forecast shows demand ahead |
-| `no_grid_import` | will not run the compressor from the grid in this interval |
+| `no_grid_import` | assessed per room against battery and solar — see below |
 | `grid_charge_battery` | recognised, and deliberately ignored — batteries are not this controller's actuator |
 
 Anything else is carried through into the decision trace and reported as a
 repair issue naming it. That is not a gap. A constraint this controller does
 not act on is a constraint some other system owns, and adding one to your plan
 needs no code change here.
+
+### `no_grid_import`: what it actually does
+
+This controller has no control over where household power comes from — it
+never writes to a battery or an inverter, only ever reads. `no_grid_import`
+does not switch anything off by itself. It is one more input to the same
+per-room decision that comfort already goes through, checked inline
+alongside whether the unit can physically heat or cool, in `select_actuator`
+— not a separate override applied after the fact.
+
+Optional. Configure a battery state-of-charge entity, a battery capacity, a
+solar output entity, a house load entity and a reserve margin (Settings →
+Devices & Services → Abode HVAC Coordinator → Configure → House
+configuration → Power), and every one of the following runs; leave any one
+of the five unset and the constraint is still read and reported, exactly as
+before, but nothing acts on it.
+
+When `no_grid_import` is in force for a room's interval, that room is
+permitted to run its compressor when:
+
+- solar output alone already covers the house load plus this unit, or
+- the battery holds enough energy above the reserve margin to carry this
+  room's own projected need until the constraint clears, using the same
+  thermal model that drives the demand forecast.
+
+Otherwise the room holds — comfort is not met from the grid during that
+window, and `select_actuator` records why in the decision trace, the same as
+any other rejected step.
+
+Each room assesses its own need independently against the shared live
+readings. Rooms do not negotiate with each other or reserve capacity for one
+another; the reserve margin is the one global figure that exists to leave
+headroom for the rest of the house.
+
+If any of the five readings is missing or older than fifteen minutes, or the
+thermal model has not learned enough yet to project a need, the room holds
+rather than run on an unknown.
 
 ## Refresh and failure
 

@@ -37,6 +37,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Fan or air movement | No | Falls back to whether the air conditioner is running |
 | Windows and doors | No | No opening interlock |
 | Blinds | No | Covers are never used |
+| Allow blind control | Seeded (on) | Off keeps this room's blinds untouched even with blinds configured — for a semi-transparent blind kept for privacy or glare, not shading |
 | Wait before starting | Seeded | 2 minutes. Filters out grab-and-go visits |
 | Wait before stopping | Seeded | 10 minutes. The answering-the-door allowance |
 | Warn before shutting down | Seeded | 3 minutes between the two announcements |
@@ -125,6 +126,27 @@ it there is no advice rather than advice you cannot trust.
 Wind is converted from whatever unit your sensor reports. See
 [Free cooling](free-cooling.md).
 
+### Power
+
+Five optional fields, all off by default: battery state-of-charge entity,
+battery capacity in kWh, solar output entity, house load entity, and a
+reserve margin in kWh. None of them is required, and this integration never
+writes to any of them — it only reads.
+
+| Field | Required | Without it |
+|---|---|---|
+| Battery state of charge | For power-aware operation | `no_grid_import` is read but not acted on |
+| Battery capacity (kWh) | For power-aware operation | As above |
+| Solar output | For power-aware operation | As above |
+| House load | For power-aware operation | As above |
+| Reserve margin (kWh) | For power-aware operation | As above |
+
+All five must be set together before any of it engages — a partial
+configuration behaves exactly as no configuration. The reserve margin is the
+one global figure; each room otherwise assesses its own need against the
+shared live readings without reference to what any other room is doing. See
+[Tariff](tariff.md) for what this actually decides.
+
 ## What you do not configure, and why
 
 | Not exposed | Why |
@@ -154,8 +176,8 @@ Two places, neither of which requires opening a form:
 
 **The Configure menu** splits into **Rooms** and **Global configuration**, and
 each screen prints everything currently set on it before you choose anything.
-House configuration covers the tariff entry and the outdoor feeds — neither of
-which belongs to a room.
+Global configuration covers the tariff entry, outdoor feeds, weather forecast
+and power — none of which belongs to a room.
 
 **Each room's device** carries a **Settings** sensor whose attributes are that
 room's entire configuration, with anything unset stated as "Nothing selected"

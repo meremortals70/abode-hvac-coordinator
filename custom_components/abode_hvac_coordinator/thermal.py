@@ -312,31 +312,51 @@ class ThermalModel:
         direct_sun: bool,
         hours: float,
         rated_kw: float,
+        can_heat: bool = True,
+        can_cool: bool = True,
     ) -> float | None:
         """Projected energy over a horizon, in kWh, or None if unknown.
 
         Two parts: pulling the room to target, then holding it there against
         the drift for the rest of the horizon. Deliberately simple — it feeds a
         forecast that another system turns into a reserve, not a billing model.
+
+        `can_heat`/`can_cool` are what `select_actuator` already checks before
+        it will ever command the compressor in that direction. A unit that
+        cannot correct a direction simply will not run for it — the room
+        contributes nothing to the projection there, not a full-horizon draw
+        pretending a correction is happening that never will.
         """
         if not self.k_sensible.converged:
             return None
 
-        pull_hours = self.hours_to_reach(
-            indoor_c, target_c, outdoor_c, direct_sun=direct_sun
-        )
-        if pull_hours is None:
-            # Cannot reach it; assume it runs the whole horizon trying.
-            return round(rated_kw * hours, 3)
+        gap = target_c - indoor_c
+        pull_possible = abs(gap) < MIN_DRIVE or (can_heat if gap > 0 else can_cool)
 
-        pull_hours = min(pull_hours, hours)
-        remaining = max(hours - pull_hours, 0.0)
+        pull_hours: float
+        if not pull_possible:
+            pull_hours = 0.0
+            remaining = hours
+        else:
+            solved_hours = self.hours_to_reach(
+                indoor_c, target_c, outdoor_c, direct_sun=direct_sun
+            )
+            if solved_hours is None:
+                # Cannot reach it; assume it runs the whole horizon trying.
+                return round(rated_kw * hours, 3)
+            pull_hours = min(solved_hours, hours)
+            remaining = max(hours - pull_hours, 0.0)
 
         hold_fraction = 0.0
         drift = self.drift_rate(target_c, outdoor_c, direct_sun=direct_sun)
         if drift is not None and self.k_sensible.value > 0:
-            # Duty cycle needed to cancel the drift.
-            hold_fraction = min(abs(drift) / self.k_sensible.value, 1.0)
+            # Duty cycle needed to cancel the drift — only if the unit can
+            # actually correct the direction the room is drifting in.
+            drift_correctable = (drift > 0 and can_cool) or (
+                drift < 0 and can_heat
+            )
+            if drift_correctable:
+                hold_fraction = min(abs(drift) / self.k_sensible.value, 1.0)
 
         return round(rated_kw * (pull_hours + remaining * hold_fraction), 3)
 

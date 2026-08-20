@@ -148,6 +148,12 @@ class RoomForecastInput:
     #: with no heading-home request. Those rooms contribute nothing.
     will_run: bool
     rated_kw: float = ASSUMED_UNIT_KW
+    #: What the unit itself can do, read from the climate entity — the same
+    #: capability the actuator decision already checks. Without these the
+    #: projection could count energy for correcting a direction the unit will
+    #: never actually be commanded to correct.
+    can_heat: bool = True
+    can_cool: bool = True
 
 
 def project_room(
@@ -177,6 +183,8 @@ def project_room(
         direct_sun=room.direct_sun,
         hours=horizon_hours,
         rated_kw=room.rated_kw,
+        can_heat=room.can_heat,
+        can_cool=room.can_cool,
     )
     if kwh is None:
         # Not yet learned. Say so rather than publishing a confident number,

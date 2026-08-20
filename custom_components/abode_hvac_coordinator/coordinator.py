@@ -11,6 +11,7 @@ evaluator and hands the resulting decision on.
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -45,16 +46,20 @@ from homeassistant.util.unit_conversion import SpeedConverter
 from .actuator import Actuator, mean_cover_position, supported_hvac_modes
 from .const import (
     COAST_HORIZON_HOURS,
+    CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
     CONF_BAND_HIGH,
     CONF_BAND_LOW,
     CONF_BANDS,
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITY,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
     CONF_HEAT_LOAD_ENTITY,
+    CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_LOCKOUT_REASON,
     CONF_OCCUPIED_AFTER,
@@ -65,9 +70,11 @@ from .const import (
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
     CONF_PRESENCE_ENTITY,
+    CONF_RESERVE_MARGIN_KWH,
     CONF_ROOM_ID,
     CONF_ROOMS,
     CONF_SLEEP_SCHEDULE_ENTITY,
+    CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
@@ -94,6 +101,7 @@ from .const import (
     WEATHER_SERVICE_GET_FORECASTS,
 )
 from .forecast import (
+    ASSUMED_UNIT_KW,
     DEFAULT_HORIZON_HOURS,
     DemandForecast,
     RoomForecastInput,
@@ -116,6 +124,7 @@ from .staleness import (
     CONTACT_TOLERANCE,
     INDOOR_TOLERANCE,
     OUTDOOR_TOLERANCE,
+    POWER_TOLERANCE,
     PRESENCE_TOLERANCE,
     assess,
 )
@@ -150,6 +159,37 @@ if TYPE_CHECKING:
 
 #: State strings that carry no reading, as distinct from a number.
 _NON_NUMERIC = frozenset({"unknown", "unavailable", "none", ""})
+
+
+@dataclass(frozen=True, slots=True)
+class _PowerContext:
+    """The shared readings the power-aware compressor check runs against.
+
+    Read once per evaluation cycle. `engaged` is False whenever any of the
+    five house-level fields is missing — the feature is opt-in, and with any
+    one of them absent every room's `power_available` is simply True.
+    """
+
+    engaged: bool
+    battery_soc_percent: float | None = None
+    battery_capacity_kwh: float | None = None
+    solar_w: float | None = None
+    house_load_w: float | None = None
+    reserve_margin_kwh: float | None = None
+
+
+def _optional_float(value: object) -> float | None:
+    """A config-entry number field, tolerating None and an empty string.
+
+    The number selector round-trips through JSON storage, so this may arrive
+    as an int, a float, or a string depending on how it was last saved.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
@@ -203,6 +243,30 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             CONF_WEATHER_ENTITY, config_entry.data.get(CONF_WEATHER_ENTITY)
         )
         self.trajectory: WeatherTrajectory | None = None
+        #: Power-aware operation. All five optional and read the same way as
+        #: every other house-level feed; the decision only engages once every
+        #: one of them is set — see power_available() below.
+        self.battery_soc_entity_id: str | None = config_entry.options.get(
+            CONF_BATTERY_SOC_ENTITY, config_entry.data.get(CONF_BATTERY_SOC_ENTITY)
+        )
+        self.battery_capacity_kwh: float | None = _optional_float(
+            config_entry.options.get(
+                CONF_BATTERY_CAPACITY_KWH,
+                config_entry.data.get(CONF_BATTERY_CAPACITY_KWH),
+            )
+        )
+        self.solar_entity_id: str | None = config_entry.options.get(
+            CONF_SOLAR_POWER_ENTITY, config_entry.data.get(CONF_SOLAR_POWER_ENTITY)
+        )
+        self.house_load_entity_id: str | None = config_entry.options.get(
+            CONF_HOUSE_LOAD_ENTITY, config_entry.data.get(CONF_HOUSE_LOAD_ENTITY)
+        )
+        self.reserve_margin_kwh: float | None = _optional_float(
+            config_entry.options.get(
+                CONF_RESERVE_MARGIN_KWH,
+                config_entry.data.get(CONF_RESERVE_MARGIN_KWH),
+            )
+        )
         #: Why each room is or is not precooling, for the trace.
         self._demand_reason: dict[str, str] = {}
         #: Learned thermal behaviour, one per room, restored from the store.
@@ -246,6 +310,17 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Heading-home requests, per room, with the deadline if one was given.
         #: There is no target: a heading-home room is driven to its comfort band.
         self._heading_home: dict[str, datetime | None] = {}
+        #: Each room's last-solved dry-bulb target, one cycle behind. The
+        #: power-aware compressor check needs a target to project energy need
+        #: against, but the target itself is solved inside evaluate_room —
+        #: after the actuator decision that needs it. A target thirty seconds
+        #: stale is a fine input to a battery-sufficiency check; it is not
+        #: used for anything that needs to be current.
+        self._last_target: dict[str, float] = {}
+        #: The shared battery/solar/house-load readings, read once per cycle
+        #: rather than once per room — every room's power check in a given
+        #: pass sees the same figures.
+        self._power_context: _PowerContext | None = None
 
     async def async_prepare(self) -> None:
         """Subscribe to entities, raise any issues, and start the first fetch.
@@ -576,11 +651,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         traces: dict[str, DecisionTrace] = {}
         self._pending_announcements.clear()
         self._stale.clear()
+        self._power_context = self._compute_power_context(now)
         for room in self.rooms.values():
             inputs = self._inputs_for(room, now)
             self._learn(room, inputs, now)
             trace = evaluate_room(room, inputs)
             trace.model = self.model_for(room.room_id).diagnostics()
+            if trace.target_dry_bulb_c is not None:
+                self._last_target[room.room_id] = trace.target_dry_bulb_c
             if reason := self._grace_reason.get(room.room_id):
                 trace.reasons.append(reason)
             if reason := self._precondition_reason.get(room.room_id):
@@ -1045,6 +1123,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         inputs: list[RoomForecastInput] = []
         for room_id, room in self.rooms.items():
             trace = traces.get(room_id)
+            capabilities = self._capabilities(room)
             inputs.append(
                 RoomForecastInput(
                     room_id=room_id,
@@ -1055,6 +1134,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     direct_sun=self._direct_sun(room) is True,
                     will_run=trace is not None
                     and trace.mode not in (Mode.LOCKOUT, Mode.UNOCCUPIED),
+                    can_heat=capabilities["can_heat"],
+                    can_cool=capabilities["can_cool"],
                 )
             )
 
@@ -1118,6 +1199,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             self._precondition_reason.pop(room.room_id, None)
 
+        capabilities = self._capabilities(room)
+
         return RoomInputs(
             now=now,
             temperature_c=self._number(
@@ -1131,8 +1214,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             heat_load=self._bool(room.heat_load_entity_id) is True,
             air_moving=self._air_moving(room),
             has_covers=bool(room.cover_entity_ids),
+            allow_cover_control=room.allow_cover_control,
             cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
-            **self._capabilities(room),
+            power_available=self._power_available(room, now, capabilities),
+            **capabilities,
             opening_open=any(
                 self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is True
                 for entity_id in room.opening_entity_ids
@@ -1230,6 +1315,117 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             "can_dry": "dry" in modes,
             "can_fan_only": "fan_only" in modes,
         }
+
+    def _compute_power_context(self, now: datetime) -> _PowerContext:
+        """Read the house-level power inputs once per evaluation cycle.
+
+        Every room's `power_available` check runs against this same snapshot
+        rather than each re-reading the entities itself — the room assesses
+        its own need, but against readings that do not change mid-cycle
+        depending on evaluation order.
+
+        `engaged` is False whenever any of the five fields is unconfigured.
+        Power management is opt-in: with any one of them absent, every room's
+        `power_available` is simply True and nothing about this feature runs.
+        """
+        if (
+            self.battery_soc_entity_id is None
+            or self.battery_capacity_kwh is None
+            or self.solar_entity_id is None
+            or self.house_load_entity_id is None
+            or self.reserve_margin_kwh is None
+        ):
+            return _PowerContext(engaged=False)
+
+        return _PowerContext(
+            engaged=True,
+            battery_soc_percent=self._number(
+                self.battery_soc_entity_id, POWER_TOLERANCE
+            ),
+            battery_capacity_kwh=self.battery_capacity_kwh,
+            solar_w=self._number(self.solar_entity_id, POWER_TOLERANCE),
+            house_load_w=self._number(self.house_load_entity_id, POWER_TOLERANCE),
+            reserve_margin_kwh=self.reserve_margin_kwh,
+        )
+
+    def _power_available(
+        self, room: RoomConfig, now: datetime, capabilities: dict[str, bool]
+    ) -> bool:
+        """Whether this room may run the compressor right now.
+
+        Power management is optional and never overrides comfort by itself —
+        it only answers the one question the tariff's `no_grid_import`
+        constraint raises: can this room be carried without the grid.
+
+        True whenever power management is not engaged, the constraint is not
+        currently in force, any of the live readings is missing or stale,
+        solar alone covers the house load plus this unit, or the battery has
+        enough energy above the reserve margin to carry this room's projected
+        need until the constraint clears (or the model has not converged
+        enough to project — in which case the room is not held on an unknown).
+        """
+        context = self._power_context
+        if context is None or not context.engaged:
+            return True
+        if self.tariff is None:
+            return True
+        interval = self.tariff.interval_at(now)
+        if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
+            return True
+
+        rated_w = ASSUMED_UNIT_KW * 1000
+        if (
+            context.solar_w is not None
+            and context.house_load_w is not None
+            and context.solar_w >= context.house_load_w + rated_w
+        ):
+            return True
+
+        if (
+            context.battery_soc_percent is None
+            or context.battery_capacity_kwh is None
+            or context.reserve_margin_kwh is None
+        ):
+            # A live reading is missing or stale. Power management is
+            # engaged but cannot currently answer the question, so the room
+            # holds rather than run on an unknown battery state.
+            return False
+
+        hours_until_clear = self.tariff.hours_until_clear(
+            CONSTRAINT_NO_GRID_IMPORT, now
+        )
+        if hours_until_clear is None:
+            # The series never clears within its horizon. No relief to carry
+            # the room to, so it holds.
+            return False
+
+        target = self._last_target.get(room.room_id)
+        if target is None:
+            # No solved target yet this run (first cycle for the room). Hold
+            # rather than project against a target that does not exist.
+            return False
+
+        projected_kwh = self.model_for(room.room_id).energy_for(
+            self._number(room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id)
+            or target,
+            target,
+            self.outdoor_reading(),
+            direct_sun=bool(self._direct_sun(room)),
+            hours=hours_until_clear,
+            rated_kw=ASSUMED_UNIT_KW,
+            can_heat=capabilities["can_heat"],
+            can_cool=capabilities["can_cool"],
+        )
+        if projected_kwh is None:
+            # The thermal model has not converged enough to project. Nothing
+            # to weigh the battery against, so the room holds rather than run
+            # on an unknown.
+            return False
+
+        available_kwh = (
+            context.battery_soc_percent / 100.0
+        ) * context.battery_capacity_kwh - context.reserve_margin_kwh
+        return available_kwh >= projected_kwh
 
     def _interval_at(self, at: datetime) -> Interval | None:
         """The tariff interval in force, or None if there is no tariff.
@@ -1424,6 +1620,7 @@ def _room_from_raw(
         announce_target_entity_ids=tuple(raw.get(CONF_ANNOUNCE_TARGETS, []) or []),
         opening_entity_ids=tuple(raw.get(CONF_OPENING_ENTITIES, []) or []),
         cover_entity_ids=tuple(raw.get(CONF_COVER_ENTITIES, []) or []),
+        allow_cover_control=bool(raw.get(CONF_ALLOW_COVER_CONTROL, True)),
         lockout_reason=raw.get(CONF_LOCKOUT_REASON),
     )
 

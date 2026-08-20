@@ -1,7 +1,7 @@
 {
   "domain": "abode_hvac_coordinator",
   "name": "Abode HVAC Coordinator",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "codeowners": [
     "@meremortals70"
   ],
@@ -11,7 +11,7 @@
   "iot_class": "calculated",
   "config_flow": true,
   "single_config_entry": true,
-  "quality_scale": "platinum",
+  "quality_scale": "custom",
   "dependencies": [
     "climate"
   ],

@@ -267,6 +267,30 @@ class TariffSeries:
             found |= interval.unrecognised_constraints()
         return frozenset(found)
 
+    def hours_until_clear(self, constraint: str, now: datetime) -> float | None:
+        """Hours from now until `constraint` is no longer in force.
+
+        Walks the already-fetched series forward from now; no separate fetch.
+        Zero when the constraint is not in force at `now` at all. None when
+        every remaining interval in the series still carries it — the series
+        does not reach far enough to say when it clears, not that it never
+        does.
+
+        Used by the power-aware compressor decision: how long a room needs to
+        be carried on battery or solar before grid import is allowed again.
+        """
+        current = self.interval_at(now)
+        if current is None or constraint not in current.constraints:
+            return 0.0
+
+        for interval in self._intervals:
+            if interval.start < now:
+                continue
+            if constraint not in interval.constraints:
+                cleared_at = max(interval.start, now)
+                return (cleared_at - now).total_seconds() / 3600.0
+        return None
+
 
 def _window(first: Interval, last: Interval, local_tz: tzinfo) -> TariffWindow:
     """Collapse a run of intervals into the period they came from.

@@ -17,7 +17,13 @@ rules:
       or service.
   brands: done
   common-modules: done
-  config-flow-test-coverage: todo
+  config-flow-test-coverage:
+    status: todo
+    comment: |
+      tests/test_config_flow.py exists and covers the room, bands, global
+      menu, outdoor, tariff, forecast and power steps, but has not been run —
+      this sandbox has no compatible pytest-homeassistant-custom-component
+      install. Not "done" until it has actually run green once.
   config-flow: done
   dependency-transparency:
     status: exempt
@@ -62,7 +68,15 @@ rules:
   reauthentication-flow:
     status: exempt
     comment: No authentication of any kind.
-  test-coverage: todo
+  test-coverage:
+    status: todo
+    comment: |
+      The 15 pure modules (hci, models, modes, tariff, thermal, forecast,
+      staleness, regulate, cycling, etc.) have 281 tests in tests/test_core.py,
+      run directly with python3 and passing. tests/test_init.py and
+      tests/test_config_flow.py cover the coordinator and config/options flow
+      but, like config-flow-test-coverage, have not been executed against a
+      real Home Assistant.
 
   # --- Gold ---
   devices: done

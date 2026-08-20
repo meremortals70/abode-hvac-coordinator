@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .const import (
+    CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
     CONF_BAND_HIGH,
@@ -76,6 +77,9 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_OVERHANG_HEIGHT: user_input.get(CONF_OVERHANG_HEIGHT),
         CONF_OPENING_ENTITIES: user_input.get(CONF_OPENING_ENTITIES, []),
         CONF_COVER_ENTITIES: user_input.get(CONF_COVER_ENTITIES, []),
+        CONF_ALLOW_COVER_CONTROL: bool(
+            user_input.get(CONF_ALLOW_COVER_CONTROL, True)
+        ),
         CONF_OCCUPIED_AFTER: user_input.get(CONF_OCCUPIED_AFTER),
         CONF_VACANT_AFTER: user_input.get(CONF_VACANT_AFTER),
         CONF_WARNING_GRACE: user_input.get(CONF_WARNING_GRACE),
@@ -200,7 +204,10 @@ def describe_room(room: dict[str, Any]) -> str:
     openings = room.get(CONF_OPENING_ENTITIES) or []
     covers = room.get(CONF_COVER_ENTITIES) or []
     lines.append(f"  Windows and doors: {len(openings) or '—'}")
-    lines.append(f"  Blinds: {len(covers) or '—'}")
+    if covers and not room.get(CONF_ALLOW_COVER_CONTROL, True):
+        lines.append(f"  Blinds: {len(covers)} configured, control disabled")
+    else:
+        lines.append(f"  Blinds: {len(covers) or '—'}")
 
     bands = room.get(CONF_BANDS) or {}
     if bands:
@@ -293,6 +300,47 @@ def describe_global(
             ),
         ]
     )
+
+
+def describe_power(
+    battery_soc_entity_id: str | None,
+    battery_capacity_kwh: str | None,
+    solar_entity_id: str | None,
+    house_load_entity_id: str | None,
+    reserve_margin_kwh: str | None,
+) -> str:
+    """The power-aware settings, as readable lines.
+
+    All five are required together before any of this engages. Showing which
+    are missing is more useful than a single on/off line, because a partial
+    setup is the state most installs will pass through on the way to a
+    complete one.
+    """
+    fields = {
+        "Battery charge sensor": battery_soc_entity_id,
+        "Battery usable capacity": (
+            f"{battery_capacity_kwh} kWh" if battery_capacity_kwh else None
+        ),
+        "Solar output sensor": solar_entity_id,
+        "House load sensor": house_load_entity_id,
+        "Reserve margin": (
+            f"{reserve_margin_kwh} kWh" if reserve_margin_kwh else None
+        ),
+    }
+    lines = [f"  {label}: {value or 'Nothing selected'}" for label, value in fields.items()]
+    if all(fields.values()):
+        lines.append(
+            "  Active: the compressor will hold rather than run from the "
+            "grid when the tariff forbids it and neither solar nor the "
+            "battery can cover it."
+        )
+    else:
+        lines.append(
+            "  Inactive — every field above must be set. Until then "
+            "no_grid_import is observed but never acted on, exactly as "
+            "before this feature existed."
+        )
+    return "\n".join(lines)
 
 
 def describe_configuration(

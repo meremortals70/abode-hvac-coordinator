@@ -1,6 +1,6 @@
 # Handover
 
-**Version 0.8.3. The architecture is complete.**
+**Version 0.8.5. The architecture is complete.**
 
 Every gap identified against the v0.3 proposal at v0.5.3 is closed. See
 `ARCHITECTURE-GAPS.md` for the ledger, including the one closed as not
@@ -32,6 +32,8 @@ Abode Power Tariffs, and an hourly weather forecast.
 | 0.8.1 | Fixed a crash on the first forecast: naive timestamps against an aware clock. Same fault fixed latent in the tariff. Tariff windows converted to local wall time |
 | 0.8.2 | Documentation corrected against the code — 18 files. The §5 rule stated precisely and enforced by a test |
 | 0.8.3 | **The thermal model could never learn.** The learning anchor was replaced every evaluation, so every interval was 30 s against a 60 s minimum and every observation was discarded. Dew point now published whenever the readings exist. Diagnostics completed |
+| 0.8.4 | Beta preceding this handover's review |
+| 0.8.5 | **`no_grid_import` now acted on, not just read.** Optional battery/solar/house-load inputs; a room may keep running under the constraint if solar or the battery can cover its own projected need until it clears — checked inline in `select_actuator`, never by writing to the battery. **Per-room cover-control override**, for blinds kept for privacy or glare that must never move automatically. `energy_for` (thermal model) and the demand forecast now respect `can_heat`/`can_cool`, so a unit incapable of a direction is never projected to draw energy correcting it. `manifest.json`'s `quality_scale` corrected from `platinum` to `custom` — three quality-scale items are genuinely `todo`, not two, and `strict-typing` is a platinum-tier item that was unmet while claiming platinum |
 
 ## Installing
 
@@ -46,18 +48,26 @@ screen in terms of what is lost without it rather than left blank.
 
 ## Verification state
 
-| Check | Result |
-|---|---|
-| `ruff check custom_components tests` | clean |
-| `mypy --strict`, all 23 modules, Home Assistant installed | clean |
-| Pure test suite | 271 passing |
-| Home Assistant side tests | 21 passing |
-| Home Assistant log during those tests | no warnings, no errors |
-| Purity of the fifteen pure modules | enforced by parsing imports |
-| Step / string / placeholder / entity / icon cross-checks | clean |
-| `strings.json` vs `translations/en.json` | identical |
-| Documentation links | resolve |
-| **Running against real hardware** | **not confirmed** |
+The 0.8.3 row below is what a prior build environment with Home Assistant
+installed confirmed. **0.8.5 was built in a sandbox with no Home Assistant
+package available** (only `homeassistant==2024.3.3` resolves there, older
+than the 2025.1.4/2026.x this integration targets), so the two Home
+Assistant–dependent checks could not be re-run this build. Everything else
+was.
+
+| Check | 0.8.3 | 0.8.5 |
+|---|---|---|
+| `ruff check custom_components tests` | clean | clean, re-run |
+| `mypy --strict`, pure modules only, `--ignore-missing-imports` | clean | clean on every module changed this build (`thermal.py`, `forecast.py`, `models.py`, `modes.py`, `tariff.py`, `coordinator.py` syntax-checked) |
+| `mypy --strict`, all 23 modules, Home Assistant installed | clean | **not re-run — no Home Assistant in this sandbox** |
+| Pure test suite (`tests/test_core.py`) | 271 passing | **281 passing**, run directly with `python3 -m unittest` |
+| Home Assistant side tests (`test_init.py`, `test_config_flow.py`) | 21 passing | **not run.** New tests were written for the power-aware compressor gate and the config/options flow's new fields, following the existing tests' patterns, but nothing in these two files has executed since before this build — they need `pytest-homeassistant-custom-component` against a matching Home Assistant version |
+| Home Assistant log during those tests | no warnings, no errors | not applicable — tests not run |
+| Purity of the fifteen pure modules | enforced by parsing imports | not re-run (the enforcing test lives in the Home Assistant side suite) |
+| Step / string / placeholder / entity / icon cross-checks | clean | not re-run, same reason |
+| `strings.json` vs `translations/en.json` | identical | re-checked by direct JSON diff, identical |
+| Documentation links | resolve | not re-checked |
+| **Running against real hardware** | **not confirmed** | **not confirmed** |
 
 Nothing has run in your house. Only Jason confirms it works.
 
@@ -95,3 +105,17 @@ and only running the thing improves them.
 Layer 1, the ESPHome Matter-over-Thread adaptor, is a separate project. Nothing
 in Layer 3 changes when it lands: the coordinator consumes a `climate` entity
 and does not care what is underneath. Intesis in the meantime.
+
+**Before 0.8.5 ships:**
+
+- Run `tests/test_init.py` and `tests/test_config_flow.py` against a real
+  Home Assistant install — they have not executed since before this build.
+- The three quality-scale items in `quality_scale.yaml` are genuinely `todo`:
+  `config-flow-test-coverage`, `test-coverage` (both blocked on the point
+  above) and `strict-typing` (untouched this build). `manifest.json` now says
+  `custom` rather than `platinum`, which is accurate either way.
+- The power-aware compressor decision assumes a single unit rating,
+  `ASSUMED_UNIT_KW` (1.2 kW) — the same constant the demand forecast already
+  used — rather than a per-room rated draw. If a room's unit is materially
+  different from that, its battery-headroom projection will be off by
+  roughly the same proportion.

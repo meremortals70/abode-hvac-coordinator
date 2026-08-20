@@ -309,6 +309,8 @@ def select_actuator(
     # block at exactly the moment the blind is already blocking.
     if not inputs.has_covers:
         trace.rejected.append("covers: none configured for this room")
+    elif not inputs.allow_cover_control:
+        trace.rejected.append("covers: control disabled for this room")
     elif inputs.direct_sun is None:
         trace.rejected.append("covers: cannot tell whether the sun is on this room")
     elif not inputs.direct_sun:
@@ -335,6 +337,12 @@ def select_actuator(
         trace.rejected.append("fan and dry: neither adds heat")
         if not inputs.can_heat:
             trace.rejected.append("compressor: this unit cannot heat")
+            return ActuatorStep.NONE
+        if not inputs.power_available:
+            trace.rejected.append(
+                "compressor: no grid import permitted, and battery/solar "
+                "cannot cover this room's projected need"
+            )
             return ActuatorStep.NONE
         trace.reasons.append("compressor: heating")
         return ActuatorStep.COMPRESSOR
@@ -371,6 +379,12 @@ def select_actuator(
     # --- 4. Compressor. Everything cheaper has been ruled out above.
     if not inputs.can_cool:
         trace.rejected.append("compressor: this unit cannot cool")
+        return ActuatorStep.NONE
+    if not inputs.power_available:
+        trace.rejected.append(
+            "compressor: no grid import permitted, and battery/solar "
+            "cannot cover this room's projected need"
+        )
         return ActuatorStep.NONE
     trace.reasons.append("compressor: cooling")
     return ActuatorStep.COMPRESSOR

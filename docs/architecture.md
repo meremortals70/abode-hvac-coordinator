@@ -155,11 +155,24 @@ adding one for another system to consume needs no code change here.
 If a constraint and the comfort band cannot both hold, the controller says so
 and holds the constraint.
 
+**`no_grid_import` is still absolute — what changed is how the controller
+decides whether it is currently satisfied.** This project has no control over
+where household power comes from, so it cannot enforce the constraint
+directly. What it can do is estimate its own projected need and read the
+battery's state of charge, then decide whether a given room may keep running
+without importing. That decision is optional (nothing engages until battery,
+solar and house-load readings are all configured — see
+[Configuration](configuration.md#power)), it is assessed per room against
+shared live readings rather than negotiated between rooms, and it is checked
+inline inside the same actuator selection that already checks whether the
+unit can physically heat or cool — not as an override layered on afterward.
+See [Tariff](tariff.md#no_grid_import-what-it-actually-does).
+
 ### One writer per actuator
 
 | Actuator | Owner |
 |---|---|
-| Battery | Whoever owns the battery. **Never this project** |
+| Battery | Whoever owns the battery. **Never this project** — this project only ever reads state of charge, to decide whether a room may keep running under `no_grid_import` |
 | Climate entities | The regulation layer, driven by Layer 3 |
 | Covers | The cover layer, driven by Layer 3 |
 
@@ -234,6 +247,7 @@ Built. Full detail in [Thermal model](thermal-model.md). What it unblocks:
 | Heading home | When to start, to arrive at comfort on time |
 | Dry mode selection | The sensible/latent split, replacing a humidity threshold |
 | Demand forecast | Projected energy over a horizon |
+| Power-aware compressor decision | Projected energy until `no_grid_import` clears, weighed against battery headroom |
 
 **The latent term is the addition.** Models built for heating climates learn
 heat loss, heating power and solar responsiveness — all sensible-heat terms. A
@@ -287,6 +301,8 @@ than run the compressor.
 | Thermal model | Built, tested |
 | Demand forecast | Built, tested |
 | Actuation | Built, tested |
+| Power-aware compressor decision (`no_grid_import`) | Built. Pure logic tested; coordinator wiring not yet run against Home Assistant |
+| Per-room cover-control override | Built, tested |
 
 The config flow has been run in Home Assistant end to end. The rest is tested
 against the pure test suite only. See [Known limitations](known-limitations.md).
