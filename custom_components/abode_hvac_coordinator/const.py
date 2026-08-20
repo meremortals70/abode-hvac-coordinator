@@ -102,6 +102,18 @@ WEATHER_REFRESH_INTERVAL: Final = timedelta(minutes=30)
 
 WEATHER_DOMAIN: Final = "weather"
 WEATHER_SERVICE_GET_FORECASTS: Final = "get_forecasts"
+
+#: How long to wait before the first startup fetch of the tariff and the
+#: forecast, and between the retries. Home Assistant gives no ordering
+#: guarantee between one custom integration's config entry and another's, so
+#: at boot the service this component calls may not be registered yet. That is
+#: a race, not a fault, and it must not be reported as one.
+STARTUP_FETCH_DELAY: Final = timedelta(seconds=5)
+
+#: How many attempts the startup sequence makes before a failure is treated as
+#: real. Three: 5 s, 10 s, 15 s. The warning and the repair issue are withheld
+#: until the last one fails.
+STARTUP_FETCH_ATTEMPTS: Final = 3
 CONF_HORIZON_HOURS: Final = "horizon_hours"
 CONF_OPENING_ENTITIES: Final = "opening_entity_ids"
 CONF_COVER_ENTITIES: Final = "cover_entity_ids"

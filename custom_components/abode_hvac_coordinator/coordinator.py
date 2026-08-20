@@ -10,6 +10,7 @@ evaluator and hands the resulting decision on.
 
 from __future__ import annotations
 
+import functools
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,7 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_state_change_event,
     async_track_time_interval,
 )
@@ -80,6 +82,8 @@ from .const import (
     ISSUE_UNRECOGNISED_CONSTRAINT,
     LOGGER,
     PRECOOL_DEMAND_MARGIN_C,
+    STARTUP_FETCH_ATTEMPTS,
+    STARTUP_FETCH_DELAY,
     TARIFF_DOMAIN,
     TARIFF_HORIZON_HOURS,
     TARIFF_REFRESH_INTERVAL,
@@ -235,14 +239,28 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: only in memory would forget the room that was just deleted and its
         #: device would be orphaned.
         self.previous_rooms: set[str] = set()
+        #: Whether the startup fetch sequence is still trying for each feed.
+        #: Set when the sequence starts; an unconfigured feed is never pending.
+        self._pending_tariff = False
+        self._pending_forecast = False
         #: Heading-home requests, per room, with the deadline if one was given.
         #: There is no target: a heading-home room is driven to its comfort band.
         self._heading_home: dict[str, datetime | None] = {}
 
     async def async_prepare(self) -> None:
-        """Fetch the tariff, subscribe to entities, and raise any issues."""
-        await self._async_refresh_tariff()
-        await self._async_refresh_forecast()
+        """Subscribe to entities, raise any issues, and start the first fetch.
+
+        The tariff and the forecast are *not* fetched inline here. Both call a
+        service belonging to another integration, and at boot that integration
+        may not have registered it yet. Awaiting a retry sequence on the setup
+        path would hold the config entry open for as long as the retries take
+        and produce a slow-setup warning, so the sequence runs as a background
+        task and setup returns immediately.
+
+        The controller starts with no tariff and no trajectory. Both are
+        supported states, not degraded ones: rooms are still held to their
+        bands, and precool falls back to comparing current conditions.
+        """
         if self.weather_entity_id:
             self.config_entry.async_on_unload(
                 async_track_time_interval(
@@ -272,6 +290,58 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 )
             )
 
+        self._pending_tariff = self.tariff_entry_id is not None
+        self._pending_forecast = self.weather_entity_id is not None
+        if self._pending_tariff or self._pending_forecast:
+            self._async_schedule_startup_fetch(1)
+
+    @callback
+    def _async_schedule_startup_fetch(self, attempt: int) -> None:
+        """Book one startup fetch attempt, one delay from now.
+
+        `async_call_later` rather than a sleeping task: it is cancelled with
+        the config entry, and it moves with the test clock.
+        """
+        self.config_entry.async_on_unload(
+            async_call_later(
+                self.hass,
+                STARTUP_FETCH_DELAY,
+                functools.partial(self._async_startup_fetch, attempt),
+            )
+        )
+
+    async def _async_startup_fetch(self, attempt: int, _now: datetime) -> None:
+        """Fetch the tariff and the forecast, retrying while boot finishes.
+
+        Neither feed is required, and an unconfigured one is never pending.
+
+        Every attempt but the last is quiet. A failure during boot is almost
+        always the other integration not having registered its service yet,
+        and reporting a race as a fault trains the user to ignore the report.
+        When the last attempt fails, the warning and the repair issue are
+        raised exactly as they were before.
+        """
+        final = attempt >= STARTUP_FETCH_ATTEMPTS
+        gained = False
+
+        if self._pending_tariff and await self._async_refresh_tariff(quiet=not final):
+            self._pending_tariff = False
+            gained = True
+            # The constraint check reads the series, so it can only say
+            # anything once there is one.
+            self._async_check_configuration()
+
+        if self._pending_forecast and await self._async_refresh_forecast(
+            quiet=not final
+        ):
+            self._pending_forecast = False
+            gained = True
+
+        if gained:
+            await self.async_request_refresh()
+
+        if not final and (self._pending_tariff or self._pending_forecast):
+            self._async_schedule_startup_fetch(attempt + 1)
 
     async def _async_tariff_tick(self, now: datetime) -> None:
         """Refetch the series on the interval timer, then re-evaluate."""
@@ -279,17 +349,20 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._async_check_configuration()
         await self.async_request_refresh()
 
-    async def _async_refresh_tariff(self) -> None:
+    async def _async_refresh_tariff(self, *, quiet: bool = False) -> bool:
         """Fetch the forward interval series from Abode Power Tariffs.
 
         A failure holds the series already in hand rather than discarding it.
         The alternative — dropping to no tariff on one bad call — would turn a
         momentary reload of the tariff integration into a room losing its
         constraints, which is a worse outcome than a series a few minutes old.
+
+        `quiet` downgrades a failure to a debug line, for the startup attempts
+        that are allowed to lose the race. Returns whether a series was read.
         """
         if not self.tariff_entry_id:
             self.tariff = None
-            return
+            return True
 
         try:
             response = await self.hass.services.async_call(
@@ -305,12 +378,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
         except ServiceNotFound:
             self._async_tariff_issue(
-                "Abode Power Tariffs is not installed, or is not loaded"
+                "Abode Power Tariffs is not installed, or is not loaded", quiet
             )
-            return
+            return False
         except HomeAssistantError as err:
-            self._async_tariff_issue(str(err))
-            return
+            self._async_tariff_issue(str(err), quiet)
+            return False
 
         try:
             self.tariff = TariffSeries.from_response(
@@ -319,8 +392,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 dt_util.DEFAULT_TIME_ZONE,
             )
         except TariffPayloadError as err:
-            self._async_tariff_issue(f"the interval series could not be read: {err}")
-            return
+            self._async_tariff_issue(
+                f"the interval series could not be read: {err}", quiet
+            )
+            return False
 
         LOGGER.debug(
             "Tariff series refreshed: %d intervals, covering to %s",
@@ -328,10 +403,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self.tariff.covers_until,
         )
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TARIFF_UNAVAILABLE)
+        return True
 
     @callback
-    def _async_tariff_issue(self, reason: str) -> None:
+    def _async_tariff_issue(self, reason: str, quiet: bool = False) -> None:
         """Raise a repair issue naming why the tariff could not be read."""
+        if quiet:
+            LOGGER.debug("Tariff not available yet: %s", reason)
+            return
         LOGGER.warning("Tariff could not be read: %s", reason)
         ir.async_create_issue(
             self.hass,
@@ -348,16 +427,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         await self._async_refresh_forecast()
         await self.async_request_refresh()
 
-    async def _async_refresh_forecast(self) -> None:
+    async def _async_refresh_forecast(self, *, quiet: bool = False) -> bool:
         """Fetch the hourly forecast from the configured weather entity.
 
         A failure holds the trajectory already in hand, for the same reason a
         failed tariff fetch does: a momentary reload of a weather integration
         must not turn into every room losing its precool decision.
+
+        `quiet` downgrades a failure to a debug line, for the startup attempts
+        that are allowed to lose the race. Returns whether a forecast was read.
         """
         if not self.weather_entity_id:
             self.trajectory = None
-            return
+            return True
 
         try:
             response = await self.hass.services.async_call(
@@ -368,8 +450,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 return_response=True,
             )
         except (ServiceNotFound, HomeAssistantError) as err:
-            self._async_forecast_issue(str(err))
-            return
+            self._async_forecast_issue(str(err), quiet)
+            return False
 
         try:
             self.trajectory = WeatherTrajectory.from_response(
@@ -378,8 +460,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 dt_util.DEFAULT_TIME_ZONE,
             )
         except ForecastPayloadError as err:
-            self._async_forecast_issue(f"the forecast could not be read: {err}")
-            return
+            self._async_forecast_issue(
+                f"the forecast could not be read: {err}", quiet
+            )
+            return False
 
         LOGGER.debug(
             "Forecast refreshed: %d hours, covering to %s",
@@ -387,10 +471,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self.trajectory.covers_until,
         )
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_FORECAST_UNAVAILABLE)
+        return True
 
     @callback
-    def _async_forecast_issue(self, reason: str) -> None:
+    def _async_forecast_issue(self, reason: str, quiet: bool = False) -> None:
         """Raise a repair issue naming why the forecast could not be read."""
+        if quiet:
+            LOGGER.debug("Weather forecast not available yet: %s", reason)
+            return
         LOGGER.warning("Weather forecast could not be read: %s", reason)
         ir.async_create_issue(
             self.hass,
