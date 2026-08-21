@@ -166,6 +166,17 @@ solar and house-load readings are all configured — see
 shared live readings rather than negotiated between rooms, and it is checked
 inline inside the same actuator selection that already checks whether the
 unit can physically heat or cool — not as an override layered on afterward.
+
+**It fails open.** A room is refused only on a positively computed shortfall:
+readings present, model converged, relief time known, and the arithmetic
+short. Every case the controller cannot answer leaves the room its comfort.
+Before 0.8.6 all four unknowns — a stale reading, a series that never clears,
+no solved target yet, an unconverged thermal model — returned a refusal, and
+since an unconverged model is the state every fresh install sits in, enabling
+power management stopped the compressor in occupied rooms for a whole
+no-import window on the strength of a coefficient that had never been
+measured. Comfort is a hard constraint, and a projection the controller cannot
+make is not grounds for withdrawing it.
 See [Tariff](tariff.md#no_grid_import-what-it-actually-does).
 
 ### One writer per actuator
@@ -301,11 +312,15 @@ than run the compressor.
 | Thermal model | Built, tested |
 | Demand forecast | Built, tested |
 | Actuation | Built, tested |
-| Power-aware compressor decision (`no_grid_import`) | Built. Pure logic tested; coordinator wiring not yet run against Home Assistant |
+| Power-aware compressor decision (`no_grid_import`) | Built and tested. The coordinator wiring has run against Home Assistant since 0.8.6 — against 2025.1.4, not the targeted 2026.8.x |
 | Per-room cover-control override | Built, tested |
 
-The config flow has been run in Home Assistant end to end. The rest is tested
-against the pure test suite only. See [Known limitations](known-limitations.md).
+Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
+pure modules — 324 tests, against 2025.1.4 rather than the 2026.8.x targeted,
+because the build sandbox is Python 3.12. Running it for the first time found
+two tests that had never passed. See
+[Known limitations](known-limitations.md) and
+[the review](architecture-review-2026-08.md).
 
 ---
 
