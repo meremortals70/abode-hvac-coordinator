@@ -1,0 +1,632 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "New tariff plan",
+        "description": "A plan is the set of prices for one meter or one circuit. A controlled load or off-peak hot water circuit on a separate price is added later as its own plan.",
+        "data": {
+          "plan_name": "Plan name",
+          "plan_description": "Description",
+          "single_rate_plan": "This plan has no timetable",
+          "has_export": "You export power to the grid"
+        },
+        "data_description": {
+          "plan_name": "Your retailer's plan name is a good choice. Shown on the device and used as the prefix on every entity.",
+          "plan_description": "Optional, your own words. Anything worth remembering about this plan.",
+          "single_rate_plan": "An amount for the first part of your usage, then a different price for the rest of the billing period, rather than prices that change at particular times of day.",
+          "has_export": "Turns on the feed-in screens. Left off, nothing about export is asked."
+        }
+      },
+      "charges": {
+        "title": "Fixed charges",
+        "description": "What {plan} costs before a single kilowatt hour is used.",
+        "data": {
+          "daily_supply_charge_cents": "Daily supply charge (c/day)",
+          "prices_include_gst": "Prices include tax",
+          "gst_percent": "Tax rate (%)",
+          "monthly_charge": "Monthly charge",
+          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
+        },
+        "data_description": {
+          "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
+          "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
+          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
+          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
+        },
+        "error": {}
+      },
+      "single_rate": {
+        "title": "Prices",
+        "description": "{plan} has no timetable. An amount for the first part of your usage, then a price for the rest of the billing period.\n\nDeclared as a fact for now — nothing is counted against the allowance yet.",
+        "data": {
+          "import_cents": "Price for the first part (c/kWh)",
+          "rate_allowance_kwh": "Allowance before the price changes (kWh)",
+          "after_allowance_cents": "Price after the allowance (c/kWh)",
+          "export_flat_cents": "Export price (c/kWh)",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "import_cents": "What you pay per kilowatt hour, up to the allowance.",
+          "rate_allowance_kwh": "Zero for none. The allowance for the whole billing period, not reset daily.",
+          "after_allowance_cents": "What you pay per kilowatt hour once the allowance is spent.",
+          "export_flat_cents": "What you are paid per kilowatt hour exported, up to the export allowance.",
+          "export_allowance_kwh": "Zero for none.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+        }
+      },
+      "rates": {
+        "title": "Rates",
+        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
+        "data": {
+          "name": "Rate name",
+          "import_cents": "You pay (c/kWh)",
+          "on_submit": "When I submit"
+        },
+        "data_description": {
+          "name": "As it appears on your bill - peak, off peak, shoulder, free. '{pattern}' is put in front automatically.",
+          "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
+          "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept."
+        },
+        "sections": {
+          "demand": {
+            "name": "Demand charging",
+            "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
+            "data": {
+              "demand_period": "This is a demand charge period",
+              "demand_rate_per_kw_month": "Demand charge ($/kW/month)"
+            },
+            "data_description": {
+              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
+              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here."
+            }
+          },
+          "allowance": {
+            "name": "Allowance",
+            "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
+            "data": {
+              "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
+              "fallback_rate": "Rate once the allowance is used up",
+              "count_allowance": "Count usage against this allowance (not yet implemented)",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+            },
+            "data_description": {
+              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+            }
+          },
+          "constraints_section": {
+            "name": "Constraints",
+            "description": "What you are declaring this rate means. Nothing here is enforced by this component.",
+            "data": {
+              "information_constraints": "Information only rules",
+              "enforceable_constraints": "Enforceable rules"
+            },
+            "data_description": {
+              "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+              "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both."
+            }
+          }
+        }
+      },
+      "days": {
+        "title": "Timetable",
+        "description": "A timetable is a set of days that share the same prices. Most plans need only one, covering every day.\n\nIf weekends or public holidays are priced differently, name this one for the days it does cover. You can add another timetable at the end, and it stays part of this same plan.\n\nThe name you give it is put in front of every rate you enter next, so a weekend peak and a weekday peak can both exist.",
+        "data": {
+          "name": "Timetable name",
+          "same_every_day": "Every day is the same",
+          "days": "Which days"
+        },
+        "data_description": {
+          "same_every_day": "Leave on unless weekends, weekdays or public holidays are priced differently.",
+          "days": "Ignored while 'Every day is the same' is on. Public holidays need a holiday sensor, which is set under Configure.",
+          "name": "Every day, Weekday, Weekend, Public holidays - whatever fits. It prefixes this timetable's rates."
+        }
+      },
+      "periods": {
+        "title": "Time periods",
+        "description": "When each rate applies on {pattern}. The start is included and the end is not, so one period can end at 16:00 and the next begin at 16:00. A period running to midnight ends at 00:00.\n\nSo far:\n{so_far}\n\n{remaining}",
+        "data": {
+          "start": "Starts at",
+          "end": "Ends at",
+          "rate": "Rate during this period",
+          "on_submit": "When I submit"
+        },
+        "data_description": {
+          "on_submit": "Choose 'Continue to feed-in' when this timetable's day is covered. Every time period you have entered is kept."
+        }
+      },
+      "export_rates": {
+        "title": "Feed-in rates",
+        "description": "The feed-in prices on {pattern}. Each is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
+        "data": {
+          "name": "Feed-in rate name",
+          "export_cents": "You are paid (c/kWh)",
+          "on_submit": "When I submit",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "name": "Your own words - for example evening export, daytime export. '{pattern}' is put in front automatically.",
+          "on_submit": "Choose 'Continue to the feed-in time periods' when they are all in. Every feed-in rate you have entered is kept.",
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+        }
+      },
+      "export_periods": {
+        "title": "Feed-in time periods",
+        "description": "When each feed-in rate applies on {pattern}. These are independent of the import periods.\n\nSo far:\n{so_far}\n\n{remaining}",
+        "data": {
+          "start": "Starts at",
+          "end": "Ends at",
+          "rate": "Feed-in rate during this period",
+          "on_submit": "When I submit"
+        },
+        "data_description": {
+          "on_submit": "Choose 'Continue' when this timetable's day is covered."
+        }
+      },
+      "setup_failure": {
+        "title": "Setup failed",
+        "description": "The detail below is the whole error - select it and copy it.\n\n```\n{detail}\n```\n\nSubmit to close."
+      },
+      "feed_in": {
+        "title": "Feed-in",
+        "description": "What you are paid for exporting, on {pattern}.\n\nIf it is the same all day, leave the switch on and enter the price. If it changes through the day, turn it off and you will enter feed-in rates and their times, exactly as you did for the import side.",
+        "data": {
+          "export_same_all_day": "One price all day",
+          "export_flat_cents": "You are paid (c/kWh)",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable.",
+          "export_flat_cents": "Used only when the switch is on. Zero if you do not export.",
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+        }
+      },
+      "timetable_done": {
+        "title": "Timetable complete",
+        "description": "Timetables so far: {so_far}\n\nAdd another if weekends or public holidays are priced differently. It stays part of this same plan.",
+        "menu_options": {
+          "days": "Add a timetable for other days",
+          "finish": "Finish and create the plan"
+        }
+      }
+    },
+    "error": {
+      "name_required": "A name is needed.",
+      "rate_exists": "A rate with that name has already been entered.",
+      "days_required": "Choose at least one day.",
+      "end_before_start": "The end must be after the start.",
+      "bad_time": "That is not a valid time.",
+      "period_overlaps": "That overlaps a time period already entered.",
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
+      "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "demand_rate_required": "Enter a demand rate, or untick the demand period box.",
+      "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
+    },
+    "abort": {
+      "already_configured": "A channel with that name already exists.",
+      "setup_failed": "Setup was stopped by an error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tariff plan",
+        "description": "```\n{plan}\n```",
+        "menu_options": {
+          "rates_menu": "Rates — what energy costs",
+          "day_patterns_menu": "Day patterns — which days share a timetable",
+          "periods_pick_day_pattern": "Time periods — when each rate applies",
+          "general": "Supply charge, tax, plan dates, sensors",
+          "usage_tracking": "Track usage by rate",
+          "rate_plan_card": "Rate plan card",
+          "save": "Save and finish",
+          "export_menu": "Feed-in - what you are paid"
+        }
+      },
+      "failure": {
+        "title": "Something went wrong",
+        "description": "This screen failed. The detail below is the whole error — select it and copy it.\n\n```\n{detail}\n```\n\nSubmit to go back to the plan."
+      },
+      "rates_menu": {
+        "title": "Rates",
+        "description": "A rate is a named price. Define it once; point as many time periods at it as you like, and changing the price changes them all.\n\n```\n{rates}\n```",
+        "menu_options": {
+          "rate_add": "Add a rate",
+          "rate_pick": "Edit a rate",
+          "rate_remove": "Remove a rate",
+          "init": "Back"
+        }
+      },
+      "rate_pick": {
+        "title": "Which rate?",
+        "data": {
+          "name": "Rate"
+        }
+      },
+      "rate_add": {
+        "title": "Rate",
+        "description": "Prices are entered in cents per kWh, as bills quote them, and published in dollars per kWh, which is what the Energy dashboard wants.",
+        "data": {
+          "name": "Rate name",
+          "timetable": "Timetable this rate belongs to",
+          "import_cents": "You pay (c/kWh)"
+        },
+        "data_description": {
+          "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has."
+        },
+        "sections": {
+          "demand": {
+            "name": "Demand charging",
+            "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
+            "data": {
+              "demand_period": "This is a demand charge period",
+              "demand_rate_per_kw_month": "Demand charge (per kW per month)"
+            },
+            "data_description": {
+              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
+              "demand_rate_per_kw_month": "Declared and published as entered. The monthly amount is not calculated here - that needs a measured peak, which is the consumer's arithmetic."
+            }
+          },
+          "allowance": {
+            "name": "Allowance",
+            "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
+            "data": {
+              "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
+              "fallback_rate": "Rate once the allowance is used up",
+              "count_allowance": "Count usage against this allowance (not yet implemented)",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+            },
+            "data_description": {
+              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+            }
+          },
+          "constraints_section": {
+            "name": "Constraints",
+            "description": "What you are declaring this rate means. Nothing here is enforced by this component.",
+            "data": {
+              "information_constraints": "Information only rules",
+              "enforceable_constraints": "Enforceable rules"
+            },
+            "data_description": {
+              "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+              "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both."
+            }
+          }
+        }
+      },
+      "rate_remove": {
+        "title": "Remove a rate",
+        "data": {
+          "name": "Rate"
+        }
+      },
+      "day_patterns_menu": {
+        "title": "Day patterns",
+        "description": "A day pattern is a group of days that share the same timetable — every day, or weekdays and weekends separately, or a summer and a winter version.\n\nMost plans need only one.\n\n```\n{plan}\n```",
+        "menu_options": {
+          "day_pattern_add": "Add a day pattern",
+          "day_pattern_pick": "Edit a day pattern",
+          "day_pattern_duplicate": "Duplicate a day pattern",
+          "day_pattern_remove": "Remove a day pattern",
+          "init": "Back"
+        }
+      },
+      "day_pattern_pick": {
+        "title": "Which day pattern?",
+        "data": {
+          "name": "Day pattern"
+        }
+      },
+      "day_pattern_add": {
+        "title": "Day pattern",
+        "description": "```\n{plan}\n```",
+        "data": {
+          "name": "Name",
+          "same_every_day": "Every day is the same",
+          "days": "Which days",
+          "season_from": "Season starts (MM-DD)",
+          "season_to": "Season ends (MM-DD)",
+          "export_same_all_day": "Feed-in is one price all day",
+          "export_flat_cents": "Feed-in price (c/kWh)",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "same_every_day": "Leave this on unless weekends, weekdays or public holidays are priced differently.",
+          "days": "Ignored while 'Every day is the same' is on. Public holidays only appear as a choice once you nominate a holiday sensor under the general settings.",
+          "season_from": "Optional. Leave both empty for all year. A range may cross the new year, for example 11-01 to 03-31.",
+          "season_to": "Optional. Leave both empty for all year.",
+          "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable, then set the feed-in rates and their times under Feed-in.",
+          "export_flat_cents": "Used only while the switch above is on.",
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet. Used only while the switch above is on.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent. Used only while the switch above is on."
+        }
+      },
+      "day_pattern_duplicate": {
+        "title": "Duplicate a day pattern",
+        "description": "Copies the time periods, so a weekend or a season can be built from a shape that already works.",
+        "data": {
+          "source": "Copy from",
+          "name": "New name"
+        }
+      },
+      "day_pattern_remove": {
+        "title": "Remove a day pattern",
+        "data": {
+          "name": "Day pattern"
+        }
+      },
+      "periods_pick_day_pattern": {
+        "title": "Which day pattern's time periods?",
+        "description": "```\n{plan}\n```",
+        "data": {
+          "name": "Day pattern"
+        }
+      },
+      "periods_menu": {
+        "title": "Time periods",
+        "description": "The hours of the day, each priced at one of your rates. Together they must cover the whole day exactly once.\n\n```\n{plan}\n```",
+        "menu_options": {
+          "period_add": "Add a time period",
+          "period_pick": "Edit a time period",
+          "period_remove": "Remove a time period",
+          "init": "Back"
+        }
+      },
+      "period_pick": {
+        "title": "Which time period?",
+        "description": "```\n{plan}\n```",
+        "data": {
+          "period": "Time period"
+        }
+      },
+      "period_add": {
+        "title": "Time period",
+        "description": "The start time is included and the end time is not, so one period can end at 16:00 and the next begin at 16:00. A period that runs to midnight ends at 00:00.\n\n```\n{plan}\n```",
+        "data": {
+          "start": "Starts at",
+          "end": "Ends at",
+          "rate": "Rate during this period"
+        }
+      },
+      "period_remove": {
+        "title": "Remove a time period",
+        "description": "```\n{plan}\n```",
+        "data": {
+          "period": "Time period"
+        }
+      },
+      "general": {
+        "title": "General",
+        "data": {
+          "daily_supply_charge_cents": "Daily supply charge (c/day)",
+          "prices_include_gst": "Prices include tax",
+          "gst_percent": "Tax rate (%)",
+          "valid_from": "Plan valid from",
+          "valid_to": "Plan valid to",
+          "holiday_sensor": "Public holiday sensor",
+          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
+          "monthly_charge": "Monthly charge",
+          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
+        },
+        "data_description": {
+          "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
+          "valid_from": "Optional. Leave empty unless you are recording a plan that started on a known date.",
+          "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
+          "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
+          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
+          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
+          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
+        },
+        "error": {}
+      },
+      "usage_tracking": {
+        "title": "Track usage by rate",
+        "description": "Home Assistant can count your kilowatt hours into a separate total for each rate, so you can see how much you used at each price. That is a Utility Meter helper: it makes one total per rate, plus a dropdown saying which total is currently counting.\n\nNothing moves that dropdown on its own, so people normally write an automation for it. This screen can create the helper and keep the dropdown pointed at the rate in force, which is the only thing this integration ever writes.\n\nYour rates: {rates}\nCurrently keeping in step: {linked}",
+        "menu_options": {
+          "meter_create": "Create a Utility Meter for these rates",
+          "meter_link": "Keep an existing dropdown in step",
+          "init": "Back"
+        }
+      },
+      "meter_create": {
+        "title": "Create a Utility Meter",
+        "description": "One monthly total per rate will be created, named after these rates: {rates}\n\nThe helper belongs to Home Assistant's Utility Meter integration, not to this one. Renaming a rate later will not rename its total, and deleting this channel will not delete the helper.",
+        "data": {
+          "name": "Helper name",
+          "source_energy_sensor": "Energy sensor to count"
+        },
+        "data_description": {
+          "source_energy_sensor": "The kilowatt hour total you want split by rate — usually your grid import sensor."
+        }
+      },
+      "meter_link": {
+        "title": "Keep the dropdown in step",
+        "description": "Choose the tariff dropdowns to set to the rate in force whenever the rate changes. The tariff names on the helper must match your rate names exactly: {rates}\n\nLeave empty to do nothing.",
+        "data": {
+          "tariff_selects": "Tariff dropdowns"
+        },
+        "data_description": {}
+      },
+      "rate_plan_card": {
+        "title": "Rate plan card",
+        "description": "For transcribing into an inverter's own tariff screen. Nothing is sent anywhere.\n\n```\n{card}\n```"
+      },
+      "export_menu": {
+        "title": "Feed-in",
+        "description": "Feed-in rates, and when they apply. Whether a timetable uses one price all day or these periods is set on the timetable itself.\n\n```\n{rates}\n```",
+        "menu_options": {
+          "export_rate_add": "Add a feed-in rate",
+          "export_rate_pick": "Edit a feed-in rate",
+          "export_rate_remove": "Remove a feed-in rate",
+          "export_periods_pick": "Feed-in time periods",
+          "init": "Back"
+        }
+      },
+      "export_rate_pick": {
+        "title": "Which feed-in rate?",
+        "data": {
+          "name": "Feed-in rate"
+        }
+      },
+      "export_rate_add": {
+        "title": "Feed-in rate",
+        "description": "Entered in cents per kWh, as the bill quotes it.",
+        "data": {
+          "name": "Feed-in rate name",
+          "export_cents": "You are paid (c/kWh)",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+        }
+      },
+      "export_rate_remove": {
+        "title": "Remove a feed-in rate",
+        "data": {
+          "name": "Feed-in rate"
+        }
+      },
+      "export_periods_pick": {
+        "title": "Feed-in time periods"
+      }
+    },
+    "error": {
+      "name_required": "A name is needed.",
+      "rate_exists": "A rate with that name already exists.",
+      "rate_in_use": "That rate is used by a time period. Change the time period first.",
+      "days_required": "Choose at least one day.",
+      "end_before_start": "The end must be after the start.",
+      "bad_time": "That is not a valid time.",
+      "validity_backwards": "The plan cannot end before it starts.",
+      "meter_not_created": "The Utility Meter helper could not be created. The reason is in the log.",
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
+      "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "demand_rate_required": "Enter a demand rate, or untick the demand period box.",
+      "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
+    }
+  },
+  "selector": {
+    "day_tokens": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday",
+        "holiday": "Public holidays"
+      }
+    },
+    "submit_rates": {
+      "options": {
+        "add": "Add another rate",
+        "continue": "Continue to the time periods"
+      }
+    },
+    "submit_periods": {
+      "options": {
+        "add": "Add another time period",
+        "continue": "Continue to feed-in"
+      }
+    },
+    "submit_export_rates": {
+      "options": {
+        "add": "Add another feed-in rate",
+        "continue": "Continue to the feed-in time periods"
+      }
+    },
+    "submit_export_periods": {
+      "options": {
+        "add": "Add another feed-in time period",
+        "continue": "Continue"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "import_price": {
+        "name": "Import price"
+      },
+      "export_price": {
+        "name": "Export price"
+      },
+      "rate": {
+        "name": "Rate"
+      },
+      "next_rate_change": {
+        "name": "Next rate change"
+      },
+      "next_export_change": {
+        "name": "Next export change"
+      },
+      "daily_supply_charge": {
+        "name": "Daily supply charge"
+      },
+      "allowance_remaining": {
+        "name": "Allowance remaining"
+      },
+      "supply_charge_today": {
+        "name": "Supply charge today"
+      },
+      "supply_charge_energy": {
+        "name": "Supply charge energy"
+      }
+    },
+    "binary_sensor": {
+      "demand_period_active": {
+        "name": "Demand period active"
+      }
+    }
+  },
+  "services": {
+    "get_intervals": {
+      "name": "Get intervals",
+      "description": "Returns the forward series of priced intervals with the rules in force.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Channel",
+          "description": "Which tariff channel to read."
+        },
+        "hours": {
+          "name": "Hours",
+          "description": "How far ahead to project."
+        },
+        "resolution_minutes": {
+          "name": "Resolution",
+          "description": "Length of each interval in minutes."
+        }
+      }
+    }
+  },
+  "issues": {
+    "invalid_plan": {
+      "title": "The tariff plan for {title} is not valid",
+      "description": "The plan was loaded but does not pass validation, so prices may be missing for part of the day. Open Configure and correct the following:\n\n{problems}"
+    }
+  },
+  "exceptions": {
+    "entry_not_found": {
+      "message": "No tariff channel with the id {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "The tariff channel {title} is not loaded, so its intervals cannot be read."
+    },
+    "plan_unreadable": {
+      "message": "The stored tariff plan could not be read: {error}"
+    }
+  }
+}

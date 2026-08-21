@@ -1,0 +1,38 @@
+{
+  "entity": {
+    "sensor": {
+      "import_price": {
+        "default": "mdi:transmission-tower-import"
+      },
+      "export_price": {
+        "default": "mdi:transmission-tower-export"
+      },
+      "rate": {
+        "default": "mdi:tag-multiple"
+      },
+      "next_rate_change": {
+        "default": "mdi:clock-start"
+      },
+      "next_export_change": {
+        "default": "mdi:clock-end"
+      },
+      "daily_supply_charge": {
+        "default": "mdi:calendar-clock"
+      },
+      "allowance_remaining": {
+        "default": "mdi:battery-clock"
+      },
+      "supply_charge_today": {
+        "default": "mdi:cash-clock"
+      },
+      "supply_charge_energy": {
+        "default": "mdi:counter"
+      }
+    }
+  },
+  "services": {
+    "get_intervals": {
+      "service": "mdi:table-clock"
+    }
+  }
+}

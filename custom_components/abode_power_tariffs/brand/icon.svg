@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Abode Power Tariffs</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2B6D8D"/>
+      <stop offset="1" stop-color="#19475D"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" ry="56" fill="url(#bg)"/>
+
+  <!-- Roof -->
+  <polygon points="128,54 206,116 50,116" fill="#F2C14E"/>
+
+  <!-- Body -->
+  <path d="M68 116 h120 v70 a16 16 0 0 1 -16 16 h-88 a16 16 0 0 1 -16 -16 z" fill="#FFFFFF"/>
+
+  <!-- Badge: power -->
+  <path d="M145 119 L94 171 L122 171 L111 199 L163 147 L134 147 Z" fill="#18465C"/>
+</svg>
