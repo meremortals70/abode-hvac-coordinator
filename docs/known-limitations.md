@@ -6,11 +6,10 @@ you were told about.
 ## Nothing has been proven on real hardware
 
 **No release from 0.6.0 onward has been confirmed working in Jason's house.**
-284 tests pass, `mypy --strict` is clean across all 23 modules with Home
-Assistant installed, and the integration loads and unloads cleanly in the test
+323 tests pass and the integration loads and unloads cleanly in the test
 harness. None of that tells you a compressor did the right thing.
 
-Three faults have been found only by running it:
+Three faults were found only by running it:
 
 - 0.6.0 crashed on setup.
 - 0.8.0 crashed the evaluation loop the first time a weather forecast was
@@ -23,7 +22,39 @@ Three faults have been found only by running it:
 All three are fixed and all three had tests written afterwards, which is the
 wrong order.
 
+**Eight more were found in 0.8.6 by reading the source**, without running
+anything — three of them capable of holding an occupied room's air
+conditioning off for hours with nothing in the log. Recorded in
+[the review](architecture-review-2026-08.md). Passing tests told you nothing
+about any of them, because the tests asserted the behaviour the code had.
+
+The test suite also ran against a real Home Assistant for the first time in
+0.8.6, and immediately found two tests that had never passed. Treat a test
+that has never been executed as unwritten.
+
 Treat the first week as a test and read this page before relying on it.
+
+## Eleven known findings are recorded and not fixed
+
+The 0.8.6 review produced nineteen findings. Eight are fixed in 0.8.6; the
+other eleven are written down in
+[the review](architecture-review-2026-08.md) and are not built. The ones most
+likely to affect you:
+
+- **`k_sensible` has no operating-point term**, so a coefficient learned near
+  setpoint and one learned during pulldown average into a number describing
+  neither. The energy projection and preconditioning estimate both rest on it.
+- **Power management is a veto, not a budget.** It can refuse the compressor;
+  it cannot run it gently within an allowance. There is no throttle.
+- **There is no grid sensor.** A constraint named `no_grid_import` is enforced
+  against solar, load and state of charge, none of which is grid flow.
+- **Multi-head systems are not modelled.** Heads sharing an outdoor unit share
+  one compressor, and nothing in the configuration knows that.
+- **The dry-versus-cool comparison uses the derivative at constant relative
+  humidity**, which overstates cooling by roughly a third at 25 °C and 60% —
+  more than the 25% handicap given to drying.
+- **Price is fetched and never used.** Precool depends entirely on a
+  hand-entered `precool_opportunity` label in the tariff plan.
 
 ## Actuation is unproven against a real unit
 

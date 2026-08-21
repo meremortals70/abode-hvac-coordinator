@@ -261,6 +261,12 @@ class DecisionTrace:
     #: True when the commanded setpoint sits near enough the room's dew point
     #: that surfaces may sweat. Reported, never used to refuse an actuation.
     condensation_risk: bool = False
+    #: Set when the short-cycle guard refused to let the compressor stop. The
+    #: decision stands — a cover or fan step is still carried out — but the
+    #: unit is left running rather than being commanded off or into a mode
+    #: that would stop it. Without this the guard, which exists to protect the
+    #: compressor, silently replaced cover and fan decisions with COMPRESSOR.
+    hold_compressor: bool = False
     #: Feeds that answered with a value too old to act on, and how old. A room
     #: holding because its sensor died must say so, not simply hold.
     stale_feeds: list[str] = field(default_factory=list)
@@ -311,6 +317,7 @@ class DecisionTrace:
             "stale_feeds": list(self.stale_feeds),
             "demand": self.demand,
             "actuator": str(self.actuator),
+            "hold_compressor": self.hold_compressor,
             "reasons": list(self.reasons),
             "rejected": list(self.rejected),
             "model": dict(self.model),

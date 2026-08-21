@@ -51,6 +51,16 @@ unoccupied, or held because a window is open has an error no actuator is
 addressing. Integrating through it winds the trim to its limit against nothing,
 and the first thing the room does on coming back is overshoot by three degrees.
 
+**The gate reads the step that was actually applied, not the one that was
+wanted.** The short-cycle guard runs first and the integrator afterwards. Until
+0.8.6 the order was reversed, so a start the guard had just refused was
+integrated against anyway — winding the trim, in the one situation the gate
+exists to prevent. The effect was small, about 0.03 °C per refusal, and it was
+still precisely the condition the module refuses everywhere else.
+
+A compressor the guard is holding on **does** count as regulating: it is
+running and working toward the target, whatever step the decision named.
+
 An interval longer than fifteen minutes is capped, so a restart or a blocked
 coordinator cannot deliver an hour of accumulated error in one step.
 
@@ -79,10 +89,25 @@ thirty seconds.
 - **Ten minutes minimum run** once started
 - **Five minutes minimum off** once stopped
 
-A refused transition holds whatever the unit is already doing and writes the
-refusal into the trace with the time remaining. A room that appears to ignore
-its own decision with no explanation is exactly the fault this project will not
-ship.
+**Dry mode counts as running.** It energises the compressor. Treating it as a
+stop, as the guard did before 0.8.6, blocked a cool-to-dry change for ten
+minutes as though the compressor were shutting down, then recorded it as
+stopped while it was in fact running — after which the minimum *off* time
+blocked the return to cool, for a stop that never happened.
+
+A refused *start* commands nothing this cycle.
+
+A refused *stop* holds the compressor and leaves the decision alone. The guard
+previously replaced the step with `compressor` outright, which meant a
+compressor-protection mechanism silently cancelled cover and fan actions that
+had nothing to do with the compressor — a blind that should have closed simply
+did not. The trace now carries `hold_compressor`, and the actuator skips only
+the parts of the decision that would have stopped the compressor early: the
+covers still move, and the refusal is still written into the trace with the
+time remaining.
+
+A room that appears to ignore its own decision with no explanation is exactly
+the fault this project will not ship.
 
 ## Reading it
 
@@ -93,6 +118,7 @@ ship.
 | its `regulation_trim_c` attribute | how far Layer 2 has moved it, and which way |
 | the mode sensor's `reasons` | each integration step, in plain words |
 | the mode sensor's `rejected` | short-cycle refusals, with minutes remaining |
+| the mode sensor's `hold_compressor` | true while a refused stop is holding the unit on |
 
 A trim that settles near zero means your room sensor and the unit's agree. A
 trim that settles at −1.8 means it has found a real 1.8 °C offset and is

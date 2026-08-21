@@ -61,6 +61,16 @@ enough about that room. Until then the trace says
 `coast: thermal model has not converged for this room` and the band is simply
 held — the hysteresis fallback, working as intended rather than a fault.
 
+**A sunlit room needs the solar coefficient too, not just heat loss.** Until
+0.8.6 the drift prediction added the solar term only once `k_solar` had
+converged, but returned a number either way — so a west-facing room in the
+afternoon got a drift estimate built from heat loss alone, missing its largest
+contribution. The model reported that the band would hold, and the room entered
+`COAST` with the sun full on the glass. The prediction now refuses when the sun
+is on the room and the solar term is not yet known, which the mode machine
+already treats as *do not coast*. Absence of a converged coefficient is not
+evidence that its contribution is zero.
+
 When coasting starts and stops is covered in [Behaviour](behaviour.md).
 
 ## Lockout

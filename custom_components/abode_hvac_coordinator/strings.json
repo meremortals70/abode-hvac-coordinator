@@ -45,7 +45,8 @@
       "single_instance_allowed": "HVAC Coordinator is already set up."
     },
     "error": {
-      "band_inverted": "A band's lower bound must be below its upper bound."
+      "band_inverted": "A band's lower bound must be below its upper bound.",
+      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room."
     }
   },
   "options": {
@@ -166,7 +167,8 @@
       }
     },
     "error": {
-      "band_inverted": "A band's lower bound must be below its upper bound."
+      "band_inverted": "A band's lower bound must be below its upper bound.",
+      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room."
     },
     "abort": {}
   },
@@ -278,6 +280,10 @@
     "forecast_unavailable": {
       "title": "The weather forecast could not be read",
       "description": "The weather entity did not return an hourly forecast: {reason}\n\nEvery room is still held to its comfort band. Precool falls back to comparing current conditions, which will under-use a free window on a day that heats up later. The last forecast read is kept and used until a fetch succeeds."
+    },
+    "shared_climate_entity": {
+      "title": "Two rooms are configured against the same air conditioner",
+      "description": "{conflicts}\n\nOne climate entity cannot be driven by more than one room. Each room solves its own setpoint and would command that entity every cycle, so the two would overwrite one another with no error reported anywhere.\n\nThe affected rooms are locked out and will not actuate until this is resolved. Give each room its own climate entity, or remove all but one of them, from Configure → Rooms.\n\nA ducted system genuinely does serve several rooms from one indoor unit. This controller cannot drive one yet: it solves a dry-bulb target per room, and a ducted system has a single setpoint with a damper per zone."
     }
   },
   "selector": {

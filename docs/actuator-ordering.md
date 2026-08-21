@@ -55,6 +55,9 @@ Skipped when:
 - The sun is not on the room — moving a blind at night achieves nothing
 - The covers are already where they need to be (within 5% of the useful
   extreme), which is what lets the ordering escalate
+- **No cover in the room reports a position.** Since 0.8.6 an unknown position
+  skips the step, and the trace says
+  `covers: no cover in this room reports its position`
 
 **Cover control can be turned off per room**, independent of whether covers
 are configured. A semi-transparent blind kept for privacy or glare must not
@@ -81,6 +84,24 @@ sensor, which overrides the calculation.
 
 Cover control belongs to this integration, which handles sun geometry,
 venetian dual-axis sequencing and glare zones. This controller sets intent only.
+
+### Covers with no reported position are skipped
+
+Choosing covers is not free of consequence: it turns the climate entity off for
+that cycle, because the point of trying the free option first is not to spend
+compressor energy alongside it.
+
+Until 0.8.6 a cover that reported no `current_position` was treated as worth
+commanding — command it once, the reasoning went, and let the next evaluation
+see the result. The next evaluation sees the same unknown. So a room whose
+blinds never report a position chose covers on every cycle the sun was on the
+glass, and the air conditioning stayed off for as long as that lasted. Nothing
+cleared it: with the unit off the room heats, so the demand persists.
+
+An unknown position now skips the step and the ladder falls through to fan,
+dry and compressor as it would for a room with no covers at all. If your blinds
+do not report a position, cover control simply does not apply to that room, and
+the trace names the missing reading rather than leaving a silent gap.
 
 ## 2. Fan
 
@@ -109,14 +130,23 @@ it is falling back. See [Drying against cooling](latent-and-sensible.md).
 Reached only when everything above has been ruled out. For heating, covers are
 the only cheaper step, so heating goes covers → compressor.
 
-**Skipped when the room may not run it from the grid right now.** If power
-management is configured and the tariff's `no_grid_import` constraint is in
-force for this room's interval, the compressor step is refused unless solar
-or the battery can cover it — checked inline here, the same way `can_heat`
-and `can_cool` are checked, not as a separate step. See
-[Tariff](tariff.md#no_grid_import-what-it-actually-does). The trace records
-`compressor: no grid import permitted, and battery/solar cannot cover this
-room's projected need`.
+**Skipped only on a computed power shortfall.** If power management is
+configured and the tariff's `no_grid_import` constraint is in force for this
+room's interval, the compressor step is refused when the arithmetic says
+neither solar nor the battery can carry the room until the constraint lifts —
+checked inline here, the same way `can_heat` and `can_cool` are checked, not
+as a separate step. The trace records `compressor: no grid import permitted,
+and battery/solar cannot cover this room's projected need`.
+
+**It fails open.** Every case the controller cannot answer — a missing or
+stale reading, a tariff series that does not reach the end of the window, no
+solved target yet, a thermal model not converged enough to project — leaves
+the room its comfort and logs a debug line. A projection that cannot be made
+is not a reason to stop cooling an occupied room. Before 0.8.6 all four
+returned a refusal, and since an unconverged model is the state every fresh
+install is in, switching power management on stopped the compressor for the
+whole of a no-import window. See
+[Tariff](tariff.md#no_grid_import-what-it-actually-does).
 
 ## What is actually called
 

@@ -1,7 +1,7 @@
 {
   "domain": "abode_hvac_coordinator",
   "name": "Abode HVAC Coordinator",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "codeowners": [
     "@meremortals70"
   ],

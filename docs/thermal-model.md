@@ -7,8 +7,8 @@ rather than needing a training period before it does anything.
 
 | Coefficient | Meaning | Learned from |
 |---|---|---|
-| `k_loss` | How fast the room drifts toward outdoor conditions, per °C of difference per hour | Intervals with the compressor off |
-| `k_solar` | How much the sun raises the room while it is on the glass, °C/hour | Sunlit intervals with the compressor off |
+| `k_loss` | How fast the room drifts toward outdoor conditions, per °C of difference per hour | Intervals with the compressor off and dry mode off |
+| `k_solar` | How much the sun raises the room while it is on the glass, °C/hour | Sunlit intervals with the compressor off and dry mode off |
 | `k_sensible` | How fast the compressor moves dry bulb, °C/hour | Intervals with the compressor running |
 | `k_latent` | How fast dry mode moves humidity, percentage points/hour | Intervals with dry mode running |
 
@@ -42,6 +42,23 @@ it.
 Each coefficient learns only from intervals where it was the thing driving. An
 interval with the compressor running teaches nothing reliable about passive heat
 loss, because the compressor swamps it.
+
+**Whether the compressor is running is read from `hvac_action`, not from the
+mode.** They are different questions. A head sitting at setpoint in `cool`
+reports `cool` with the compressor idle, and until 0.8.6 all of that idle time
+counted as an interval the compressor was driving — so `k_sensible` was an
+average of running and idling and described neither. Where a climate entity
+publishes no `hvac_action` at all the mode is used as a fallback, and which
+source answered is recorded per room in diagnostics, because a room learning
+from mode has a diluted sensible coefficient and that should be visible rather
+than assumed.
+
+**Dry mode is not a passive interval.** It energises the compressor and moves
+both dry bulb and humidity. Passive learning previously ran whenever the
+compressor direction was zero, and dry mode has no sensible direction, so every
+drying interval was folded into `k_loss` and `k_solar` as though nothing had
+been driving the room. Since 0.8.6 a drying interval teaches the latent
+coefficient and nothing else.
 
 Full matrix estimation is not used. Over short intervals the coefficients are
 near-independent — heat loss acts when the compressor is off, compressor

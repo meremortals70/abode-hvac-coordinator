@@ -37,6 +37,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Fan or air movement | No | Falls back to whether the air conditioner is running |
 | Windows and doors | No | No opening interlock |
 | Blinds | No | Covers are never used |
+| — blinds that report no position | — | The cover step is skipped, and the trace says so. See [Actuator ordering](actuator-ordering.md#covers-with-no-reported-position-are-skipped) |
 | Allow blind control | Seeded (on) | Off keeps this room's blinds untouched even with blinds configured — for a semi-transparent blind kept for privacy or glare, not shading |
 | Wait before starting | Seeded | 2 minutes. Filters out grab-and-go visits |
 | Wait before stopping | Seeded | 10 minutes. The answering-the-door allowance |
@@ -54,6 +55,24 @@ screen, and no free text box that could be filled in by accident.
 
 The list offers six built-in reasons and accepts one you type. A reason you type
 is stored for the whole installation and offered for every room from then on.
+
+#### One air conditioner per room
+
+Two rooms cannot be pointed at the same climate entity. Each solves its own
+setpoint from its own comfort band and would command that entity on every
+cycle, and each keeps its own record of what it last sent — so neither errors,
+nothing appears in the log, and the unit does whatever arrived last.
+
+Since 0.8.6 the room form refuses a climate entity another room already
+claims. If a configuration saved before 0.8.6 already contains one, both rooms
+are locked out on load, their traces name the conflict, and a repair issue
+lists the entity and the rooms. Give each room its own entity, or remove all
+but one of the rooms.
+
+A ducted system genuinely does serve several rooms from one indoor unit. This
+controller cannot drive one: its output is a dry-bulb target per room, and a
+ducted system has a single setpoint with a damper per zone. That is a different
+control law, not a configuration.
 
 ### Comfort bands
 
@@ -144,8 +163,13 @@ writes to any of them — it only reads.
 All five must be set together before any of it engages — a partial
 configuration behaves exactly as no configuration. The reserve margin is the
 one global figure; each room otherwise assesses its own need against the
-shared live readings without reference to what any other room is doing. See
-[Tariff](tariff.md) for what this actually decides.
+shared live readings without reference to what any other room is doing.
+
+**Turning this on cannot cost you comfort on a guess.** A room is refused only
+when the arithmetic can be done and comes out short. Every case the controller
+cannot answer — a stale reading, an unconverged thermal model, a tariff series
+that does not reach the end of the window — leaves the room its comfort. See
+[Tariff](tariff.md#it-fails-open).
 
 ## What you do not configure, and why
 

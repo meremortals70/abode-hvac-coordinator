@@ -147,20 +147,34 @@ class Actuator:
         self._last_cover: dict[str, int] = {}
 
     async def async_apply(self, room: RoomConfig, trace: DecisionTrace) -> None:
-        """Carry out one room's decision."""
+        """Carry out one room's decision.
+
+        `trace.hold_compressor` is set when the short-cycle guard refused to
+        let the compressor stop. Every branch below that would stop it —
+        commanding off, or switching to a mode that de-energises it — is
+        skipped while it is set. The decision itself still stands and is still
+        published; only the part that would have stopped the compressor early
+        is deferred to a later cycle.
+        """
         if trace.actuator is ActuatorStep.COVERS:
             await self._async_move_covers(room, trace)
             # Covers are the whole action this cycle: the point of trying them
             # first is not to spend compressor energy at the same time.
-            await self._async_command(room, trace, OFF_MODES, None, active=False)
+            if not trace.hold_compressor:
+                await self._async_command(room, trace, OFF_MODES, None, active=False)
             return
 
         if trace.actuator is ActuatorStep.NONE:
-            if trace.mode in (Mode.LOCKOUT, Mode.UNOCCUPIED):
+            if (
+                trace.mode in (Mode.LOCKOUT, Mode.UNOCCUPIED)
+                and not trace.hold_compressor
+            ):
                 await self._async_command(room, trace, OFF_MODES, None, active=False)
             return
 
         if trace.actuator is ActuatorStep.FAN:
+            if trace.hold_compressor:
+                return
             await self._async_command(room, trace, FAN_MODES_ORDER, None, active=False)
             return
 

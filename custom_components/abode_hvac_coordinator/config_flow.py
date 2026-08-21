@@ -252,8 +252,30 @@ class _RoomSteps:
                 ),
             )
 
-        self._room = room_from_input(user_input)
+        room = room_from_input(user_input)
+        if self._climate_entity_taken(room):
+            # Refused here rather than accepted and diagnosed later. Two rooms
+            # on one entity each command their own setpoint every cycle and
+            # neither errors, so the fault is invisible once it is saved.
+            schema = room_schema(known_lockout_reasons(self._stored_lockout_reasons()))
+            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
+                step_id="room",
+                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                    schema, user_input
+                ),
+                errors={CONF_CLIMATE_ENTITY: "climate_entity_in_use"},
+            )
+
+        self._room = room
         return await self.async_step_bands()
+
+    def _climate_entity_taken(self, room: dict[str, Any]) -> bool:
+        """Whether another configured room already drives this entity.
+
+        Always False during initial setup: there is no other room yet. The
+        options flow overrides it.
+        """
+        return False
 
     async def async_step_bands(
         self, user_input: dict[str, Any] | None = None
@@ -714,6 +736,21 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             **{k: v for k, v in existing.items() if v is not None},
             CONF_LOCKOUT_REASON: existing.get(CONF_LOCKOUT_REASON) or NOT_LOCKED_OUT,
         }
+
+    def _climate_entity_taken(self, room: dict[str, Any]) -> bool:
+        """Whether another room already drives this room's climate entity.
+
+        The room being edited does not count against itself, and neither does
+        a room whose id this one is about to replace — renaming a room keeps
+        its entity, and `_save_room` replaces by id.
+        """
+        replacing = {room[CONF_ROOM_ID], self._editing}
+        entity_id = room[CONF_CLIMATE_ENTITY]
+        return any(
+            other[CONF_ROOM_ID] not in replacing
+            and other.get(CONF_CLIMATE_ENTITY) == entity_id
+            for other in self._rooms
+        )
 
     def _suggested_lockout(self) -> dict[str, Any]:
         reason = self._existing().get(CONF_LOCKOUT_REASON)

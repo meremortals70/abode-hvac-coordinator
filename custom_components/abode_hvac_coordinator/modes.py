@@ -236,11 +236,22 @@ def _latent_route(
 
 
 def _covers_can_help(demand: str, position: float | None) -> bool:
-    """Whether the covers still have travel left in the useful direction."""
+    """Whether the covers still have travel left in the useful direction.
+
+    **Unknown position means no.** This previously returned True, on the
+    reasoning that the covers should be commanded once and the next
+    evaluation would see the result. The next evaluation sees the same
+    unknown, so a room whose covers never report `current_position` chose
+    COVERS on every cycle — and choosing COVERS turns the climate entity off
+    for that cycle. A west-facing room with position-less blinds therefore
+    had its air conditioning held off from the moment the sun reached the
+    glass until it left, with nothing in the trace to say why.
+
+    Refusing is the safe direction: the ladder falls through to the fan, dry
+    and compressor steps, and the rejection names the missing reading.
+    """
     if position is None:
-        # No position reported. Command them once and let the next evaluation
-        # see the result, rather than assuming either way.
-        return True
+        return False
     if demand == "cool":
         return position > COVER_TRAVEL_MARGIN
     return position < (100.0 - COVER_TRAVEL_MARGIN)
@@ -315,6 +326,14 @@ def select_actuator(
         trace.rejected.append("covers: cannot tell whether the sun is on this room")
     elif not inputs.direct_sun:
         trace.rejected.append("covers: no sun on this room to act on")
+    elif inputs.cover_position is None:
+        # Distinct from "already where they need to be": nothing is known
+        # about where they are, so there is no way to tell whether commanding
+        # them would achieve anything. Named separately so a room silently
+        # skipping its free step is diagnosable from the trace alone.
+        trace.rejected.append(
+            "covers: no cover in this room reports its position"
+        )
     elif not _covers_can_help(demand, inputs.cover_position):
         # Already where they need to be. Saying so is what lets the ordering
         # move on to the next step instead of choosing covers forever.

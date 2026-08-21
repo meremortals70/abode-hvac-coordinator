@@ -186,3 +186,7 @@ ISSUE_UNRECOGNISED_CONSTRAINT: Final = "unrecognised_constraint"
 ISSUE_TARIFF_UNAVAILABLE: Final = "tariff_unavailable"
 ISSUE_FORECAST_UNAVAILABLE: Final = "forecast_unavailable"
 ISSUE_NO_BANDS: Final = "room_without_bands"
+#: Two or more rooms configured against the same climate entity. Raised as an
+#: error rather than a warning: the affected rooms are locked out until it is
+#: resolved, so it is not something that can be left standing.
+ISSUE_SHARED_CLIMATE_ENTITY: Final = "shared_climate_entity"

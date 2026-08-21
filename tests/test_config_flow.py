@@ -9,7 +9,10 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.abode_hvac_coordinator.const import (
     CONF_ALLOW_COVER_CONTROL,
@@ -22,6 +25,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     DOMAIN,
+    STARTUP_FETCH_DELAY,
 )
 
 
@@ -455,6 +459,14 @@ async def test_a_naive_forecast_does_not_take_the_evaluation_loop_down(
     )
 
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # The forecast is not fetched inline at setup. Since 0.8.4 it is a
+    # background task on `async_call_later`, so the clock has to advance past
+    # the first startup attempt before there is a trajectory to inspect. This
+    # test asserted against the pre-0.8.4 inline fetch and had never been run
+    # to find out; corrected in 0.8.6.
+    async_fire_time_changed(hass, dt_util.utcnow() + STARTUP_FETCH_DELAY * 2)
     await hass.async_block_till_done()
 
     coordinator = mock_config_entry.runtime_data

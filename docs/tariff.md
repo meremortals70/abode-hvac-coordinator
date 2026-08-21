@@ -85,18 +85,46 @@ permitted to run its compressor when:
   room's own projected need until the constraint clears, using the same
   thermal model that drives the demand forecast.
 
-Otherwise the room holds — comfort is not met from the grid during that
-window, and `select_actuator` records why in the decision trace, the same as
-any other rejected step.
+A room is refused only when that arithmetic can actually be done and comes out
+short. Then it holds, and `select_actuator` records why in the decision trace,
+the same as any other rejected step.
+
+**Solar headroom depends on whether the unit is already running.** A running
+compressor's draw is already inside the house load figure, so only a unit that
+is currently off has its rating added on top. Adding it either way counted the
+draw twice and made a room read as unaffordable the moment it started — the
+reading that justified starting it became the reading that stopped it. Fixed
+in 0.8.6.
 
 Each room assesses its own need independently against the shared live
 readings. Rooms do not negotiate with each other or reserve capacity for one
 another; the reserve margin is the one global figure that exists to leave
 headroom for the rest of the house.
 
-If any of the five readings is missing or older than fifteen minutes, or the
-thermal model has not learned enough yet to project a need, the room holds
-rather than run on an unknown.
+### It fails open
+
+**Comfort is a hard constraint, and a projection the controller cannot make is
+not grounds for withdrawing it.** Four cases cannot be answered, and every one
+of them leaves the room its comfort and writes a debug line rather than
+refusing:
+
+| Case | Result |
+|---|---|
+| A reading is missing, or older than fifteen minutes | Comfort held |
+| The tariff series does not reach the end of the no-import window | Comfort held |
+| The room has no solved target yet — its first cycle | Comfort held |
+| The thermal model has not converged enough to project | Comfort held |
+
+Before 0.8.6 all four returned a refusal. An unconverged thermal model is the
+state every fresh install sits in for its first days, so switching power
+management on stopped the compressor in occupied rooms for the entire
+no-import window, with a trace line blaming the battery. That is exactly
+backwards: the controller was withdrawing comfort on the strength of a number
+it had never measured.
+
+Where the readings and the model do exist, a shortfall is still a refusal.
+Failing open applies to what the controller cannot answer, never to what it
+can.
 
 ## Refresh and failure
 

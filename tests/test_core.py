@@ -277,6 +277,7 @@ class TestActuatorOrdering(unittest.TestCase):
                 presence=True,
                 has_covers=True,
                 direct_sun=True,
+                cover_position=100.0,
             ),
         )
         self.assertIs(trace.actuator, ActuatorStep.COVERS)
@@ -370,6 +371,7 @@ class TestActuatorOrdering(unittest.TestCase):
                 presence=True,
                 has_covers=True,
                 direct_sun=True,
+                cover_position=0.0,
             ),
         )
         self.assertIs(trace.actuator, ActuatorStep.COVERS)
@@ -947,10 +949,26 @@ class TestCoversEscalate(unittest.TestCase):
         trace = self._hot_room(cover_position=3.0)
         self.assertIsNot(trace.actuator, ActuatorStep.COVERS)
 
-    def test_unknown_position_still_commands_once(self):
-        """No reported position is not a reason to skip the cheapest step."""
+    def test_unknown_position_skips_the_cover_step(self):
+        """0.8.6. An unknown position is not a reason to command the covers.
+
+        This asserted the opposite until 0.8.6, and the opposite is what
+        turned the air conditioning off for the whole afternoon: choosing
+        COVERS commands the climate entity off for that cycle, and a room
+        whose covers never report a position chose COVERS on every cycle the
+        sun was on the glass. There is no state that clears it — the room
+        heats, so the demand persists.
+        """
         trace = self._hot_room(cover_position=None)
-        self.assertIs(trace.actuator, ActuatorStep.COVERS)
+        self.assertIsNot(trace.actuator, ActuatorStep.COVERS)
+        self.assertTrue(
+            any("reports its position" in r for r in trace.rejected), trace.rejected
+        )
+
+    def test_unknown_position_does_not_stall_the_ladder(self):
+        """0.8.6. The room still gets cooled; only the cover step is skipped."""
+        trace = self._hot_room(cover_position=None, relative_humidity=40.0)
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
 
     def test_already_open_covers_escalate_when_heating(self):
         trace = evaluate_room(
@@ -2861,3 +2879,77 @@ class TestDewPointIsAlwaysPublished(unittest.TestCase):
     def test_an_occupied_room_cooling_still_publishes_it(self):
         trace = self._trace(temperature_c=29.0, relative_humidity=70.0, presence=True)
         self.assertIsNotNone(trace.dew_point_c)
+
+
+class TestSolarTermIsNotSilentlyDropped(unittest.TestCase):
+    """0.8.6. A sunlit room with an unconverged solar term cannot be predicted.
+
+    `drift_rate` added the solar term only when `k_solar` had converged but
+    returned a rate either way, so a west-facing room in the afternoon got a
+    drift estimate built from heat loss alone — missing its largest
+    contribution. `holds_through` then said the band would hold and the room
+    entered COAST with the sun full on the glass.
+    """
+
+    def _loss_only(self):
+        """k_loss converged, k_solar never observed."""
+        model = _thermal.ThermalModel()
+        for _ in range(60):
+            model.observe(_interval(indoor_end_c=24.15, outdoor_c=30.0))
+        return model
+
+    def test_k_loss_converges_and_k_solar_does_not(self):
+        model = self._loss_only()
+        self.assertTrue(model.k_loss.converged)
+        self.assertFalse(model.k_solar.converged)
+
+    def test_a_shaded_room_still_predicts(self):
+        model = self._loss_only()
+        self.assertIsNotNone(model.drift_rate(24.0, 30.0, direct_sun=False))
+
+    def test_a_sunlit_room_refuses_to_predict(self):
+        model = self._loss_only()
+        self.assertIsNone(model.drift_rate(24.0, 30.0, direct_sun=True))
+
+    def test_coast_is_therefore_refused_in_the_sun(self):
+        model = self._loss_only()
+        self.assertIsNone(
+            model.holds_through(
+                24.0, 25.0, direct_sun=True, hours=1.0, lower_c=22.0, upper_c=27.0
+            )
+        )
+
+    def test_a_converged_solar_term_predicts_again(self):
+        model = self._loss_only()
+        for _ in range(60):
+            model.observe(
+                _interval(indoor_end_c=24.35, outdoor_c=30.0, direct_sun=True)
+            )
+        self.assertTrue(model.k_solar.converged)
+        self.assertIsNotNone(model.drift_rate(24.0, 30.0, direct_sun=True))
+
+
+class TestDryModeIsNotAPassiveInterval(unittest.TestCase):
+    """0.8.6. Dry mode energises the compressor, so the room is not drifting.
+
+    `observe` ran the passive update whenever `compressor` was zero, and
+    `compressor` reports a sensible direction that dry mode does not have. So
+    every interval spent drying was folded into `k_loss` and `k_solar` as
+    though nothing had been driving the room.
+    """
+
+    def test_a_drying_interval_teaches_nothing_about_heat_loss(self):
+        model = _thermal.ThermalModel()
+        model.observe(_interval(indoor_end_c=23.5, drying=True, humidity_end=55.0))
+        self.assertEqual(model.k_loss.samples, 0)
+        self.assertEqual(model.k_solar.samples, 0)
+
+    def test_it_still_teaches_the_latent_coefficient(self):
+        model = _thermal.ThermalModel()
+        model.observe(_interval(drying=True, humidity_end=55.0))
+        self.assertEqual(model.k_latent.samples, 1)
+
+    def test_an_idle_interval_still_teaches_heat_loss(self):
+        model = _thermal.ThermalModel()
+        model.observe(_interval(indoor_end_c=24.15))
+        self.assertEqual(model.k_loss.samples, 1)

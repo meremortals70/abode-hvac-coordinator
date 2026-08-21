@@ -20,10 +20,19 @@ rules:
   config-flow-test-coverage:
     status: todo
     comment: |
-      tests/test_config_flow.py exists and covers the room, bands, global
-      menu, outdoor, tariff, forecast and power steps, but has not been run —
-      this sandbox has no compatible pytest-homeassistant-custom-component
-      install. Not "done" until it has actually run green once.
+      tests/test_config_flow.py covers the room, bands, global menu, outdoor,
+      tariff, forecast and power steps and, as of 0.8.6, has actually been run
+      green — 26 tests, against Home Assistant 2025.1.4 under
+      pytest-homeassistant-custom-component 0.13.205.
+
+      Still todo, for two reasons. The run was against 2025.1.4, not the
+      2026.8.x this integration targets; the build sandbox is Python 3.12 and
+      cannot install a newer Home Assistant. And running it green for the
+      first time exposed a stale assertion — the naive-forecast test asserted
+      an inline forecast fetch that 0.8.4 replaced with a background task, and
+      had never been executed to find out. There is no reason to assume that
+      was the only one. Not "done" until it has run against the targeted
+      version.
   config-flow: done
   dependency-transparency:
     status: exempt
@@ -71,12 +80,15 @@ rules:
   test-coverage:
     status: todo
     comment: |
-      The 15 pure modules (hci, models, modes, tariff, thermal, forecast,
-      staleness, regulate, cycling, etc.) have 281 tests in tests/test_core.py,
-      run directly with python3 and passing. tests/test_init.py and
-      tests/test_config_flow.py cover the coordinator and config/options flow
-      but, like config-flow-test-coverage, have not been executed against a
-      real Home Assistant.
+      The 15 pure modules have 290 tests in tests/test_core.py, run directly
+      with python3 and passing. As of 0.8.6 the Home Assistant side tests run
+      too: 323 tests pass in total across test_core, test_attributes,
+      test_config_flow and test_init.
+
+      Still todo for the same reason as config-flow-test-coverage: the run is
+      against Home Assistant 2025.1.4, not the 2026.8.x targeted, and two
+      tests that had never executed were found to be asserting behaviour the
+      component had already moved away from.
 
   # --- Gold ---
   devices: done
@@ -130,4 +142,14 @@ rules:
   inject-websession:
     status: exempt
     comment: No HTTP calls are made.
-  strict-typing: todo
+  strict-typing:
+    status: todo
+    comment: |
+      mypy --strict runs clean on all 23 modules except 17 errors in
+      actuator.py and sensor.py, every one of them a symbol that moved between
+      Home Assistant 2025.1.4 (the newest this Python 3.12 build sandbox can
+      install) and the 2026.8.x targeted — ClimateEntityFeature, the climate
+      ATTR_* and SERVICE_* names, and AddConfigEntryEntitiesCallback. The
+      count is unchanged from 0.8.5. Nothing in shipped code depends on the
+      older names. Not "done" until mypy has run against the targeted
+      version with no errors at all.

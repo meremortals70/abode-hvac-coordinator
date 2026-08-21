@@ -183,7 +183,12 @@ class ThermalModel:
         self._observe_sensible(obs)
         self._observe_latent(obs)
 
-        if obs.compressor == 0:
+        # Passive means nothing was driving the room. Dry mode energises the
+        # compressor and moves both dry bulb and humidity, so an interval
+        # spent drying teaches nothing about how the room drifts on its own —
+        # it was previously folded into `k_loss` and `k_solar` because
+        # `compressor` reports direction and dry mode has none.
+        if obs.compressor == 0 and not obs.drying:
             self._observe_passive(obs)
 
     def _observe_sensible(self, obs: Observation) -> None:
@@ -243,11 +248,26 @@ class ThermalModel:
     def drift_rate(
         self, indoor_c: float, outdoor_c: float | None, *, direct_sun: bool
     ) -> float | None:
-        """Degrees per hour the room moves unaided, or None if not yet known."""
+        """Degrees per hour the room moves unaided, or None if not yet known.
+
+        **A sunlit room with an unconverged solar term returns None, not a
+        number missing its largest contribution.** This previously added the
+        solar term only when `k_solar` had converged but returned a rate
+        either way, so a west-facing room in the afternoon produced a drift
+        estimate built from heat loss alone. `holds_through` then reported
+        that the band would hold and the room entered COAST with the sun full
+        on the glass.
+
+        Absence of a converged coefficient is not evidence that the term is
+        zero. The only honest answer is that the model cannot say, which every
+        caller already handles.
+        """
         if not self.k_loss.converged or outdoor_c is None:
             return None
+        if direct_sun and not self.k_solar.converged:
+            return None
         rate = self.k_loss.value * (outdoor_c - indoor_c)
-        if direct_sun and self.k_solar.converged:
+        if direct_sun:
             rate += self.k_solar.value
         return rate
 

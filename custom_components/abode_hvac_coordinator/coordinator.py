@@ -11,7 +11,7 @@ evaluator and hands the resulting decision on.
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -85,6 +85,7 @@ from .const import (
     EVALUATION_INTERVAL,
     ISSUE_FORECAST_UNAVAILABLE,
     ISSUE_NO_BANDS,
+    ISSUE_SHARED_CLIMATE_ENTITY,
     ISSUE_TARIFF_UNAVAILABLE,
     ISSUE_UNRECOGNISED_CONSTRAINT,
     LOGGER,
@@ -321,6 +322,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: rather than once per room — every room's power check in a given
         #: pass sees the same figures.
         self._power_context: _PowerContext | None = None
+        #: Which attribute answered the compressor-running question for each
+        #: room last cycle: "hvac_action" or, where the entity publishes none,
+        #: "hvac_mode". Diagnostics only.
+        self._action_source: dict[str, str] = {}
 
     async def async_prepare(self) -> None:
         """Subscribe to entities, raise any issues, and start the first fetch.
@@ -601,6 +606,30 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, ISSUE_UNRECOGNISED_CONSTRAINT)
 
+        # Two rooms pointed at one climate entity write different setpoints to
+        # it on every cycle, and each one's dedupe cache sees only its own
+        # writes, so neither errors and neither wins. The configuration is
+        # reachable today and produces no log line at all. Naming it and
+        # refusing to actuate those rooms is the only safe reading; choosing a
+        # winner would be inventing an answer the user has not given.
+        if shared := self._shared_climate_entities():
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_SHARED_CLIMATE_ENTITY,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key=ISSUE_SHARED_CLIMATE_ENTITY,
+                translation_placeholders={
+                    "conflicts": "; ".join(
+                        f"{entity_id}: {', '.join(names)}"
+                        for entity_id, names in sorted(shared.items())
+                    )
+                },
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SHARED_CLIMATE_ENTITY)
+
         unbanded = sorted(
             room.name
             for room in self.rooms.values()
@@ -618,6 +647,34 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
         else:
             ir.async_delete_issue(self.hass, DOMAIN, ISSUE_NO_BANDS)
+
+    def _shared_climate_entities(self) -> dict[str, list[str]]:
+        """Climate entities claimed by more than one room, and by which.
+
+        A ducted system genuinely has one indoor unit serving several rooms,
+        which is why the configuration looks reasonable to enter. This
+        controller cannot drive one: its whole output is a dry-bulb target per
+        room, and a ducted system has one setpoint and a damper per zone. Until
+        that control law exists, the configuration is refused rather than
+        half-honoured.
+        """
+        by_entity: dict[str, list[str]] = {}
+        for room in self.rooms.values():
+            by_entity.setdefault(room.climate_entity_id, []).append(room.name)
+        return {
+            entity_id: sorted(names)
+            for entity_id, names in by_entity.items()
+            if len(names) > 1
+        }
+
+    def _rooms_sharing_a_climate_entity(self) -> frozenset[str]:
+        """Room ids that must not actuate because they share an entity."""
+        shared = set(self._shared_climate_entities())
+        return frozenset(
+            room.room_id
+            for room in self.rooms.values()
+            if room.climate_entity_id in shared
+        )
 
     @callback
     def async_request_heading_home(
@@ -669,8 +726,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 elif "precool" in reason:
                     trace.rejected.append(reason)
             trace.stale_feeds = self._stale.get(room.room_id, [])
-            self._regulate(room, inputs, trace, now)
+            # Guard first. The regulator's anti-windup gate has to see the
+            # step that will actually be carried out, not the one that was
+            # wanted before the short-cycle guard had its say.
             self._guard_cycling(room, trace, now)
+            self._regulate(room, inputs, trace, now)
             self._track_mode(room.room_id, trace.mode, now)
             traces[room.room_id] = trace
             LOGGER.debug(
@@ -709,7 +769,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             target_c=trace.target_dry_bulb_c,
             room_c=inputs.temperature_c,
             now=now,
-            regulating=trace.actuator is ActuatorStep.COMPRESSOR,
+            # The trim is only meaningful while the unit is working toward the
+            # solved target. That is true of a commanded compressor step and
+            # equally true of one the guard is holding on; it is not true of a
+            # start the guard has just refused, which is what integrating on
+            # the pre-guard decision used to wind against.
+            regulating=(
+                trace.actuator is ActuatorStep.COMPRESSOR or trace.hold_compressor
+            ),
         )
         trace.reasons.extend(state.notes)
         trace.regulation_trim_c = state.trim_c
@@ -732,16 +799,25 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         the exact fault this project refuses to ship.
         """
         state = self._regulators.setdefault(room.room_id, RegulatorState())
-        wants = trace.actuator is ActuatorStep.COMPRESSOR
+        # Dry mode energises the compressor. Treating it as a stop made the
+        # guard block a cool-to-dry change for ten minutes as though the
+        # compressor were shutting down, then record it as stopped while it
+        # was in fact running — after which the minimum *off* time blocked the
+        # return to cool, for a stop that never happened.
+        wants = trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
         permitted, reason = permit_transition(state, want_running=wants, now=now)
         if not permitted and reason is not None:
             trace.rejected.append(reason)
-            # Hold what the unit is already doing rather than commanding the
-            # transition. Stopping is deferred by holding the compressor;
-            # starting is deferred by commanding nothing.
-            trace.actuator = (
-                ActuatorStep.COMPRESSOR if state.running else ActuatorStep.NONE
-            )
+            if state.running:
+                # A stop was refused. Leave the decision alone and hold the
+                # compressor: replacing the step with COMPRESSOR cancelled
+                # cover and fan actions outright, which is a guard that exists
+                # to protect the compressor silently overruling decisions that
+                # have nothing to do with it.
+                trace.hold_compressor = True
+            else:
+                # A start was refused. Command nothing this cycle.
+                trace.actuator = ActuatorStep.NONE
             return
         note_transition(state, running=wants, now=now)
 
@@ -1086,22 +1162,51 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._pending_announcements.clear()
 
     def _compressor_direction(self, room: RoomConfig) -> int:
-        """Whether the unit is moving sensible heat, and which way."""
+        """Whether the unit is moving sensible heat, and which way.
+
+        **`hvac_action` first, for every mode.** The mode string says what the
+        unit was asked to do; `hvac_action` says what it is doing. A head
+        sitting at setpoint in `cool` reports `cool` with the compressor idle,
+        and reading the mode counted all of that idle time as an interval the
+        compressor was driving. Every sensible observation was diluted by it,
+        which is why `k_sensible` describes neither running nor idling.
+
+        The mode is used only where the entity publishes no `hvac_action` at
+        all. Which source answered is recorded, so a unit that never publishes
+        the attribute is visible in diagnostics rather than quietly degrading
+        the model.
+        """
         state = self.hass.states.get(room.climate_entity_id)
         if state is None:
+            self._action_source.pop(room.room_id, None)
             return 0
-        if state.state == "cool":
-            return -1
-        if state.state == "heat":
-            return 1
-        if state.state in ("heat_cool", "auto"):
-            # Direction is whatever the unit decided. hvac_action says which.
-            action = state.attributes.get("hvac_action")
+
+        action = state.attributes.get("hvac_action")
+        if action is not None:
+            self._action_source[room.room_id] = "hvac_action"
             if action == "cooling":
                 return -1
             if action == "heating":
                 return 1
+            # idle, off, drying, fan, preheating, defrosting: the compressor
+            # is not moving sensible heat in a direction this can learn from.
+            return 0
+
+        self._action_source[room.room_id] = "hvac_mode"
+        if state.state == "cool":
+            return -1
+        if state.state == "heat":
+            return 1
         return 0
+
+    def action_sources(self) -> dict[str, str]:
+        """Which attribute answered the compressor question, per room.
+
+        For diagnostics. A room reporting `hvac_mode` here is learning from
+        mode rather than action, and its sensible coefficient will be diluted
+        by idle time.
+        """
+        return dict(self._action_source)
 
     def _is_drying(self, room: RoomConfig) -> bool:
         """Whether the unit is in dry mode."""
@@ -1357,12 +1462,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         it only answers the one question the tariff's `no_grid_import`
         constraint raises: can this room be carried without the grid.
 
-        True whenever power management is not engaged, the constraint is not
-        currently in force, any of the live readings is missing or stale,
-        solar alone covers the house load plus this unit, or the battery has
-        enough energy above the reserve margin to carry this room's projected
-        need until the constraint clears (or the model has not converged
-        enough to project — in which case the room is not held on an unknown).
+        **This fails open.** Every path that cannot answer the question
+        returns True and the room keeps its comfort. False is returned only
+        for a positively computed shortfall: readings present, model
+        converged, relief time known, and the arithmetic saying the battery
+        will not reach it.
+
+        That is a reversal. Five paths — a missing or stale reading, a series
+        that does not clear inside its horizon, no solved target yet, and an
+        unconverged thermal model — previously returned False. An unconverged
+        model is the state every fresh install is in, so switching power
+        management on stopped the compressor in occupied rooms for the whole
+        of a no-import window on the strength of a coefficient that had never
+        been measured. Comfort is a hard constraint; a projection the
+        controller cannot make is not grounds for withdrawing it.
+
+        A room that is genuinely being refused is still refused, and the
+        reason still reaches the trace.
         """
         context = self._power_context
         if context is None or not context.engaged:
@@ -1373,11 +1489,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
             return True
 
-        rated_w = ASSUMED_UNIT_KW * 1000
+        # A unit that is already running has its own draw inside the house
+        # load figure, so adding the rating on top counts it twice and reads
+        # as unaffordable the moment the compressor starts — the reading that
+        # justified starting it becomes the reading that stops it. Only a unit
+        # that is currently off needs headroom found for it.
+        running = (
+            self._compressor_direction(room) != 0 or self._is_drying(room)
+        )
+        headroom_w = 0.0 if running else ASSUMED_UNIT_KW * 1000
         if (
             context.solar_w is not None
             and context.house_load_w is not None
-            and context.solar_w >= context.house_load_w + rated_w
+            and context.solar_w >= context.house_load_w + headroom_w
         ):
             return True
 
@@ -1386,24 +1510,28 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             or context.battery_capacity_kwh is None
             or context.reserve_margin_kwh is None
         ):
-            # A live reading is missing or stale. Power management is
-            # engaged but cannot currently answer the question, so the room
-            # holds rather than run on an unknown battery state.
-            return False
+            LOGGER.debug(
+                "%s: power management engaged but a live reading is missing "
+                "or stale; comfort is held",
+                room.room_id,
+            )
+            return True
 
         hours_until_clear = self.tariff.hours_until_clear(
             CONSTRAINT_NO_GRID_IMPORT, now
         )
         if hours_until_clear is None:
-            # The series never clears within its horizon. No relief to carry
-            # the room to, so it holds.
-            return False
+            LOGGER.debug(
+                "%s: the tariff series does not reach the end of the "
+                "no-import window; comfort is held",
+                room.room_id,
+            )
+            return True
 
         target = self._last_target.get(room.room_id)
         if target is None:
-            # No solved target yet this run (first cycle for the room). Hold
-            # rather than project against a target that does not exist.
-            return False
+            # First cycle for this room. Nothing to project against yet.
+            return True
 
         projected_kwh = self.model_for(room.room_id).energy_for(
             self._number(room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id)
@@ -1417,10 +1545,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             can_cool=capabilities["can_cool"],
         )
         if projected_kwh is None:
-            # The thermal model has not converged enough to project. Nothing
-            # to weigh the battery against, so the room holds rather than run
-            # on an unknown.
-            return False
+            LOGGER.debug(
+                "%s: the thermal model cannot project an energy need yet; "
+                "comfort is held",
+                room.room_id,
+            )
+            return True
 
         available_kwh = (
             context.battery_soc_percent / 100.0
@@ -1589,6 +1719,43 @@ def _rooms_from_entry(entry: HvacConfigEntry) -> dict[str, RoomConfig]:
                 f"Room configuration is missing {err}"
             ) from err
         rooms[room.room_id] = room
+    return _lock_out_shared_climate(rooms)
+
+
+def _lock_out_shared_climate(
+    rooms: dict[str, RoomConfig],
+) -> dict[str, RoomConfig]:
+    """Lock out every room that shares its climate entity with another.
+
+    Two rooms driving one entity each command their own solved setpoint every
+    cycle, and each one's dedupe cache in `actuator.py` sees only its own
+    writes — so nothing errors, nothing logs, and the unit is left doing
+    whichever arrived last. The configuration is reachable through the options
+    flow today.
+
+    A lockout is used rather than a `ConfigEntryError` because refusing to load
+    the entry would take every correctly configured room down with the two that
+    are not. The affected rooms stop actuating, say why in their trace, and a
+    repair issue names the entity and the rooms.
+    """
+    claimed: dict[str, list[str]] = {}
+    for room in rooms.values():
+        claimed.setdefault(room.climate_entity_id, []).append(room.room_id)
+
+    for entity_id, room_ids in claimed.items():
+        if len(room_ids) < 2:
+            continue
+        others = {room_id: rooms[room_id].name for room_id in room_ids}
+        for room_id in room_ids:
+            named = sorted(name for key, name in others.items() if key != room_id)
+            rooms[room_id] = replace(
+                rooms[room_id],
+                lockout_reason=(
+                    f"{entity_id} is also configured for "
+                    f"{', '.join(named)}; one climate entity cannot be driven "
+                    "by more than one room"
+                ),
+            )
     return rooms
 
 
