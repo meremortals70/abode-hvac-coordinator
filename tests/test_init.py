@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from freezegun import freeze_time
@@ -10,7 +11,10 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.abode_hvac_coordinator.const import (
     CONF_BATTERY_CAPACITY_KWH,
@@ -23,6 +27,9 @@ from custom_components.abode_hvac_coordinator.const import (
     DOMAIN,
     ISSUE_SHARED_CLIMATE_ENTITY,
     SERVICE_HEADING_HOME,
+)
+from custom_components.abode_hvac_coordinator.diagnostics import (
+    async_get_config_entry_diagnostics,
 )
 from custom_components.abode_hvac_coordinator.tariff import TariffSeries
 from custom_components.abode_hvac_coordinator.thermal import Coefficient
@@ -67,7 +74,7 @@ async def test_unoccupied_room_is_off(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.state == "unoccupied"
-    assert state.attributes["actuator"] == "none"
+    assert state.attributes["actuator"] == "off"
 
 
 def _no_grid_import_series(now) -> TariffSeries:
@@ -260,7 +267,7 @@ async def test_a_projected_shortfall_still_holds_the_compressor(
 
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
-    assert state.attributes["actuator"] == "none"
+    assert state.attributes["actuator"] == "off"
     assert any(
         "no grid import permitted" in reason
         for reason in state.attributes["rejected"]
@@ -295,7 +302,7 @@ async def test_two_rooms_on_one_climate_entity_are_locked_out(
         state = hass.states.get(entity_id)
         assert state is not None, entity_id
         assert state.attributes["mode"] == "lockout", entity_id
-        assert state.attributes["actuator"] == "none", entity_id
+        assert state.attributes["actuator"] == "off", entity_id
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_SHARED_CLIMATE_ENTITY) is not None
@@ -311,3 +318,308 @@ async def test_one_room_per_climate_entity_raises_no_issue(
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_SHARED_CLIMATE_ENTITY) is None
+
+
+async def _setup_running(hass, mock_config_entry, **states) -> None:
+    """Set the entry up with the unit already cooling."""
+    mock_config_entry.add_to_hass(hass)
+    for entity_id, value in states.items():
+        hass.states.async_set(entity_id.replace("__", "."), value)
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_an_open_window_stops_a_running_unit(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.7. The interlock reaches the hardware.
+
+    Before this, the open-window rejection reached the trace and stopped
+    there. The unit carried on cooling: the thermostat saw return air above
+    setpoint, ran continuously, and never got there — unbounded, and nothing
+    in the log.
+
+    The mock is installed after setup because the climate integration loads
+    during it and re-registers its own handler over anything placed earlier.
+    """
+    room = {
+        **mock_config_entry.options[CONF_ROOMS][0],
+        "opening_entity_ids": ["binary_sensor.test_window"],
+    }
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: [room]},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set("binary_sensor.test_window", "off")
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor", state.attributes
+
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.states.async_set("binary_sensor.test_window", "on")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=16)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "off", state.attributes
+    assert [call.data["hvac_mode"] for call in calls] == ["off"], [
+        call.data for call in calls
+    ]
+
+    # And it projects no energy. `_build_forecast` decided this from the mode,
+    # which is the same hole in a second place: a room stopped for an open
+    # window is in none of the stopped modes and projected a full horizon of
+    # draw it was never going to take.
+    assert coordinator.forecast is not None
+    projection = next(
+        room
+        for room in coordinator.forecast.as_attributes()["rooms"]
+        if room["room_id"] == "test_room"
+    )
+    assert projection["kwh"] == 0.0, projection
+
+
+async def test_a_room_within_band_is_left_alone(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.7. NONE commands nothing.
+
+    The majority of the controller's life. The unit holds the trimmed
+    setpoint against its own sensor between our thirty-second decisions;
+    stopping here would cycle the compressor every time a room reached
+    comfort.
+    """
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="25.5",
+        sensor__test_humidity="45.0",
+        binary_sensor__test_presence="on",
+    )
+
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "none", state.attributes
+    assert calls == [], [call.data for call in calls]
+
+
+async def test_reaching_the_band_does_not_record_a_compressor_stop(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.7. The guard's unit of account.
+
+    `wants` was derived from the step, `NONE` was ambiguous, and it resolved
+    the ambiguity as "not running" — so every time a room reached its band
+    the guard logged a stop that never happened, and a start ninety seconds
+    later was refused for a compressor that had never gone off.
+    """
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="32.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+    )
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor", state.attributes
+    assert coordinator.regulation_state()["test_room"].running is True
+
+    # The room reaches its band. Nothing stopped the compressor, so the guard
+    # must not record that anything did.
+    # Past the minimum run time, so a stop would actually be recorded rather
+    # than refused. Inside it the guard refuses the phantom stop and `running`
+    # stays True by accident, which makes the test pass against the defect.
+    hass.states.async_set("sensor.test_temperature", "25.5")
+    hass.states.async_set("sensor.test_humidity", "45.0")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=16)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "none", state.attributes
+    assert coordinator.regulation_state()["test_room"].running is True
+
+    # Ninety seconds later it is out of band again. The minimum *off* time
+    # must not be applied, because the compressor never went off.
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=17, seconds=30)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor", state.attributes
+    assert not any(
+        "minutes" in reason and "off" in reason
+        for reason in state.attributes["rejected"]
+    ), state.attributes["rejected"]
+
+
+async def test_diagnostics_report_which_attribute_answered(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.7. `action_sources` had no caller anywhere in the repository.
+
+    It is item 2 on the next-install watch list and it establishes whether
+    the adapter publishes `hvac_action` — the reading that gates every
+    learned sensible coefficient.
+    """
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="32.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+    )
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+    assert diagnostics["action_sources"]["test_room"] == "hvac_action"
+
+
+async def test_diagnostics_report_a_unit_publishing_no_action(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, caplog
+) -> None:
+    """A room learning from the mode string, and it says so once."""
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    # The level has to be set around setup: the first evaluation runs inside
+    # it, and the line is emitted once per room.
+    caplog.clear()
+    with caplog.at_level(
+        logging.INFO, logger="custom_components.abode_hvac_coordinator"
+    ):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        coordinator = mock_config_entry.runtime_data
+        await _let_occupancy_settle(hass, coordinator)
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+    assert diagnostics["action_sources"]["test_room"] == "hvac_mode"
+    # Once per room, not once per evaluation.
+    assert (
+        sum(
+            "publishes no hvac_action" in record.message
+            for record in caplog.records
+        )
+        == 1
+    ), [record.message for record in caplog.records]
+
+
+async def test_a_door_open_briefly_does_not_stop_the_unit(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.7. The debounce, end to end.
+
+    Someone carries washing through. The interlock fires — nothing new is
+    actuated into an open room — but the compressor is not stopped, so it
+    does not then sit out the five-minute minimum off for a twenty-second
+    door.
+    """
+    room = {
+        **mock_config_entry.options[CONF_ROOMS][0],
+        "opening_entity_ids": ["binary_sensor.test_door"],
+    }
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: [room]},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set("binary_sensor.test_door", "off")
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor", state.attributes
+
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.states.async_set("binary_sensor.test_door", "on")
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "none", state.attributes
+    assert calls == [], [call.data for call in calls]
+
+    # Still open later. Now it stops. Far enough out that the ten-minute
+    # minimum run is not what is holding the unit — inside it the guard
+    # refuses the stop and sets `hold_compressor`, which would make this pass
+    # for a reason that has nothing to do with the debounce.
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "off", state.attributes
+    assert [call.data["hvac_mode"] for call in calls] == ["off"], [
+        call.data for call in calls
+    ]

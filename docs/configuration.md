@@ -33,9 +33,9 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Eave height above the glass | No | As above; both measurements are needed together |
 | Sun-on-window sensor | No | Overrides the direction, for a room too complex for one compass point |
 | Illuminance sensor | No | Recorded only; not acted on |
-| Heat source in the room | No | Equipment heat is not counted toward comfort |
-| Fan or air movement | No | Falls back to whether the air conditioner is running |
-| Windows and doors | No | No opening interlock |
+| Heat source in the room | No | Equipment heat is not counted toward comfort. A binary sensor that is on while a workstation, server or dryer is running — heat a wall sensor barely sees and a person sitting next to it certainly does |
+| Fan or air movement | No | Falls back to whether the air conditioner is running, which is not the same question. A binary sensor, fan or switch that is on while the room's air is moving |
+| Windows and doors | No | No opening interlock. When one is configured and open, the room's air conditioner is switched off |
 | Blinds | No | Covers are never used |
 | — blinds that report no position | — | The cover step is skipped, and the trace says so. See [Actuator ordering](actuator-ordering.md#covers-with-no-reported-position-are-skipped) |
 | Allow blind control | Seeded (on) | Off keeps this room's blinds untouched even with blinds configured — for a semi-transparent blind kept for privacy or glare, not shading |

@@ -167,6 +167,11 @@ shared live readings rather than negotiated between rooms, and it is checked
 inline inside the same actuator selection that already checks whether the
 unit can physically heat or cool — not as an override layered on afterward.
 
+**Since 0.8.7 the refusal also reaches the hardware.** Before it, a refused
+room's decision was recorded in the trace and nothing was commanded, so a unit
+already running carried on through the whole window. The constraint had no
+actuation behind it at all.
+
 **It fails open.** A room is refused only on a positively computed shortfall:
 readings present, model converged, relief time known, and the arithmetic
 short. Every case the controller cannot answer leaves the room its comfort.
@@ -314,13 +319,38 @@ than run the compressor.
 | Actuation | Built, tested |
 | Power-aware compressor decision (`no_grid_import`) | Built and tested. The coordinator wiring has run against Home Assistant since 0.8.6 — against 2025.1.4, not the targeted 2026.8.x |
 | Per-room cover-control override | Built, tested |
+| Stopping the compressor, as distinct from leaving it alone | Built, tested. New in 0.8.7 |
+| Heat load and air movement inputs | Built, tested. Reachable in the room form from 0.8.7; before it, configured nowhere and always absent |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 324 tests, against 2025.1.4 rather than the 2026.8.x targeted,
-because the build sandbox is Python 3.12. Running it for the first time found
-two tests that had never passed. See
+pure modules — 346 tests at 0.8.7, against 2025.1.4 rather than the 2026.8.x
+targeted, because the build sandbox is Python 3.12. Running it for the first
+time found two tests that had never passed. See
 [Known limitations](known-limitations.md) and
 [the review](architecture-review-2026-08.md).
+
+### Stopping is a decision, and a separate one from leaving the unit alone
+
+**New in 0.8.7.** The actuator step carries both, as distinct values.
+
+`OFF` commands the climate entity off: lockout, unoccupied, an opening in the
+room, coasting, a deferred precondition, a direction the unit cannot deliver,
+and a room refused under `no_grid_import`.
+
+`NONE` commands nothing, and the unit holds the trimmed setpoint it was last
+given against its own sensor until the next evaluation: a room inside its band,
+and a room whose reading or band is missing.
+
+They were one value, and two places downstream guessed which was meant. The
+actuator guessed from the mode, which covered lockout and unoccupied and missed
+the other five — so an open window, a coasting room and a refusal under
+`no_grid_import` all left the compressor running with nothing in the log. The
+short-cycle guard guessed "not running", so every time a room reached its band
+it recorded a stop that had not happened.
+
+Neither could be fixed alone. The guard's wrong record was harmless only while
+nothing was ever actually stopped; the moment the stop paths became real it
+would have let a genuine stop through inside the minimum run time.
 
 ---
 

@@ -9,10 +9,20 @@ no dependencies at all:
 python3 -m unittest discover -s tests -p "test_core.py" -v
 ```
 
-181 tests covering the comfort index and its inverse, mode precedence, the full
-actuator ordering, tariff windows and constraint handling, and setpoint
-clamping, the setup form helpers, the seeded band defaults and lockout reason
-handling.
+Covering the comfort index and its inverse, mode precedence, the full actuator
+ordering — including which conditions stop the unit and which leave it alone —
+tariff windows and constraint handling, setpoint clamping, the setup form
+helpers, the seeded band defaults and lockout reason handling.
+
+346 tests in total across the pure and Home Assistant suites at 0.8.7, and
+that number is only meaningful alongside the version they ran against: the
+build sandbox installs Home Assistant 2025.1.4, not the 2026.8.x this targets.
+Say which every time.
+
+**Every test written for a fix is checked by putting the bug back.** Not
+optional, and not sufficient on its own: the reinstated run has to fail for the
+reason the test claims to be about. Two tests in this project's history have
+passed against the code they were written to catch.
 
 The Home Assistant surface tests need the test harness:
 

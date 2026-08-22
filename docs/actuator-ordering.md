@@ -17,18 +17,57 @@ makes the ordering auditable rather than merely asserted.
 
 ## Gates, checked before any actuator
 
+Two different outcomes, and the distinction matters more than it looks.
+
+**Stop** commands the climate entity off. **Leave alone** commands nothing: the
+unit keeps the trimmed setpoint it was last given and its own thermostat holds
+it until the next evaluation.
+
 | Condition | Result |
 |---|---|
-| Room in lockout | Nothing |
-| Room unoccupied | Nothing |
-| An opening in the room is open | Nothing |
-| Coasting | Nothing |
-| No temperature or humidity reading | Nothing |
-| No comfort band configured for this mode | Nothing |
-| Comfort index inside the band | Nothing |
+| Room in lockout | Stop |
+| Room unoccupied | Stop |
+| An opening in the room is open, for two minutes or more | Stop |
+| An opening in the room is open, less than two minutes | **Leave alone** — see [Behaviour](behaviour.md#a-window-or-door-opens) |
+| Coasting | Stop |
+| Preconditioning, and the pull can still wait | Stop |
+| The room needs a direction this unit cannot deliver | Stop |
+| No grid import permitted and the battery cannot carry the room | Stop |
+| Comfort index inside the band | **Leave alone** |
+| No temperature or humidity reading | **Leave alone** |
+| No comfort band configured for this mode | **Leave alone** |
+
+### Why inside the band leaves the unit alone
+
+This is where a room spends most of its life, and stopping here would cycle the
+compressor every time a room reached comfort.
+
+The setpoint the unit is holding is not a raw number handed over and forgotten.
+It is the solved target plus Layer 2's accumulated trim, so the thermostat is
+regulating against a figure already bent to land the *room* sensor where the
+band wants it. And the trust is short: thirty seconds later the target is
+re-solved from the currently measured humidity and re-sent if it moved.
+
+### Why a missing reading leaves it alone too
+
+A room with a dead humidity sensor keeps its air conditioning. Comfort is a
+hard constraint and a reading the controller cannot take is not grounds for
+withdrawing it.
+
+The trace names which of the two is absent — a missing reading and a missing
+band are different problems and one line covering both told you nothing about
+where to look.
 
 A room with no bands configured never actuates. There is no default to fall
 back on, and inventing one would be worse than doing nothing.
+
+### This was one outcome until 0.8.7
+
+Every row above returned the same value, and the actuator inferred a stop from
+the mode — which covered lockout and unoccupied and silently missed the other
+five. An open window, a coasting room, a deferred precondition, a unit facing
+the wrong direction and a room refused under `no_grid_import` all left the
+compressor running.
 
 ## Direction
 

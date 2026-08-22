@@ -72,6 +72,8 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_PRESENCE_ENTITY: user_input.get(CONF_PRESENCE_ENTITY),
         CONF_SLEEP_SCHEDULE_ENTITY: user_input.get(CONF_SLEEP_SCHEDULE_ENTITY),
         CONF_DIRECT_SUN_ENTITY: user_input.get(CONF_DIRECT_SUN_ENTITY),
+        CONF_HEAT_LOAD_ENTITY: user_input.get(CONF_HEAT_LOAD_ENTITY),
+        CONF_FAN_ENTITY: user_input.get(CONF_FAN_ENTITY),
         CONF_WINDOW_DIRECTION: user_input.get(CONF_WINDOW_DIRECTION),
         CONF_OVERHANG_PROJECTION: user_input.get(CONF_OVERHANG_PROJECTION),
         CONF_OVERHANG_HEIGHT: user_input.get(CONF_OVERHANG_HEIGHT),

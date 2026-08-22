@@ -24,7 +24,7 @@ Attributes:
 | `band_position` | `below`, `within` or `above` |
 | `target_dry_bulb_c` | What the air conditioner would be asked for |
 | `demand` | `cool`, `heat`, or none |
-| `actuator` | `none`, `covers`, `fan`, `dry` or `compressor` |
+| `actuator` | `off`, `none`, `covers`, `fan`, `dry` or `compressor`. `off` means the unit was commanded off; `none` means nothing was commanded and the unit keeps what it was last given |
 | `reasons` | Why it is doing this |
 | `rejected` | What was considered and ruled out, with why |
 | `model` | The room's learned coefficients, their variance, sample count and whether each has converged |

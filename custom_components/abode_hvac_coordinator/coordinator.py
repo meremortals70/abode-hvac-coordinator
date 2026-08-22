@@ -804,7 +804,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # compressor were shutting down, then record it as stopped while it
         # was in fact running — after which the minimum *off* time blocked the
         # return to cool, for a stop that never happened.
-        wants = trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
+        # NONE is not a stop. It means the unit keeps what it was last given,
+        # so the compressor stays in whatever state it is already in and there
+        # is no transition to record. Until 0.8.7 `wants` was derived from the
+        # step alone and resolved NONE as "not running", so every time a room
+        # reached its band the guard logged a stop that never happened — the
+        # most common state the controller is in. Harmless only while nothing
+        # was ever actually stopped; the moment OFF exists it would let a
+        # genuine stop through inside the minimum run time.
+        if trace.actuator is ActuatorStep.NONE:
+            wants = state.running
+        else:
+            wants = trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
         permitted, reason = permit_transition(state, want_running=wants, now=now)
         if not permitted and reason is not None:
             trace.rejected.append(reason)
@@ -816,8 +827,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 # have nothing to do with it.
                 trace.hold_compressor = True
             else:
-                # A start was refused. Command nothing this cycle.
-                trace.actuator = ActuatorStep.NONE
+                # A start was refused. Leave the unit off rather than
+                # commanding nothing: the room may have been stopped for a
+                # reason that still applies, and NONE would leave it running.
+                trace.actuator = ActuatorStep.OFF
             return
         note_transition(state, running=wants, now=now)
 
@@ -1192,6 +1205,20 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # is not moving sensible heat in a direction this can learn from.
             return 0
 
+        if self._action_source.get(room.room_id) != "hvac_mode":
+            # Once per room. Diagnostics answers this too, but only for
+            # someone who already suspected the question — and this is the
+            # reading that decides whether every learned sensible coefficient
+            # is diluted by idle time. It belongs in the log the install is
+            # read from.
+            LOGGER.info(
+                "%s: %s publishes no hvac_action, so the compressor state is "
+                "being read from the mode string. A head idling at setpoint "
+                "reports its mode, so the learned sensible coefficient will "
+                "be diluted by idle time",
+                room.room_id,
+                room.climate_entity_id,
+            )
         self._action_source[room.room_id] = "hvac_mode"
         if state.state == "cool":
             return -1
@@ -1237,8 +1264,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     target_c=trace.target_dry_bulb_c if trace else None,
                     outdoor_c=outdoor,
                     direct_sun=self._direct_sun(room) is True,
+                    # The actuator verdict, not the mode. Checking the mode
+                    # was finding 20's hole in a second place: a room stopped
+                    # for an open window, for coasting, or by the power
+                    # refusal is in none of those modes and projected a full
+                    # horizon of draw it was never going to take.
                     will_run=trace is not None
-                    and trace.mode not in (Mode.LOCKOUT, Mode.UNOCCUPIED),
+                    and trace.actuator is not ActuatorStep.OFF,
                     can_heat=capabilities["can_heat"],
                     can_cool=capabilities["can_cool"],
                 )
@@ -1327,6 +1359,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is True
                 for entity_id in room.opening_entity_ids
             ),
+            opening_open_since=self._opening_open_since(room),
             precool_opportunity=CONSTRAINT_PRECOOL_OPPORTUNITY in constraints,
             no_grid_import=CONSTRAINT_NO_GRID_IMPORT in constraints,
             coasting_permitted=interval.coasting_permitted if interval else True,
@@ -1642,6 +1675,26 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             return None
         self._note_availability(entity_id, available=True)
         return value
+
+    def _opening_open_since(self, room: RoomConfig) -> datetime | None:
+        """When the longest-open opening in this room opened.
+
+        `last_changed` rather than anything tracked here: it survives a
+        restart, and a window that was already open before Home Assistant
+        came up should not buy itself a fresh debounce.
+
+        None where nothing is open, or where the state is stale — an unknown
+        age is not a young one, so the caller stops rather than holds.
+        """
+        opened: list[datetime] = []
+        for entity_id in room.opening_entity_ids:
+            if self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is not True:
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                return None
+            opened.append(state.last_changed)
+        return min(opened) if opened else None
 
     def _bool(
         self,

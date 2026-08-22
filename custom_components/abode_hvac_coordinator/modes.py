@@ -23,6 +23,8 @@ against.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from .hci import (
     SOLVE_MAX_C,
     SOLVE_MIN_C,
@@ -134,6 +136,29 @@ def band_in_force(
 #: How far above the band air movement alone is worth trying, in HCI. Beyond
 #: this a fan is just noise. Fixed internal, not a setting.
 FAN_MARGIN_HCI = 0.5
+
+
+def _round_up_minutes(remaining: timedelta) -> int:
+    """Whole minutes, rounded up, so the trace never says nought."""
+    return max(1, -(-int(remaining.total_seconds()) // 60))
+
+
+#: How long an opening must stay open before the unit is stopped for it.
+#:
+#: Stopping immediately would cost a compressor stop and then the five-minute
+#: minimum off time for a door held open while someone carries washing
+#: through. Waiting forever was the fault before 0.8.7: refusing to *command*
+#: a room does not stop a unit that is already running, so a window left open
+#: had the thermostat chasing a setpoint it could never reach, indefinitely.
+#:
+#: Two minutes, matching the occupancy grace default. It is not a setting: a
+#: user cannot get a wrong result from it, and exposing it rebuilds the
+#: configuration problem one layer up.
+#:
+#: The interlock itself is not debounced. Nothing may actuate into an open
+#: room from the moment the opening is seen; only the decision to stop a unit
+#: that is already running waits.
+OPENING_STOP_DEBOUNCE = timedelta(minutes=2)
 
 #: Fallback humidity threshold, used only while the thermal model has not
 #: converged. Once `k_sensible` and `k_latent` are known the decision is made
@@ -272,21 +297,41 @@ def select_actuator(
     """
     if mode is Mode.LOCKOUT:
         trace.rejected.append("all actuators: room is in lockout")
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
 
     if mode is Mode.UNOCCUPIED:
         # Not a wider envelope. Off. A heading-home request or a precool window
         # brings it back on; nothing else does.
         trace.rejected.append("all actuators: room unoccupied, air conditioning off")
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
 
     if inputs.opening_open:
+        # The interlock exists to stop the room being conditioned while it is
+        # open to outside. Refusing to *start* is not the same thing: a unit
+        # already running keeps running, the thermostat never reaches a
+        # setpoint it cannot reach, and nothing bounds it.
+        #
+        # But a door open for twenty seconds is not a window left open, and
+        # stopping for it costs a compressor stop plus the minimum off time.
+        # So nothing new is actuated either way, and the stop waits.
+        since = inputs.opening_open_since
+        if since is not None and inputs.now - since < OPENING_STOP_DEBOUNCE:
+            remaining = OPENING_STOP_DEBOUNCE - (inputs.now - since)
+            trace.rejected.append(
+                "all actuators: an opening in this room is open, holding the "
+                f"unit as it is for another {_round_up_minutes(remaining)} "
+                "minute(s) in case it closes"
+            )
+            return ActuatorStep.NONE
         trace.rejected.append("all actuators: an opening in this room is open")
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
 
     if mode is Mode.COAST:
+        # Coasting means the band holds with nothing running. Leaving the unit
+        # on would have the thermostat hold the band by running, which is the
+        # opposite of coasting and makes the mode change nothing.
         trace.rejected.append("compressor: coasting, model predicts the band holds")
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
 
     if mode is Mode.PRECONDITION and not inputs.precondition_ready:
         # The request stands and the room is in PRECONDITION. The model simply
@@ -296,13 +341,22 @@ def select_actuator(
             "all actuators: preconditioning, but the deadline is far enough "
             "out that the pull can wait"
         )
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
 
     if hci is None or band is None:
-        # No reading, or no band configured for this mode. A room with no bands
-        # never actuates: there is no default to fall back on, and inventing
-        # one would be worse.
-        trace.rejected.append("all actuators: no comfort reading or no band in force")
+        # NONE, not OFF. A room with a dead sensor keeps its air conditioning:
+        # comfort is a hard constraint and a reading the controller cannot
+        # take is not grounds for withdrawing it. Stopping here would be a
+        # guard failing closed against comfort, which is the fault finding 3
+        # was spent reversing.
+        #
+        # Named separately so the trace says which of the two is missing. One
+        # line covering both told you nothing about where to look.
+        trace.rejected.append(
+            "all actuators: no comfort reading for this room"
+            if hci is None
+            else "all actuators: no band configured for this mode"
+        )
         return ActuatorStep.NONE
 
     demand = _demand_direction(mode, band, hci)
@@ -356,13 +410,13 @@ def select_actuator(
         trace.rejected.append("fan and dry: neither adds heat")
         if not inputs.can_heat:
             trace.rejected.append("compressor: this unit cannot heat")
-            return ActuatorStep.NONE
+            return ActuatorStep.OFF
         if not inputs.power_available:
             trace.rejected.append(
                 "compressor: no grid import permitted, and battery/solar "
                 "cannot cover this room's projected need"
             )
-            return ActuatorStep.NONE
+            return ActuatorStep.OFF
         trace.reasons.append("compressor: heating")
         return ActuatorStep.COMPRESSOR
 
@@ -398,13 +452,15 @@ def select_actuator(
     # --- 4. Compressor. Everything cheaper has been ruled out above.
     if not inputs.can_cool:
         trace.rejected.append("compressor: this unit cannot cool")
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
     if not inputs.power_available:
+        # OFF. The refusal is the only mechanism holding `no_grid_import`, and
+        # until 0.8.7 it reached the trace and never reached the hardware.
         trace.rejected.append(
             "compressor: no grid import permitted, and battery/solar "
             "cannot cover this room's projected need"
         )
-        return ActuatorStep.NONE
+        return ActuatorStep.OFF
     trace.reasons.append("compressor: cooling")
     return ActuatorStep.COMPRESSOR
 

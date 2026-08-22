@@ -10,19 +10,50 @@ The moment any opening configured for that room reports open:
    within a second, not up to 30 seconds
 2. Every actuator is refused. The trace says
    `all actuators: an opening in this room is open`
-3. The air conditioner is **not** switched off
-
-That last point is deliberate. The controller stops *commanding* the room, but
-does not turn the unit off, because a door held open for twenty seconds while
-someone carries washing through should not stop and restart a compressor. Short
-cycling costs more than the twenty seconds of open door.
+3. **The air conditioner is switched off** once the opening has been open for
+   two minutes, and sooner than that only if it was already off
 
 When the opening closes, the next evaluation resumes normally. Nothing is
 remembered about the interruption.
 
-**If you want the unit off when a window is open**, that is a two-line
-automation on your own opening sensor calling `climate.turn_off`. It is not
-built in, because whether that is right depends on your house and your unit.
+### This changed in 0.8.7, and the old behaviour was a defect
+
+Until 0.8.7 the unit was **not** switched off, and this page described that as
+deliberate: a door held open for twenty seconds while someone carries washing
+through should not stop and restart a compressor.
+
+The reasoning was sound and the implementation was not. Refusing to *command*
+the room does not stop a unit that is already running — it only stops the
+controller intervening. So a window left open with the air conditioner cooling
+produced a thermostat chasing a setpoint it could never reach, running
+continuously, with nothing in the log and nothing to end it. The interlock
+bounded nothing.
+
+### A door held open briefly does not stop anything
+
+The stop waits two minutes. The interlock itself does not: from the moment the
+opening is seen, nothing new is actuated into the room.
+
+So someone carrying washing through a door costs nothing. The unit keeps the
+setpoint it already had, no compressor stop is issued, and no five-minute
+minimum off follows. A window actually left open stops the unit two minutes in.
+
+The two minutes is not a setting. It matches the occupancy grace default, and a
+user cannot get a wrong result from changing it — which is the test for whether
+a setting should exist.
+
+The trace says which of the two is happening. While the debounce is running it
+names the minutes remaining and says the unit is being held in case the opening
+closes.
+
+**An opening whose age cannot be read stops the unit.** A stale contact or a
+missing state gives no age, and an unknown age is not a young one.
+
+### The short-cycle guard still applies on top
+
+A stop inside the ten-minute minimum run is refused regardless. The trace
+records `hold_compressor`, the unit keeps running, and the stop is reconsidered
+on a later cycle.
 
 ## Coasting starts and stops
 

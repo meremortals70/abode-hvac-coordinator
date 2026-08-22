@@ -80,6 +80,17 @@ async def async_get_config_entry_diagnostics(
             room_id: model.diagnostics()
             for room_id, model in coordinator.models.items()
         },
+        # Which attribute answered the compressor question, per room. A room
+        # reading `hvac_mode` is learning from mode rather than action and its
+        # sensible coefficient is diluted by idle time.
+        #
+        # Top level rather than inside `models`: every key in there is a
+        # coefficient with a value, variance, sample count and converged flag,
+        # and a string among them breaks a shape something may iterate over.
+        # A room whose climate entity has never had a state is absent rather
+        # than null — absent means the entity was not there, "hvac_mode" means
+        # it was and published no action, and those are different problems.
+        "action_sources": coordinator.action_sources(),
         "forecast": (
             coordinator.forecast.as_attributes() if coordinator.forecast else None
         ),

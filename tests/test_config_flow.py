@@ -525,3 +525,52 @@ async def test_the_model_accumulates_samples_at_the_real_evaluation_interval(
         "five minutes of 30-second evaluations produced no observation; the "
         "learning anchor is being reset every cycle"
     )
+
+
+async def test_the_room_step_collects_heat_source_and_air_movement(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """0.8.7. Both were read by the coordinator and no form ever set them.
+
+    `RoomConfig` carried them, `_room_from_raw` read them, the room summary
+    printed them and `strings.json` labelled them — but they were absent from
+    `ROOM_SCHEMA`, so `HEAT_LOAD_HCI` had never applied to any room.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "First Room",
+            CONF_CLIMATE_ENTITY: "climate.first",
+            "heat_load_entity_id": "binary_sensor.workstation",
+            "air_movement_entity_id": "fan.ceiling",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    stored = result["data"][CONF_ROOMS][0]
+    assert stored["heat_load_entity_id"] == "binary_sensor.workstation"
+    assert stored["air_movement_entity_id"] == "fan.ceiling"
+
+
+async def test_a_room_saved_without_them_carries_none(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """Both optional. Absent reads as None, unchanged from before 0.8.7."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "First Room", CONF_CLIMATE_ENTITY: "climate.first"},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+    stored = result["data"][CONF_ROOMS][0]
+    assert stored["heat_load_entity_id"] is None
+    assert stored["air_movement_entity_id"] is None

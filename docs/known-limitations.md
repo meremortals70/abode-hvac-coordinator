@@ -6,8 +6,9 @@ you were told about.
 ## Nothing has been proven on real hardware
 
 **No release from 0.6.0 onward has been confirmed working in Jason's house.**
-323 tests pass and the integration loads and unloads cleanly in the test
-harness. None of that tells you a compressor did the right thing.
+346 tests pass and the integration loads and unloads cleanly in the test
+harness — against Home Assistant 2025.1.4, not the 2026.8.x this targets, and
+none of it tells you a compressor did the right thing.
 
 Three faults were found only by running it:
 
@@ -28,6 +29,12 @@ conditioning off for hours with nothing in the log. Recorded in
 [the review](architecture-review-2026-08.md). Passing tests told you nothing
 about any of them, because the tests asserted the behaviour the code had.
 
+**Four more were found in 0.8.7 the same way**, findings 20 to 23 in the
+review. The largest: an open window, a coasting room and a room refused under
+`no_grid_import` all left the compressor running, because the decision to stop
+and the decision to leave the unit alone were the same value and nothing
+downstream could tell them apart.
+
 The test suite also ran against a real Home Assistant for the first time in
 0.8.6, and immediately found two tests that had never passed. Treat a test
 that has never been executed as unwritten.
@@ -36,8 +43,8 @@ Treat the first week as a test and read this page before relying on it.
 
 ## Eleven known findings are recorded and not fixed
 
-The 0.8.6 review produced nineteen findings. Eight are fixed in 0.8.6; the
-other eleven are written down in
+The review now holds twenty-three findings. Eight are fixed in 0.8.6 and four
+in 0.8.7; the other eleven are written down in
 [the review](architecture-review-2026-08.md) and are not built. The ones most
 likely to affect you:
 

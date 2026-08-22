@@ -6,16 +6,29 @@ there, in the room's own words.
 
 ## The room is doing nothing
 
-Check `actuator` on the mode sensor. If it is `none`, `rejected` says why. The
-usual causes:
+Check `actuator` on the mode sensor. `rejected` says why.
+
+**`off`** means the unit was commanded off:
 
 | Trace says | Cause |
 |---|---|
 | `room is in lockout` | A lockout reason is set. Clear it in Configure |
 | `room unoccupied, air conditioning off` | Working as designed. Use heading home |
-| `an opening in this room is open` | A window or door is open |
-| `no comfort reading or no band in force` | Missing sensor, or no band for this mode |
-| `within band` | Nothing to do |
+| `an opening in this room is open` | A window or door has been open two minutes or more. The unit is off until it closes |
+| `coasting, model predicts the band holds` | Working as designed |
+| `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |
+| `this unit cannot cool` / `cannot heat` | The room needs a direction the unit does not have |
+| `no grid import permitted…` | The tariff forbids import and the battery cannot carry the room |
+
+**`none`** means nothing was commanded, and the unit is holding whatever
+setpoint it was last given:
+
+| Trace says | Cause |
+|---|---|
+| `within band` | Nothing to do. The unit's own thermostat is holding the setpoint |
+| `no comfort reading for this room` | Missing temperature or humidity sensor. Comfort is held rather than withdrawn |
+| `no band configured for this mode` | No band for the mode the room is in |
+| `an opening in this room is open, holding the unit as it is…` | A door has just opened. Nothing new is actuated, and the unit is not stopped yet in case it closes |
 
 ## The comfort index is unavailable
 

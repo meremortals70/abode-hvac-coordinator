@@ -6,7 +6,7 @@ doing, room by room, and tells you exactly why.
 **It never writes to your battery.**
 
 > ### Status: v0.8.1 — alpha, not proven
-> The architecture is built and 323 tests pass. **Nothing since v0.5.3 has been
+> The architecture is built and 346 tests pass. **Nothing since v0.5.3 has been
 > confirmed working on real hardware**, and two releases shipped with faults
 > that only appeared on first install. Treat your first week as a test and read
 > [Known limitations](docs/known-limitations.md) before you rely on it.
@@ -137,9 +137,8 @@ sustained absence shuts it down. Coming back cancels it.
 | [Architecture](docs/architecture.md) | The layer model and the settled decisions |
 | [Data updates](docs/data-updates.md) | When it evaluates, and what triggers it |
 | [Contributing](docs/contributing.md) | Tests, structure, quality scale |
-| [Architecture review, Aug 2026](docs/architecture-review-2026-08.md) | Nineteen findings from reading the source; eight fixed in 0.8.6 |
+| [Architecture review, Aug 2026](docs/architecture-review-2026-08.md) | Twenty-three findings from reading the source; eight fixed in 0.8.6, four in 0.8.7 |
 | [As-built](AS-BUILT.md) | What was built, and where it differs from the design |
-| [Handover](HANDOVER.md) | Context for picking this up cold |
 | [Architecture gaps](ARCHITECTURE-GAPS.md) | What the architecture specifies and the code does not do |
 
 ---

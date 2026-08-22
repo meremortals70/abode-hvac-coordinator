@@ -62,7 +62,7 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import LOGGER
-from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig
+from .models import ActuatorStep, DecisionTrace, RoomConfig
 
 if TYPE_CHECKING:
     from .coordinator import HvacCoordinator
@@ -164,12 +164,18 @@ class Actuator:
                 await self._async_command(room, trace, OFF_MODES, None, active=False)
             return
 
-        if trace.actuator is ActuatorStep.NONE:
-            if (
-                trace.mode in (Mode.LOCKOUT, Mode.UNOCCUPIED)
-                and not trace.hold_compressor
-            ):
+        if trace.actuator is ActuatorStep.OFF:
+            if not trace.hold_compressor:
                 await self._async_command(room, trace, OFF_MODES, None, active=False)
+            return
+
+        if trace.actuator is ActuatorStep.NONE:
+            # Deliberately nothing. The unit keeps the trimmed setpoint it was
+            # last given and its own thermostat holds it until the next
+            # evaluation thirty seconds from now. Which reasons stop the unit
+            # and which leave it alone is decided in `modes.py`, not inferred
+            # from the mode here — inferring it caught two of five stop paths
+            # and silently missed the other three.
             return
 
         if trace.actuator is ActuatorStep.FAN:

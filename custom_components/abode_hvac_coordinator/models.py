@@ -40,9 +40,21 @@ class ActuatorStep(StrEnum):
     """Cheapest first. Architecture proposal v0.3, section 6.
 
     Nothing may reach for a step until every step above it is exhausted.
+
+    NONE and OFF are both "no actuator is being used", and they are not the
+    same instruction. NONE leaves the unit exactly as it was last commanded,
+    which is correct for a room sitting inside its band: the unit holds the
+    trimmed setpoint against its own sensor between our thirty-second
+    decisions. OFF stops it.
+
+    They were one value until 0.8.7, and two places downstream had to guess
+    which was meant — the actuator guessed from the mode and caught two of the
+    five stop paths, and the short-cycle guard guessed "not running" and so
+    recorded a stop every time a room reached its band.
     """
 
     NONE = "none"
+    OFF = "off"
     COVERS = "covers"
     FAN = "fan"
     DRY = "dry"
@@ -133,6 +145,10 @@ class RoomInputs:
     presence: bool | None = None
     #: True while any opening in this room is open.
     opening_open: bool = False
+    #: When the longest-open opening in this room was last seen to open. Used
+    #: to hold off stopping the unit for a door that is about to close again;
+    #: None where no opening is open or the time is not known.
+    opening_open_since: datetime | None = None
     #: Sleep schedule is active for this room right now.
     sleep_schedule_active: bool = False
     #: When a heading-home request needs the room to be at comfort by. The

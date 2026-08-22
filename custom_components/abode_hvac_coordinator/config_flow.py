@@ -35,6 +35,8 @@ from .const import (
     CONF_CLIMATE_ENTITY,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
+    CONF_FAN_ENTITY,
+    CONF_HEAT_LOAD_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_LOCKOUT_REASON,
@@ -101,6 +103,21 @@ ROOM_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_DIRECT_SUN_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="binary_sensor")
+        ),
+        # Both of these were read by the coordinator and printed in the room
+        # summary from the day they were written, and no form ever set them —
+        # so `HEAT_LOAD_HCI` had never applied to any room, and air movement
+        # always fell through to "is the air conditioner running".
+        vol.Optional(CONF_HEAT_LOAD_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="binary_sensor")
+        ),
+        # Wider than heat load: `_bool` tests `state == "on"`, which is true
+        # of a fan entity and a switched circuit as well as a binary sensor,
+        # and a ceiling fan is as likely to be either.
+        vol.Optional(CONF_FAN_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(
+                domain=["binary_sensor", "fan", "switch"]
+            )
         ),
         vol.Optional(CONF_OPENING_ENTITIES): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="binary_sensor", multiple=True)

@@ -140,7 +140,7 @@ class TestModePrecedence(unittest.TestCase):
             ),
         )
         self.assertIs(trace.mode, Mode.LOCKOUT)
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertIn("upstairs renovation", " ".join(trace.reasons))
 
     def test_precondition_beats_presence(self):
@@ -191,7 +191,7 @@ class TestModePrecedence(unittest.TestCase):
         self.assertIs(trace.mode, Mode.COAST)
         self.assertIs(trace.base_mode, Mode.OCCUPIED)
         self.assertEqual(trace.band_low, 25.0)
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
 
     def test_cheap_window_does_not_coast_even_when_it_would_hold(self):
         trace = evaluate_room(
@@ -265,7 +265,7 @@ class TestActuatorOrdering(unittest.TestCase):
                 opening_open=True,
             ),
         )
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
 
     def test_covers_come_first_when_there_is_sun_to_block(self):
         trace = evaluate_room(
@@ -640,7 +640,7 @@ class TestUnoccupiedAndHeadingHome(unittest.TestCase):
             ),
         )
         self.assertIs(trace.mode, Mode.UNOCCUPIED)
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertTrue(any("unoccupied" in r for r in trace.rejected))
 
     def test_unoccupied_has_no_band(self):
@@ -1089,20 +1089,20 @@ class TestUnitCapabilities(unittest.TestCase):
             ),
         )
         self.assertEqual(trace.demand, "heat")
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertTrue(any("cannot heat" in r for r in trace.rejected))
 
     def test_a_heating_only_unit_does_nothing_when_asked_to_cool(self):
         trace = self._hot(can_cool=False, can_dry=False)
         self.assertEqual(trace.demand, "cool")
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertTrue(any("cannot cool" in r for r in trace.rejected))
 
     def test_an_unavailable_unit_actuates_nothing(self):
         trace = self._hot(
             can_cool=False, can_heat=False, can_dry=False, can_fan_only=False
         )
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
 
 
 class TestCoverControlOverride(unittest.TestCase):
@@ -1174,7 +1174,7 @@ class TestPowerAvailability(unittest.TestCase):
     def test_power_unavailable_blocks_cooling(self):
         trace = self._hot(power_available=False)
         self.assertEqual(trace.demand, "cool")
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertTrue(
             any("no grid import permitted" in r for r in trace.rejected)
         )
@@ -1182,7 +1182,7 @@ class TestPowerAvailability(unittest.TestCase):
     def test_power_unavailable_blocks_heating(self):
         trace = self._cold(power_available=False)
         self.assertEqual(trace.demand, "heat")
-        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
         self.assertTrue(
             any("no grid import permitted" in r for r in trace.rejected)
         )
@@ -2953,3 +2953,201 @@ class TestDryModeIsNotAPassiveInterval(unittest.TestCase):
         model = _thermal.ThermalModel()
         model.observe(_interval(indoor_end_c=24.15))
         self.assertEqual(model.k_loss.samples, 1)
+
+
+class TestStoppingTheCompressor(unittest.TestCase):
+    """0.8.7. NONE means leave the unit alone; OFF means stop it.
+
+    They were one value, and the actuator inferred a stop from the mode —
+    catching lockout and unoccupied and silently missing the other three.
+    """
+
+    def test_coasting_stops_the_unit(self):
+        """Coasting held by running is not coasting."""
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=26.0,
+                relative_humidity=50.0,
+                presence=True,
+                predicted_to_hold=True,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_a_deferred_precondition_stops_the_unit(self):
+        """The deferral is the feature. Leaving it on is starting."""
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=32.0,
+                relative_humidity=60.0,
+                presence=False,
+                heading_home=True,
+                precondition_deadline=NOW + timedelta(hours=6),
+                precondition_ready=False,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.PRECONDITION)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_within_band_leaves_the_unit_alone(self):
+        """The majority of the controller's life, and it must not stop.
+
+        The unit holds the trimmed setpoint against its own sensor between
+        our thirty-second decisions. Stopping here would cycle the compressor
+        every time a room reached comfort.
+        """
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=25.5,
+                relative_humidity=45.0,
+                presence=True,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertIn("within band", trace.reasons)
+
+    def test_a_missing_reading_holds_rather_than_stops(self):
+        """A dead sensor is not grounds for withdrawing comfort.
+
+        Finding 3's reasoning: a guard that fails closed against comfort on
+        every question it cannot answer is the fault 0.8.6 was spent
+        reversing.
+        """
+        trace = evaluate_room(
+            room(),
+            RoomInputs(now=NOW, temperature_c=None, presence=True),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertTrue(
+            any("no comfort reading" in r for r in trace.rejected), trace.rejected
+        )
+
+    def test_the_trace_says_which_input_is_missing(self):
+        """One line covering both said nothing about where to look."""
+        no_band = evaluate_room(
+            room(bands={}),
+            RoomInputs(
+                now=NOW,
+                temperature_c=30.0,
+                relative_humidity=60.0,
+                presence=True,
+            ),
+        )
+        self.assertIs(no_band.actuator, ActuatorStep.NONE)
+        self.assertTrue(
+            any("no band configured" in r for r in no_band.rejected),
+            no_band.rejected,
+        )
+        self.assertFalse(
+            any("no comfort reading" in r for r in no_band.rejected),
+            no_band.rejected,
+        )
+
+    def test_an_open_window_stops_a_running_unit(self):
+        """The interlock's whole purpose.
+
+        Refusing to start is not the same thing: the thermostat sees return
+        air above setpoint, runs continuously, and never reaches it. Nothing
+        bounds it and nothing appears in the log.
+        """
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=32.0,
+                relative_humidity=70.0,
+                presence=True,
+                opening_open=True,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_the_power_refusal_reaches_the_hardware(self):
+        """It is the only mechanism holding `no_grid_import`.
+
+        Until 0.8.7 the refusal reached the trace and stopped there, so a
+        room already running kept running through the whole window.
+        """
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=32.0,
+                relative_humidity=60.0,
+                presence=True,
+                power_available=False,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_off_is_not_a_rung_on_the_cost_ladder(self):
+        """The ordering is ways to deliver comfort. Stopping is not one."""
+        self.assertNotIn(ActuatorStep.OFF, _models.ACTUATOR_ORDER)
+
+
+class TestOpeningDebounce(unittest.TestCase):
+    """0.8.7. A door held open for twenty seconds is not a window left open.
+
+    Stopping immediately costs a compressor stop and then the five-minute
+    minimum off. Never stopping was the defect. The interlock fires at once;
+    only the stop waits.
+    """
+
+    def _trace(self, open_for):
+        return evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=32.0,
+                relative_humidity=70.0,
+                presence=True,
+                opening_open=True,
+                opening_open_since=None if open_for is None else NOW - open_for,
+            ),
+        )
+
+    def test_a_door_open_briefly_leaves_the_unit_alone(self):
+        trace = self._trace(timedelta(seconds=20))
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+
+    def test_nothing_is_actuated_into_an_open_room_either_way(self):
+        """The interlock itself is not debounced, only the stop."""
+        trace = self._trace(timedelta(seconds=20))
+        self.assertIsNot(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertTrue(
+            any("an opening in this room is open" in r for r in trace.rejected),
+            trace.rejected,
+        )
+
+    def test_the_trace_says_how_long_is_left(self):
+        trace = self._trace(timedelta(seconds=20))
+        self.assertTrue(
+            any("in case it closes" in r for r in trace.rejected), trace.rejected
+        )
+        self.assertFalse(
+            any("another 0 minute" in r for r in trace.rejected), trace.rejected
+        )
+
+    def test_an_opening_left_open_stops_the_unit(self):
+        trace = self._trace(timedelta(minutes=3))
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_the_boundary_stops_the_unit(self):
+        trace = self._trace(_modes.OPENING_STOP_DEBOUNCE)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_an_unknown_age_stops_the_unit(self):
+        """An unknown age is not a young one.
+
+        A stale contact or a missing state gives no age. Holding on that would
+        leave a unit running against an opening nobody can date.
+        """
+        trace = self._trace(None)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
