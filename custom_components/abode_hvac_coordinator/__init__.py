@@ -11,6 +11,8 @@ series declares and holds no periods, prices or rates of its own.
 
 from __future__ import annotations
 
+from typing import Any
+
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -23,6 +25,8 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     ATTR_DEADLINE,
     ATTR_ROOM_ID,
+    CONF_CLIMATE_ENTITIES,
+    CONF_CLIMATE_ENTITY,
     CONF_ROOM_ID,
     CONF_ROOMS,
     DOMAIN,
@@ -93,6 +97,50 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=_ROOM_SERVICE_SCHEMA,
     )
     return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:
+    """Bring an older entry up to the current shape.
+
+    **Version 1 to 2 — a room's head became a list.** Every stored room
+    carried one `climate_entity_id`; from 0.8.8 it carries
+    `climate_entity_ids`, because a room can be served by two indoor units.
+
+    No outdoor unit groups are written. Every existing head becomes its own
+    compressor, which is exactly how the short-cycle guard behaved before the
+    change, so nothing about an existing house moves until it is told to.
+
+    A version bump ships a migration, always. Without one every existing
+    install logs "Migration handler not found" and refuses to load, and the
+    user is told to delete and re-add — which is never an acceptable answer to
+    a change of ours.
+    """
+    if entry.version > 2:
+        # Downgraded from a future release. Nothing here can help.
+        return False
+
+    if entry.version == 1:
+        data = {**entry.data}
+        options = {**entry.options}
+        for holder in (data, options):
+            rooms = holder.get(CONF_ROOMS)
+            if not rooms:
+                continue
+            holder[CONF_ROOMS] = [_room_to_v2(room) for room in rooms]
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, version=2
+        )
+
+    return True
+
+
+def _room_to_v2(room: dict[str, Any]) -> dict[str, Any]:
+    """One stored room, scalar head to list of heads."""
+    migrated = {**room}
+    single = migrated.pop(CONF_CLIMATE_ENTITY, None)
+    if not migrated.get(CONF_CLIMATE_ENTITIES):
+        migrated[CONF_CLIMATE_ENTITIES] = [single] if single else []
+    return migrated
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:

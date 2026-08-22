@@ -34,6 +34,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Sun-on-window sensor | No | Overrides the direction, for a room too complex for one compass point |
 | Illuminance sensor | No | Recorded only; not acted on |
 | Heat source in the room | No | Equipment heat is not counted toward comfort. A binary sensor that is on while a workstation, server or dryer is running — heat a wall sensor barely sees and a person sitting next to it certainly does |
+| Outdoor unit, per air conditioner | No | Each air conditioner is treated as having its own compressor. See [Outdoor units](#outdoor-units) |
 | Fan or air movement | No | Falls back to whether the air conditioner is running, which is not the same question. A binary sensor, fan or switch that is on while the room's air is moving |
 | Windows and doors | No | No opening interlock. When one is configured and open, the room's air conditioner is switched off |
 | Blinds | No | Covers are never used |
@@ -214,3 +215,45 @@ The house-wide settings are sensors on the **Abode HVAC Coordinator** device.
 Any change reloads the integration. Entities are recreated and the mode is
 re-evaluated immediately. Learned model state survives a reload; it is keyed by
 room id, so renaming a room to a new id starts its learning again.
+
+
+## Outdoor units
+
+Two separate questions, and neither implies the other.
+
+**How many air conditioners are in this room?** Answered on the room form.
+Almost every room has one. Select two where a single room is served by two
+indoor units — one comfort band, one target, one commanded setpoint, sent to
+both.
+
+**Which outdoor unit is each one on?** Asked on the step after it, one dropdown
+per air conditioner. The default is that it has its own, which is correct for
+most houses and needs no action.
+
+Answer it only where two air conditioners share the compressor outside. Type a
+name to create one; names already used by other rooms appear in the list, so
+the second room on a shared unit picks rather than retypes.
+
+The question is per air conditioner rather than per room because a room with
+two of them can have them on two separate outdoor units, and so has two
+different answers to give. For a room with one, it is a single dropdown.
+
+### What it changes
+
+The minimum run and minimum off times protect a **compressor**, not a room.
+Without this, two rooms with an air conditioner each on one outdoor unit refuse
+and hold each other's transitions: starting the second while the first is
+already running is treated as a compressor start, and stopping one while the
+other is still calling is treated as a compressor stop. Both are wrong.
+
+Nothing else changes. There is no arbitration between rooms and no sequencing
+of starts — each room still decides its own comfort independently.
+
+### What it is not
+
+Two air conditioners in one room is not this. Select both in the room's own
+field instead.
+
+Ducted is still out of scope. One indoor unit serving several rooms is refused
+at the form, and this does not change that: what is shared here is the
+compressor outside, not the indoor unit.

@@ -32,13 +32,15 @@ from .const import (
     CONF_BANDS,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SOC_ENTITY,
-    CONF_CLIMATE_ENTITY,
+    CONF_CLIMATE_ENTITIES,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
+    CONF_HEAD_GROUPS,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
+    CONF_KNOWN_HEAD_GROUPS,
     CONF_LOCKOUT_REASON,
     CONF_LOCKOUT_REASONS,
     CONF_OCCUPIED_AFTER,
@@ -62,6 +64,7 @@ from .const import (
     CONF_WINDOW_DIRECTION,
     DOMAIN,
     NOT_LOCKED_OUT,
+    OWN_OUTDOOR_UNIT,
     TARIFF_DOMAIN,
 )
 from .forms import (
@@ -75,7 +78,10 @@ from .forms import (
     describe_global,
     describe_power,
     describe_rooms,
+    extend_head_groups,
     extend_lockout_reasons,
+    head_groups_from_input,
+    known_head_groups,
     known_lockout_reasons,
     room_from_input,
 )
@@ -84,8 +90,10 @@ from .sun import WINDOW_DIRECTIONS
 ROOM_SCHEMA = vol.Schema(
     {
         vol.Required("name"): selector.TextSelector(),
-        vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="climate")
+        # A list from 0.8.8. One entry is the normal case and reads exactly
+        # as the single field did; two is a room served by two indoor units.
+        vol.Required(CONF_CLIMATE_ENTITIES): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="climate", multiple=True)
         ),
         vol.Optional(CONF_TEMPERATURE_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
@@ -159,6 +167,37 @@ def _kwh_selector() -> selector.NumberSelector:
             min=0, max=100, step=0.1, unit_of_measurement="kWh",
             mode=selector.NumberSelectorMode.BOX,
         )
+    )
+
+
+def outdoor_schema(heads: list[str], known_groups: list[str]) -> vol.Schema:
+    """One dropdown per head: which outdoor unit is it on.
+
+    Per head rather than per room, because a room with two heads can have them
+    on two separate outdoor units and so has two different answers to give.
+    For every room with one head this is a single dropdown, which reads the
+    same as asking once per room.
+
+    The same control the lockout reason field uses: the first option means no
+    shared unit, picking a name declares one, and typing a new name creates
+    it. Groups named by earlier rooms are already in the list.
+
+    The step is shown even for a single head. Hiding it there would mean a
+    room with one head sharing an outdoor unit with another room is never
+    asked, and that is the case the whole thing exists for.
+    """
+    options = [OWN_OUTDOOR_UNIT, *known_groups]
+    return vol.Schema(
+        {
+            vol.Optional(entity_id, default=OWN_OUTDOOR_UNIT): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    custom_value=True,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+            for entity_id in heads
+        }
     )
 
 
@@ -280,11 +319,37 @@ class _RoomSteps:
                 data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
                     schema, user_input
                 ),
-                errors={CONF_CLIMATE_ENTITY: "climate_entity_in_use"},
+                errors={CONF_CLIMATE_ENTITIES: "climate_entity_in_use"},
             )
 
         self._room = room
+        return await self.async_step_room_outdoor()
+
+    async def async_step_room_outdoor(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Which outdoor unit each of this room's heads is on.
+
+        After the room form, not before it: the heads have to be chosen before
+        they can be listed.
+        """
+        heads = list(self._room.get(CONF_CLIMATE_ENTITIES, []))
+        if user_input is None:
+            schema = outdoor_schema(heads, known_head_groups(self._stored_head_groups()))
+            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
+                step_id="room_outdoor",
+                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                    schema, self._room.get(CONF_HEAD_GROUPS) or {}
+                ),
+                description_placeholders={"room": self._room.get("name", "")},
+            )
+
+        self._room[CONF_HEAD_GROUPS] = head_groups_from_input(user_input)
         return await self.async_step_bands()
+
+    def _stored_head_groups(self) -> list[str]:
+        """Outdoor unit names already in use. Empty during initial setup."""
+        return []
 
     def _climate_entity_taken(self, room: dict[str, Any]) -> bool:
         """Whether another configured room already drives this entity.
@@ -325,7 +390,7 @@ class _RoomSteps:
 class HvacCoordinatorConfigFlow(_RoomSteps, ConfigFlow, domain=DOMAIN):
     """Initial setup. Collects the first room, so setup produces something."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialize the flow."""
@@ -344,6 +409,7 @@ class HvacCoordinatorConfigFlow(_RoomSteps, ConfigFlow, domain=DOMAIN):
             data={
                 CONF_ROOMS: [self._room],
                 CONF_LOCKOUT_REASONS: extend_lockout_reasons([], self._room),
+                CONF_KNOWN_HEAD_GROUPS: extend_head_groups([], self._room),
             },
         )
 
@@ -762,11 +828,20 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         its entity, and `_save_room` replaces by id.
         """
         replacing = {room[CONF_ROOM_ID], self._editing}
-        entity_id = room[CONF_CLIMATE_ENTITY]
+        heads = set(room.get(CONF_CLIMATE_ENTITIES) or [])
         return any(
             other[CONF_ROOM_ID] not in replacing
-            and other.get(CONF_CLIMATE_ENTITY) == entity_id
+            and heads & set(other.get(CONF_CLIMATE_ENTITIES) or [])
             for other in self._rooms
+        )
+
+    def _stored_head_groups(self) -> list[str]:
+        """Outdoor unit names any room has named, from the entry."""
+        entry = self.config_entry
+        return list(
+            entry.options.get(CONF_KNOWN_HEAD_GROUPS)
+            or entry.data.get(CONF_KNOWN_HEAD_GROUPS)
+            or []
         )
 
     def _suggested_lockout(self) -> dict[str, Any]:
@@ -791,5 +866,8 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         options[CONF_ROOMS] = rooms
         options[CONF_LOCKOUT_REASONS] = extend_lockout_reasons(
             self._stored_lockout_reasons(), self._room
+        )
+        options[CONF_KNOWN_HEAD_GROUPS] = extend_head_groups(
+            self._stored_head_groups(), self._room
         )
         return self.async_create_entry(title="", data=options)

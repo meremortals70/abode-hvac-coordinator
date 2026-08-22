@@ -227,7 +227,7 @@ envelope (`modes.py:266`), so the mass discharges free during the cheap window
 and is paid for at peak. Cheapest-first ordering is intra-cycle cost, not
 energy cost.
 
-### 13. Multi-head systems are not modelled
+### 13. Multi-head systems are not modelled — FIXED IN 0.8.8
 
 Heads on one outdoor unit share a compressor. Nothing in the configuration
 knows that, so there is no unit of account for a shared draw, and a room's
@@ -244,7 +244,7 @@ multi-head; ducted refused), its heads, and which rooms each serves. Make the
 room's heads a list at the same time, while the migration is being written
 anyway.
 
-**Settled, differently.** No global step and
+**Settled, and built in 0.8.8.** No global step and
 no Systems objects: the room's climate field becomes a multi-select, and a step
 after it asks per head which outdoor unit it is on, with groups created by
 earlier rooms already in the dropdown. Membership is derived from a shared
@@ -402,9 +402,9 @@ Harmless today, because the refusal downgrades to `NONE` and `NONE` does
 nothing. Correct the actuator alone and the first thing the new stop paths do
 is short-cycle the compressor past a guard that has been told the wrong thing.
 
-**Settled and fixed in 0.8.7:** `ActuatorStep` gains `OFF`. `wants` becomes
-running for COMPRESSOR and DRY, not running for OFF, and unchanged for NONE. A
-missing reading holds rather than stops, on finding 3's reasoning. The stop is
+**Fixed in 0.8.7:** `ActuatorStep` gains `OFF`. `wants` becomes running for
+COMPRESSOR and DRY, not running for OFF, and unchanged for NONE. A missing
+reading holds rather than stops, on finding 3's reasoning. The stop is
 debounced two minutes for an opening; the interlock itself is not.
 
 ### 21. `action_sources()` has no caller

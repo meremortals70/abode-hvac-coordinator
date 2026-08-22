@@ -320,14 +320,51 @@ than run the compressor.
 | Power-aware compressor decision (`no_grid_import`) | Built and tested. The coordinator wiring has run against Home Assistant since 0.8.6 — against 2025.1.4, not the targeted 2026.8.x |
 | Per-room cover-control override | Built, tested |
 | Stopping the compressor, as distinct from leaving it alone | Built, tested. New in 0.8.7 |
+| A room's heads, and which outdoor unit each is on | Built, tested. New in 0.8.8 |
 | Heat load and air movement inputs | Built, tested. Reachable in the room form from 0.8.7; before it, configured nowhere and always absent |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 346 tests at 0.8.7, against 2025.1.4 rather than the 2026.8.x
+pure modules — 358 tests at 0.8.8, against 2025.1.4 rather than the 2026.8.x
 targeted, because the build sandbox is Python 3.12. Running it for the first
 time found two tests that had never passed. See
 [Known limitations](known-limitations.md) and
 [the review](architecture-review-2026-08.md).
+
+### A room has heads; heads sit on outdoor units
+
+**New in 0.8.8.** Two relations, and neither implies the other.
+
+A room's `climate_entity_ids` is a list. One is the usual case; two is a room
+served by two indoor units, which gets one band, one target and one commanded
+setpoint sent to both. What the room can do is the **intersection** across its
+heads — claiming dry mode because one of two has it produces a decision the
+actuator cannot carry out on the other.
+
+Separately, each head carries an outdoor unit **name**. Two heads with the same
+name share a compressor, whether they sit in one room or two. Membership is
+derived from that one rule rather than held as objects, which covers every case
+in this house — two rooms on one outdoor unit, two heads in one room on one
+outdoor unit, and two heads in one room on two separate ones — with nothing to
+keep in step.
+
+A head with no declared name is its own compressor, so a house that declares
+nothing behaves exactly as it did.
+
+**The short-cycle guard is keyed by compressor.** `MIN_RUN` and `MIN_OFF`
+protect a compressor and `RegulatorState` was keyed by room, so two rooms with
+a head each on one outdoor unit refused and held each other's transitions in
+both directions. Cycling state moved to `CompressorState`, keyed by outdoor
+unit; the regulation trim stays keyed by room, because it corrects for where
+that room's sensor sits.
+
+A compressor's demand is the **or** across the rooms on it. A room reaching its
+band, or emptying, does not stop an outdoor unit that its neighbour is still
+calling on.
+
+**This is not multi-head arbitration**, which remains settled as not
+applicable. No room's comfort is traded against another's, no starts are
+sequenced and nothing is staggered. The compressor protection simply counts
+compressors.
 
 ### Stopping is a decision, and a separate one from leaving the unit alone
 

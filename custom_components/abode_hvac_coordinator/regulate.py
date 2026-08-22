@@ -82,6 +82,11 @@ class RegulatorState:
     Not persisted deliberately. The trim is only valid for the conditions that
     produced it, and restoring a six-hour-old trim after a restart would apply
     yesterday evening's correction to this morning's room.
+
+    **Per room, and it stays per room.** The trim corrects for where that
+    room's sensor sits relative to its head's return air, which is a property
+    of the room. Cycling state is not: that belongs to the compressor, and
+    from 0.8.8 lives in `CompressorState`.
     """
 
     #: Degrees added to the solved target to produce the commanded setpoint.
@@ -91,12 +96,29 @@ class RegulatorState:
     #: When the trim was last integrated, so the interval is measured rather
     #: than assumed to be the evaluation period.
     updated_at: datetime | None = None
+    #: Reasons produced by the last update, for the trace.
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CompressorState:
+    """One outdoor unit's cycling state.
+
+    Keyed by outdoor unit, not by room. `MIN_RUN` and `MIN_OFF` protect a
+    compressor, and two rooms with a head each on one outdoor unit share one.
+    Keyed by room, as it was before 0.8.8, starting the second room's head
+    while the first was already running was refused as a compressor start, and
+    stopping one while the other still called was held as a compressor stop.
+    Both directions wrong, on hardware that exists.
+
+    A head with no declared outdoor unit group is its own compressor, so a
+    house that declares nothing behaves exactly as it did.
+    """
+
     #: Whether the compressor is currently commanded on, and since when. Both
     #: are needed: the guard has to know which minimum applies.
     running: bool = False
     changed_at: datetime | None = None
-    #: Reasons produced by the last update, for the trace.
-    notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +199,7 @@ def integrate(
 
 
 def permit_transition(
-    state: RegulatorState, *, want_running: bool, now: datetime
+    state: CompressorState, *, want_running: bool, now: datetime
 ) -> tuple[bool, str | None]:
     """Whether the compressor may start or stop this cycle.
 
@@ -204,7 +226,7 @@ def permit_transition(
     )
 
 
-def note_transition(state: RegulatorState, *, running: bool, now: datetime) -> None:
+def note_transition(state: CompressorState, *, running: bool, now: datetime) -> None:
     """Record that the compressor actually changed state."""
     if running != state.running:
         state.running = running

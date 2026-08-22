@@ -6,6 +6,7 @@ inspected in a plain Python session or a unit test.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -81,7 +82,9 @@ class RoomConfig:
 
     room_id: str
     name: str
-    climate_entity_id: str
+    #: The room's heads. One for almost every room; two where one room is
+    #: served by two indoor units. A head belongs to exactly one room.
+    climate_entity_ids: tuple[str, ...]
     bands: dict[Mode, ComfortBand]
     temperature_entity_id: str | None = None
     humidity_entity_id: str | None = None
@@ -125,6 +128,34 @@ class RoomConfig:
     #: Set for rooms that must never actuate. Carries the reason string that
     #: appears in the trace, e.g. "upstairs renovation".
     lockout_reason: str | None = None
+    #: Which outdoor unit each of this room's heads is on, as a group name.
+    #: A head absent from this map is on an outdoor unit of its own.
+    #:
+    #: Named rather than referenced, so membership is derived across the whole
+    #: configuration by one rule: two heads carrying the same name share a
+    #: compressor. That covers two rooms on one outdoor unit and two heads in
+    #: one room with the same rule, and needs no objects to keep in step.
+    head_groups: Mapping[str, str] = field(default_factory=dict)
+
+    def group_of(self, entity_id: str) -> str:
+        """Which compressor a head runs on.
+
+        A head with no declared group is its own compressor. The entity id is
+        used as the key, which cannot collide with a user-typed group name in
+        any way that matters: a name identical to an entity id would group the
+        head with itself.
+        """
+        return self.head_groups.get(entity_id, entity_id)
+
+    @property
+    def groups(self) -> tuple[str, ...]:
+        """Every compressor this room can call on, in a stable order."""
+        seen: list[str] = []
+        for entity_id in self.climate_entity_ids:
+            group = self.group_of(entity_id)
+            if group not in seen:
+                seen.append(group)
+        return tuple(seen)
 
     def band_for(self, mode: Mode) -> ComfortBand | None:
         return self.bands.get(mode)

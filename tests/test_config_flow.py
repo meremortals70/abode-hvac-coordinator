@@ -18,7 +18,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_ALLOW_COVER_CONTROL,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SOC_ENTITY,
-    CONF_CLIMATE_ENTITY,
+    CONF_CLIMATE_ENTITIES,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
     CONF_ROOMS,
@@ -41,7 +41,12 @@ async def test_user_flow_collects_the_first_room(
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITY: "climate.first"},
+        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     assert result["step_id"] == "bands"
 
@@ -62,7 +67,12 @@ async def test_user_flow_rejects_an_inverted_band(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITY: "climate.first"},
+        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"occupied_low": 27.0, "occupied_high": 24.0}
@@ -104,7 +114,11 @@ async def test_options_flow_adds_a_room(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"name": "Second Room", CONF_CLIMATE_ENTITY: "climate.second"},
+        {"name": "Second Room", CONF_CLIMATE_ENTITIES: ["climate.second"]},
+    )
+    # The outdoor-unit step.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {}
     )
     assert result["step_id"] == "bands"
 
@@ -132,7 +146,11 @@ async def test_inverted_band_is_rejected(
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"name": "Third Room", CONF_CLIMATE_ENTITY: "climate.third"},
+        {"name": "Third Room", CONF_CLIMATE_ENTITIES: ["climate.third"]},
+    )
+    # The outdoor-unit step.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"occupied_low": 28.0, "occupied_high": 25.0}
@@ -150,7 +168,12 @@ async def test_setup_stores_no_tariff_of_its_own(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITY: "climate.first"},
+        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
@@ -350,9 +373,14 @@ async def test_disabling_cover_control_is_stored_on_the_room(
         result["flow_id"],
         {
             "name": "Office",
-            CONF_CLIMATE_ENTITY: "climate.office",
+            CONF_CLIMATE_ENTITIES: ["climate.office"],
             CONF_ALLOW_COVER_CONTROL: False,
         },
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
@@ -543,10 +571,15 @@ async def test_the_room_step_collects_heat_source_and_air_movement(
         result["flow_id"],
         {
             "name": "First Room",
-            CONF_CLIMATE_ENTITY: "climate.first",
+            CONF_CLIMATE_ENTITIES: ["climate.first"],
             "heat_load_entity_id": "binary_sensor.workstation",
             "air_movement_entity_id": "fan.ceiling",
         },
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
@@ -566,7 +599,12 @@ async def test_a_room_saved_without_them_carries_none(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITY: "climate.first"},
+        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+    )
+    # The outdoor-unit step. Every head defaults to its own, which is
+    # the answer for a house that shares no compressors.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}

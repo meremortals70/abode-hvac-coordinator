@@ -14,7 +14,7 @@ ordering â€” including which conditions stop the unit and which leave it alone â
 tariff windows and constraint handling, setpoint clamping, the setup form
 helpers, the seeded band defaults and lockout reason handling.
 
-346 tests in total across the pure and Home Assistant suites at 0.8.7, and
+358 tests in total across the pure and Home Assistant suites at 0.8.8, and
 that number is only meaningful alongside the version they ran against: the
 build sandbox installs Home Assistant 2025.1.4, not the 2026.8.x this targets.
 Say which every time.

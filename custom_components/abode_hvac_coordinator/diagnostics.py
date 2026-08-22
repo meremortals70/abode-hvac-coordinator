@@ -23,7 +23,9 @@ async def async_get_config_entry_diagnostics(
         "rooms": {
             room_id: {
                 "name": room.name,
-                "climate_entity_id": room.climate_entity_id,
+                "climate_entity_ids": list(room.climate_entity_ids),
+                "head_groups": dict(room.head_groups),
+                "outdoor_units": list(room.groups),
                 "temperature_entity_id": room.temperature_entity_id,
                 "humidity_entity_id": room.humidity_entity_id,
                 "presence_entity_id": room.presence_entity_id,
@@ -91,6 +93,17 @@ async def async_get_config_entry_diagnostics(
         # than null — absent means the entity was not there, "hvac_mode" means
         # it was and published no action, and those are different problems.
         "action_sources": coordinator.action_sources(),
+        # Keyed by outdoor unit, not by room. Two rooms sharing a compressor
+        # appear once.
+        "compressors": {
+            group: {
+                "running": state.running,
+                "changed_at": state.changed_at.isoformat()
+                if state.changed_at
+                else None,
+            }
+            for group, state in coordinator.compressor_state().items()
+        },
         "forecast": (
             coordinator.forecast.as_attributes() if coordinator.forecast else None
         ),
@@ -117,13 +130,11 @@ async def async_get_config_entry_diagnostics(
             "peak_c": coordinator.forecast_peak(),
             "peak_at": coordinator.forecast_peak_at(),
         },
+        # The trim, per room. Cycling state moved to `compressors` in 0.8.8,
+        # because it belongs to the outdoor unit and two rooms can share one.
         "regulation": {
             room_id: {
                 "trim_c": round(state.trim_c, 3),
-                "running": state.running,
-                "changed_at": (
-                    state.changed_at.isoformat() if state.changed_at else None
-                ),
                 "updated_at": (
                     state.updated_at.isoformat() if state.updated_at else None
                 ),

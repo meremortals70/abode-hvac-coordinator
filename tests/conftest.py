@@ -23,7 +23,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.abode_hvac_coordinator.const import (
     CONF_BANDS,
-    CONF_CLIMATE_ENTITY,
+    CONF_CLIMATE_ENTITIES,
     CONF_HUMIDITY_ENTITY,
     CONF_PRESENCE_ENTITY,
     CONF_ROOM_ID,
@@ -53,7 +53,7 @@ def room_config() -> dict:
     return {
         CONF_ROOM_ID: "test_room",
         "name": "Test Room",
-        CONF_CLIMATE_ENTITY: "climate.test",
+        CONF_CLIMATE_ENTITIES: ["climate.test"],
         CONF_TEMPERATURE_ENTITY: "sensor.test_temperature",
         CONF_HUMIDITY_ENTITY: "sensor.test_humidity",
         CONF_PRESENCE_ENTITY: "binary_sensor.test_presence",

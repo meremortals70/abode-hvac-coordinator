@@ -6,7 +6,7 @@ you were told about.
 ## Nothing has been proven on real hardware
 
 **No release from 0.6.0 onward has been confirmed working in Jason's house.**
-346 tests pass and the integration loads and unloads cleanly in the test
+358 tests pass and the integration loads and unloads cleanly in the test
 harness — against Home Assistant 2025.1.4, not the 2026.8.x this targets, and
 none of it tells you a compressor did the right thing.
 
@@ -41,10 +41,10 @@ that has never been executed as unwritten.
 
 Treat the first week as a test and read this page before relying on it.
 
-## Eleven known findings are recorded and not fixed
+## Ten known findings are recorded and not fixed
 
-The review now holds twenty-three findings. Eight are fixed in 0.8.6 and four
-in 0.8.7; the other eleven are written down in
+The review holds twenty-three findings. Eight are fixed in 0.8.6, four in
+0.8.7 and one in 0.8.8; the other ten are written down in
 [the review](architecture-review-2026-08.md) and are not built. The ones most
 likely to affect you:
 

@@ -8,6 +8,7 @@ from datetime import timedelta
 from freezegun import freeze_time
 from homeassistant.components.climate import ClimateEntityFeature
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
@@ -459,7 +460,7 @@ async def test_reaching_the_band_does_not_record_a_compressor_stop(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.attributes["actuator"] == "compressor", state.attributes
-    assert coordinator.regulation_state()["test_room"].running is True
+    assert coordinator.compressor_state()["climate.test"].running is True
 
     # The room reaches its band. Nothing stopped the compressor, so the guard
     # must not record that anything did.
@@ -475,7 +476,7 @@ async def test_reaching_the_band_does_not_record_a_compressor_stop(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.attributes["actuator"] == "none", state.attributes
-    assert coordinator.regulation_state()["test_room"].running is True
+    assert coordinator.compressor_state()["climate.test"].running is True
 
     # Ninety seconds later it is out of band again. The minimum *off* time
     # must not be applied, because the compressor never went off.
@@ -623,3 +624,357 @@ async def test_a_door_open_briefly_does_not_stop_the_unit(
     assert [call.data["hvac_mode"] for call in calls] == ["off"], [
         call.data for call in calls
     ]
+
+
+def _two_room_options(base: dict, *, share_outdoor_unit: bool) -> dict:
+    """Study and guest, each with one head, on one or two outdoor units."""
+    template = base[CONF_ROOMS][0]
+    group = {"climate.study": "Study and guest"} if share_outdoor_unit else {}
+    guest_group = {"climate.guest": "Study and guest"} if share_outdoor_unit else {}
+    return {
+        **base,
+        CONF_ROOMS: [
+            {
+                **template,
+                "room_id": "study",
+                "name": "Study",
+                "climate_entity_ids": ["climate.study"],
+                "head_groups": group,
+            },
+            {
+                **template,
+                "room_id": "guest",
+                "name": "Guest",
+                "climate_entity_ids": ["climate.guest"],
+                "head_groups": guest_group,
+            },
+        ],
+    }
+
+
+async def _setup_two_rooms(hass, entry, *, share_outdoor_unit: bool):
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        hass.config_entries.async_get_entry(entry.entry_id),
+        options=_two_room_options(
+            entry.options, share_outdoor_unit=share_outdoor_unit
+        ),
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    for entity_id in ("climate.study", "climate.guest"):
+        hass.states.async_set(
+            entity_id,
+            "off",
+            {
+                "hvac_modes": ["off", "cool", "dry", "fan_only"],
+                "hvac_action": "off",
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            },
+        )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    return coordinator
+
+
+async def test_two_rooms_on_one_outdoor_unit_share_one_compressor(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.8. `MIN_RUN` and `MIN_OFF` protect a compressor, not a room.
+
+    Keyed by room, starting the second room's head while the first was
+    already running was refused as a compressor start.
+    """
+    coordinator = await _setup_two_rooms(
+        hass, mock_config_entry, share_outdoor_unit=True
+    )
+    compressors = coordinator.compressor_state()
+    assert list(compressors) == ["Study and guest"], compressors
+    assert compressors["Study and guest"].running is True
+
+    # Neither room was refused a start on the other's account.
+    for room_id in ("study", "guest"):
+        state = hass.states.get(f"sensor.{room_id}_mode")
+        assert state is not None
+        assert state.attributes["actuator"] == "compressor", state.attributes
+        assert not any(
+            "short-cycle guard" in reason
+            for reason in state.attributes["rejected"]
+        ), state.attributes["rejected"]
+
+
+async def test_two_rooms_on_separate_outdoor_units_are_separate_compressors(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Declaring nothing must leave a house exactly as it was."""
+    coordinator = await _setup_two_rooms(
+        hass, mock_config_entry, share_outdoor_unit=False
+    )
+    assert sorted(coordinator.compressor_state()) == [
+        "climate.guest",
+        "climate.study",
+    ]
+
+
+async def test_one_room_reaching_its_band_does_not_stop_its_neighbour(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The compressor is still called on, so it must not read as stopped.
+
+    Both rooms read the same sensors here; the study is given a band wide
+    enough to sit inside and the guest room a band it is well above. So the
+    study decides NONE while the guest room decides COMPRESSOR, on one shared
+    outdoor unit.
+
+    Derive the compressor's demand from the study alone and its NONE records
+    a stop — after which the guest room's start is refused inside the minimum
+    off time, for a compressor that never went off.
+    """
+    template = mock_config_entry.options[CONF_ROOMS][0]
+    rooms = [
+        {
+            **template,
+            "room_id": "study",
+            "name": "Study",
+            "climate_entity_ids": ["climate.study"],
+            "head_groups": {"climate.study": "Study and guest"},
+            "bands": {"occupied": {"low": 10.0, "high": 40.0}},
+        },
+        {
+            **template,
+            "room_id": "guest",
+            "name": "Guest",
+            "climate_entity_ids": ["climate.guest"],
+            "head_groups": {"climate.guest": "Study and guest"},
+        },
+    ]
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: rooms},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    for entity_id in ("climate.study", "climate.guest"):
+        hass.states.async_set(
+            entity_id,
+            "off",
+            {
+                "hvac_modes": ["off", "cool", "dry", "fan_only"],
+                "hvac_action": "off",
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            },
+        )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    study = hass.states.get("sensor.study_mode")
+    guest = hass.states.get("sensor.guest_mode")
+    assert study is not None and guest is not None
+    assert study.attributes["actuator"] == "none", study.attributes
+    assert guest.attributes["actuator"] == "compressor", guest.attributes
+    assert coordinator.compressor_state()["Study and guest"].running is True
+    assert not any(
+        "short-cycle guard" in reason for reason in guest.attributes["rejected"]
+    ), guest.attributes["rejected"]
+
+
+async def test_a_room_with_two_heads_commands_both(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.8. One band, one target, one setpoint — sent to both heads."""
+    room = {
+        **mock_config_entry.options[CONF_ROOMS][0],
+        "climate_entity_ids": ["climate.lounge_n", "climate.lounge_s"],
+    }
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: [room]},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    for entity_id in ("climate.lounge_n", "climate.lounge_s"):
+        hass.states.async_set(
+            entity_id,
+            "off",
+            {
+                "hvac_modes": ["off", "cool", "dry", "fan_only"],
+                "hvac_action": "off",
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            },
+        )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    commanded = {call.data[ATTR_ENTITY_ID] for call in calls}
+    assert commanded == {"climate.lounge_n", "climate.lounge_s"}, [
+        call.data for call in calls
+    ]
+
+
+async def test_a_room_can_only_do_what_all_its_heads_can_do(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The intersection.
+
+    Claiming dry mode because one of two heads has it produces a decision the
+    actuator cannot carry out on the other.
+    """
+    room = {
+        **mock_config_entry.options[CONF_ROOMS][0],
+        "climate_entity_ids": ["climate.lounge_n", "climate.lounge_s"],
+    }
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: [room]},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "80.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set(
+        "climate.lounge_n",
+        "off",
+        {
+            "hvac_modes": ["off", "cool", "dry"],
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    hass.states.async_set(
+        "climate.lounge_s",
+        "off",
+        {
+            "hvac_modes": ["off", "cool"],
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] != "dry", state.attributes
+
+
+async def test_a_v1_entry_migrates_to_a_list_of_heads(
+    hass: HomeAssistant,
+) -> None:
+    """0.8.8. A version bump ships a migration, always.
+
+    No outdoor unit groups are written: every existing head becomes its own
+    compressor, which is how the guard behaved before the change.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        data={
+            CONF_ROOMS: [
+                {
+                    "room_id": "office",
+                    "name": "Office",
+                    "climate_entity_id": "climate.office",
+                    "bands": {"occupied": {"low": 24.0, "high": 27.0}},
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.version == 2
+    migrated = entry.data[CONF_ROOMS][0]
+    assert migrated["climate_entity_ids"] == ["climate.office"]
+    assert "climate_entity_id" not in migrated
+    assert not migrated.get("head_groups")
+
+    coordinator = entry.runtime_data
+    assert coordinator.rooms["office"].climate_entity_ids == ("climate.office",)
+    assert coordinator.rooms["office"].groups == ("climate.office",)
+
+
+async def test_an_empty_room_does_not_stop_its_neighbours_compressor(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.8. The compressor's demand is the OR across the rooms on it.
+
+    An unoccupied study decides OFF and its own head is switched off. The
+    outdoor unit is still driving the guest room's head, so it must not be
+    recorded as stopped — otherwise the guest room's next start is refused
+    inside the minimum off time, for a compressor that never stopped.
+    """
+    template = mock_config_entry.options[CONF_ROOMS][0]
+    rooms = [
+        {
+            **template,
+            "room_id": "study",
+            "name": "Study",
+            "climate_entity_ids": ["climate.study"],
+            "head_groups": {"climate.study": "Study and guest"},
+            "presence_entity_id": "binary_sensor.study_presence",
+        },
+        {
+            **template,
+            "room_id": "guest",
+            "name": "Guest",
+            "climate_entity_ids": ["climate.guest"],
+            "head_groups": {"climate.guest": "Study and guest"},
+        },
+    ]
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, CONF_ROOMS: rooms},
+    )
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set("binary_sensor.study_presence", "off")
+    for entity_id in ("climate.study", "climate.guest"):
+        hass.states.async_set(
+            entity_id,
+            "off",
+            {
+                "hvac_modes": ["off", "cool", "dry", "fan_only"],
+                "hvac_action": "off",
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            },
+        )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+
+    # Past the minimum run time. Inside it the phantom stop is refused rather
+    # than recorded, so the compressor stays running by accident and this
+    # would pass against the defect.
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    study = hass.states.get("sensor.study_mode")
+    guest = hass.states.get("sensor.guest_mode")
+    assert study is not None and guest is not None
+    assert study.attributes["actuator"] == "off", study.attributes
+    assert guest.attributes["actuator"] == "compressor", guest.attributes
+    assert coordinator.compressor_state()["Study and guest"].running is True
+    assert not any(
+        "short-cycle guard" in reason for reason in guest.attributes["rejected"]
+    ), guest.attributes["rejected"]
+    # And the study's own head really was switched off. A refused phantom
+    # stop sets `hold_compressor`, which suppresses it.
+    assert not study.attributes.get("hold_compressor"), study.attributes

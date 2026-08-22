@@ -30,6 +30,25 @@ setpoint it was last given:
 | `no band configured for this mode` | No band for the mode the room is in |
 | `an opening in this room is open, holding the unit as it is…` | A door has just opened. Nothing new is actuated, and the unit is not stopped yet in case it closes |
 
+## Two rooms fight over one outdoor unit
+
+They should not, from 0.8.8. If a room's trace says the short-cycle guard
+refused a start moments after another room on the same outdoor unit started,
+check Configure → the room → the outdoor unit step: both air conditioners must
+name the **same** outdoor unit.
+
+Diagnostics shows what the controller believes. `compressors` lists one entry
+per outdoor unit — two rooms sharing one should produce a single entry, not
+two, and each room's `outdoor_units` should name it.
+
+## A room with two air conditioners only drives one
+
+Both should be commanded. Check that both are selected in the room's own air
+conditioner field rather than one of them being in a second room.
+
+If the room refuses dry mode when one of its air conditioners has it, that is
+deliberate: a room can only do what **all** its air conditioners can do.
+
 ## The comfort index is unavailable
 
 The temperature or humidity sensor has no reading. Check both in Developer Tools

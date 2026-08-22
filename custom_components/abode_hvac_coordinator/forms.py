@@ -17,10 +17,11 @@ from .const import (
     CONF_BAND_HIGH,
     CONF_BAND_LOW,
     CONF_BANDS,
-    CONF_CLIMATE_ENTITY,
+    CONF_CLIMATE_ENTITIES,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
+    CONF_HEAD_GROUPS,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_LOCKOUT_REASON,
@@ -38,6 +39,7 @@ from .const import (
     DEFAULT_BANDS,
     DEFAULT_LOCKOUT_REASONS,
     NOT_LOCKED_OUT,
+    OWN_OUTDOOR_UNIT,
 )
 from .grace import (
     DEFAULT_OCCUPIED_AFTER,
@@ -66,7 +68,7 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
     return {
         CONF_ROOM_ID: slug(user_input["name"]),
         "name": user_input["name"],
-        CONF_CLIMATE_ENTITY: user_input[CONF_CLIMATE_ENTITY],
+        CONF_CLIMATE_ENTITIES: list(user_input[CONF_CLIMATE_ENTITIES]),
         CONF_TEMPERATURE_ENTITY: user_input.get(CONF_TEMPERATURE_ENTITY),
         CONF_HUMIDITY_ENTITY: user_input.get(CONF_HUMIDITY_ENTITY),
         CONF_PRESENCE_ENTITY: user_input.get(CONF_PRESENCE_ENTITY),
@@ -89,6 +91,40 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_ANNOUNCE_TARGETS: user_input.get(CONF_ANNOUNCE_TARGETS, []),
         CONF_LOCKOUT_REASON: _lockout_reason(user_input.get(CONF_LOCKOUT_REASON)),
     }
+
+
+def head_groups_from_input(user_input: dict[str, Any]) -> dict[str, str]:
+    """The outdoor-unit step's answers, as entity id to group name.
+
+    The sentinel first option is dropped rather than stored. A head with no
+    entry is on an outdoor unit of its own, which is the same statement and
+    leaves nothing behind if the head is later moved to a different room.
+    """
+    return {
+        entity_id: str(group).strip()
+        for entity_id, group in user_input.items()
+        if group and str(group).strip() not in ("", OWN_OUTDOOR_UNIT)
+    }
+
+
+def known_head_groups(stored: list[str]) -> list[str]:
+    """Every outdoor unit group any room has named, in a stable order."""
+    return sorted(set(stored))
+
+
+def extend_head_groups(stored: list[str], room: dict[str, Any]) -> list[str]:
+    """Add this room's outdoor unit names to the list a later room picks from.
+
+    Kept even when the room that named a group is removed. The name costs
+    nothing to offer, and a house that re-adds the room should not have to
+    retype it.
+    """
+    named = {
+        str(group).strip()
+        for group in (room.get(CONF_HEAD_GROUPS) or {}).values()
+        if str(group).strip()
+    }
+    return sorted({*stored, *named})
 
 
 def _lockout_reason(chosen: str | None) -> str | None:
@@ -187,7 +223,12 @@ def describe_room(room: dict[str, Any]) -> str:
         lines.append(f"  {label}: {value}{suffix}" if value else f"  {label}: —")
 
     lines.append(f"**{room.get('name', '?')}**")
-    entry("Air conditioner", room.get(CONF_CLIMATE_ENTITY))
+    heads = room.get(CONF_CLIMATE_ENTITIES) or []
+    groups = room.get(CONF_HEAD_GROUPS) or {}
+    entry("Air conditioners", ", ".join(heads))
+    for head in heads:
+        if groups.get(head):
+            lines.append(f"    {head} → outdoor unit: {groups[head]}")
     entry("Temperature", room.get(CONF_TEMPERATURE_ENTITY))
     entry("Humidity", room.get(CONF_HUMIDITY_ENTITY))
     entry("Presence", room.get(CONF_PRESENCE_ENTITY))

@@ -91,7 +91,7 @@ def room(**overrides) -> RoomConfig:
     base = {
         "room_id": "office",
         "name": "Office",
-        "climate_entity_id": "climate.office",
+        "climate_entity_ids": ("climate.office",),
         "bands": BANDS,
     }
     base.update(overrides)
@@ -830,20 +830,20 @@ _const = importlib.import_module("hvac_core.const")
 class TestRoomForm(unittest.TestCase):
     def test_room_id_is_slugged_from_the_name(self):
         room = _forms.room_from_input(
-            {"name": "Main Bedroom", "climate_entity_id": "climate.a"}
+            {"name": "Main Bedroom", "climate_entity_ids": ["climate.a"]}
         )
         self.assertEqual(room["room_id"], "main_bedroom")
 
     def test_an_unticked_room_carries_no_lockout_reason(self):
         """The reason is set by the lockout step, which requires the tick box."""
         room = _forms.room_from_input(
-            {"name": "Office", "climate_entity_id": "climate.a"}
+            {"name": "Office", "climate_entity_ids": ["climate.a"]}
         )
         self.assertIsNone(room["lockout_reason"])
 
     def test_optional_entities_default_to_absent(self):
         room = _forms.room_from_input(
-            {"name": "Office", "climate_entity_id": "climate.a"}
+            {"name": "Office", "climate_entity_ids": ["climate.a"]}
         )
         self.assertIsNone(room["sleep_schedule_entity_id"])
         self.assertEqual(room["opening_entity_ids"], [])
@@ -1640,7 +1640,7 @@ class TestLockoutIsOneField(unittest.TestCase):
         room = _forms.room_from_input(
             {
                 "name": "Office",
-                "climate_entity_id": "climate.o",
+                "climate_entity_ids": ["climate.o"],
                 "lockout_reason": _const.NOT_LOCKED_OUT,
             }
         )
@@ -1650,7 +1650,7 @@ class TestLockoutIsOneField(unittest.TestCase):
         room = _forms.room_from_input(
             {
                 "name": "Study",
-                "climate_entity_id": "climate.s",
+                "climate_entity_ids": ["climate.s"],
                 "lockout_reason": "Under renovation",
             }
         )
@@ -1670,7 +1670,7 @@ class TestLockoutIsOneField(unittest.TestCase):
 
     def test_blank_is_treated_as_not_locked_out(self):
         room = _forms.room_from_input(
-            {"name": "Office", "climate_entity_id": "climate.o", "lockout_reason": "  "}
+            {"name": "Office", "climate_entity_ids": ["climate.o"], "lockout_reason": "  "}
         )
         self.assertIsNone(room["lockout_reason"])
 
@@ -1973,7 +1973,7 @@ class TestConfigurationIsReadable(unittest.TestCase):
         base = {
             "room_id": "office",
             "name": "Office",
-            "climate_entity_id": "climate.office",
+            "climate_entity_ids": ("climate.office",),
             "temperature_entity_id": "sensor.office_temp",
             "bands": {"occupied": {"low": 24.0, "high": 27.0}},
             "occupied_after_minutes": 2,
@@ -2058,7 +2058,7 @@ class TestGlobalConfigurationIsSeparate(unittest.TestCase):
                 {
                     "room_id": "office",
                     "name": "Office",
-                    "climate_entity_id": "climate.office",
+                    "climate_entity_ids": ("climate.office",),
                     "bands": {"occupied": {"low": 24.0, "high": 27.0}},
                 }
             ]
@@ -2163,7 +2163,7 @@ class TestShortCycleGuard(unittest.TestCase):
     """Short cycling is the most damaging thing a controller can do to a split."""
 
     def test_holding_the_current_state_is_always_permitted(self):
-        state = _regulate.RegulatorState(running=True, changed_at=NOW)
+        state = _regulate.CompressorState(running=True, changed_at=NOW)
         permitted, reason = _regulate.permit_transition(
             state, want_running=True, now=NOW + timedelta(seconds=30)
         )
@@ -2171,7 +2171,7 @@ class TestShortCycleGuard(unittest.TestCase):
         self.assertIsNone(reason)
 
     def test_stopping_inside_the_minimum_run_is_refused(self):
-        state = _regulate.RegulatorState(running=True, changed_at=NOW)
+        state = _regulate.CompressorState(running=True, changed_at=NOW)
         permitted, reason = _regulate.permit_transition(
             state, want_running=False, now=NOW + timedelta(minutes=3)
         )
@@ -2179,14 +2179,14 @@ class TestShortCycleGuard(unittest.TestCase):
         self.assertIn("short-cycle guard", reason)
 
     def test_stopping_after_the_minimum_run_is_permitted(self):
-        state = _regulate.RegulatorState(running=True, changed_at=NOW)
+        state = _regulate.CompressorState(running=True, changed_at=NOW)
         permitted, _ = _regulate.permit_transition(
             state, want_running=False, now=NOW + _regulate.MIN_RUN
         )
         self.assertTrue(permitted)
 
     def test_starting_inside_the_minimum_off_is_refused(self):
-        state = _regulate.RegulatorState(running=False, changed_at=NOW)
+        state = _regulate.CompressorState(running=False, changed_at=NOW)
         permitted, reason = _regulate.permit_transition(
             state, want_running=True, now=NOW + timedelta(minutes=1)
         )
@@ -2194,14 +2194,14 @@ class TestShortCycleGuard(unittest.TestCase):
         self.assertIn("min", reason)
 
     def test_a_unit_with_no_history_may_transition_immediately(self):
-        state = _regulate.RegulatorState()
+        state = _regulate.CompressorState()
         permitted, _ = _regulate.permit_transition(
             state, want_running=True, now=NOW
         )
         self.assertTrue(permitted)
 
     def test_a_transition_is_only_recorded_when_the_state_actually_changes(self):
-        state = _regulate.RegulatorState(running=True, changed_at=NOW)
+        state = _regulate.CompressorState(running=True, changed_at=NOW)
         _regulate.note_transition(state, running=True, now=NOW + timedelta(hours=1))
         self.assertEqual(state.changed_at, NOW)
 
@@ -2859,7 +2859,7 @@ class TestDewPointIsAlwaysPublished(unittest.TestCase):
         room = RoomConfig(
             room_id="office",
             name="Office",
-            climate_entity_id="climate.office",
+            climate_entity_ids=("climate.office",),
             bands={Mode.OCCUPIED: ComfortBand(24.0, 27.0)},
         )
         return evaluate_room(room, RoomInputs(**base))
@@ -3151,3 +3151,59 @@ class TestOpeningDebounce(unittest.TestCase):
         """
         trace = self._trace(None)
         self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+
+class TestOutdoorUnits(unittest.TestCase):
+    """0.8.8. A room has heads; heads sit on outdoor units.
+
+    Two independent things. A room can be served by two heads, and a head can
+    share its compressor with a head in another room. Neither implies the
+    other, and both occur.
+    """
+
+    def test_a_head_with_no_group_is_its_own_compressor(self):
+        """A house that declares nothing behaves as it always did."""
+        config = room(climate_entity_ids=("climate.office",))
+        self.assertEqual(config.group_of("climate.office"), "climate.office")
+        self.assertEqual(config.groups, ("climate.office",))
+
+    def test_two_heads_in_one_room_on_one_unit_are_one_compressor(self):
+        """The lounge: two indoor units, one outdoor unit, one room."""
+        config = room(
+            climate_entity_ids=("climate.lounge_n", "climate.lounge_s"),
+            head_groups={
+                "climate.lounge_n": "Lounge pair",
+                "climate.lounge_s": "Lounge pair",
+            },
+        )
+        self.assertEqual(config.groups, ("Lounge pair",))
+
+    def test_two_heads_in_one_room_on_two_units_are_two_compressors(self):
+        """Also a real case, and the reason the question is per head."""
+        config = room(
+            climate_entity_ids=("climate.lounge_n", "climate.lounge_s"),
+        )
+        self.assertEqual(
+            config.groups, ("climate.lounge_n", "climate.lounge_s")
+        )
+
+    def test_two_rooms_naming_the_same_unit_share_a_compressor(self):
+        """Study and guest. Membership is derived from the name, not an object."""
+        study = room(
+            room_id="study",
+            climate_entity_ids=("climate.study",),
+            head_groups={"climate.study": "Study and guest"},
+        )
+        guest = room(
+            room_id="guest",
+            climate_entity_ids=("climate.guest",),
+            head_groups={"climate.guest": "Study and guest"},
+        )
+        self.assertEqual(study.groups, guest.groups)
+
+    def test_a_group_is_listed_once_per_room(self):
+        config = room(
+            climate_entity_ids=("climate.a", "climate.b", "climate.c"),
+            head_groups={"climate.a": "Pair", "climate.b": "Pair"},
+        )
+        self.assertEqual(config.groups, ("Pair", "climate.c"))

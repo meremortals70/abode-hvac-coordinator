@@ -6,7 +6,6 @@
         "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
         "data": {
           "name": "Room name",
-          "climate_entity_id": "Air conditioner",
           "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
           "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
@@ -25,7 +24,11 @@
           "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
           "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
-          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)"
+          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
+          "climate_entity_ids": "Air conditioners in this room"
+        },
+        "data_description": {
+          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units."
         }
       },
       "bands": {
@@ -39,6 +42,10 @@
           "precool_low": "Precool — lower bound (optional)",
           "precool_high": "Precool — upper bound (optional)"
         }
+      },
+      "room_outdoor": {
+        "title": "Outdoor units",
+        "description": "Only answer this where two air conditioners share the compressor outside. If each has its own, leave them as they are.\n\nTwo air conditioners in one room is not this — select both in the room's air conditioner field instead. This is for air conditioners whose heads run off the same outdoor unit, whether they are in one room or two.\n\nType a name to create a new outdoor unit. Names already in use appear in the list."
       }
     },
     "abort": {
@@ -56,7 +63,6 @@
         "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
         "data": {
           "name": "Room name",
-          "climate_entity_id": "Air conditioner",
           "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
           "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
@@ -75,7 +81,11 @@
           "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
           "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
-          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)"
+          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
+          "climate_entity_ids": "Air conditioners in this room"
+        },
+        "data_description": {
+          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units."
         }
       },
       "bands": {
@@ -164,6 +174,10 @@
           "house_load_entity_id": "House load sensor (total current draw)",
           "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)"
         }
+      },
+      "room_outdoor": {
+        "title": "Outdoor units",
+        "description": "Only answer this where two air conditioners share the compressor outside. If each has its own, leave them as they are.\n\nTwo air conditioners in one room is not this — select both in the room's air conditioner field instead. This is for air conditioners whose heads run off the same outdoor unit, whether they are in one room or two.\n\nType a name to create a new outdoor unit. Names already in use appear in the list."
       }
     },
     "error": {

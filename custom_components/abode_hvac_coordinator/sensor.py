@@ -519,7 +519,9 @@ class RoomSettingsSensor(HvacRoomEntity, SensorEntity):
             return None
         return {
             "room_id": room.room_id,
-            "air_conditioner": _configured(room.climate_entity_id),
+            "air_conditioners": [
+                _configured(entity_id) for entity_id in room.climate_entity_ids
+            ],
             "temperature_sensor": _configured(room.temperature_entity_id),
             "humidity_sensor": _configured(room.humidity_entity_id),
             "presence_sensor": _configured(room.presence_entity_id),

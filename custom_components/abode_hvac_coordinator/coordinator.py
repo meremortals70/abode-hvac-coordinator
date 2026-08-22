@@ -11,6 +11,7 @@ evaluator and hands the resulting decision on.
 from __future__ import annotations
 
 import functools
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
@@ -54,10 +55,12 @@ from .const import (
     CONF_BANDS,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_CLIMATE_ENTITIES,
     CONF_CLIMATE_ENTITY,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
+    CONF_HEAD_GROUPS,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
@@ -114,6 +117,7 @@ from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
 from .modes import evaluate_room
 from .psychro import dew_point_c
 from .regulate import (
+    CompressorState,
     RegulatorState,
     commanded_setpoint,
     integrate,
@@ -229,6 +233,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Layer 2 state, one per room. Not persisted: a trim is only valid
         #: for the conditions that produced it.
         self._regulators: dict[str, RegulatorState] = {}
+        #: Cycling state per outdoor unit, not per room. See CompressorState.
+        self._compressors: dict[str, CompressorState] = {}
+        #: What each room asked of its compressor last cycle, so a room
+        #: reaching its band does not read as the whole outdoor unit
+        #: stopping while another room on it is still calling.
+        self._room_wants: dict[str, bool] = {}
         #: The mode each room was in last evaluation, and when it changed, so
         #: the band can ramp across a sleep transition instead of stepping.
         self._previous_mode: dict[str, Mode] = {}
@@ -660,7 +670,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """
         by_entity: dict[str, list[str]] = {}
         for room in self.rooms.values():
-            by_entity.setdefault(room.climate_entity_id, []).append(room.name)
+            for entity_id in room.climate_entity_ids:
+                by_entity.setdefault(entity_id, []).append(room.name)
         return {
             entity_id: sorted(names)
             for entity_id, names in by_entity.items()
@@ -673,7 +684,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         return frozenset(
             room.room_id
             for room in self.rooms.values()
-            if room.climate_entity_id in shared
+            if any(entity_id in shared for entity_id in room.climate_entity_ids)
         )
 
     @callback
@@ -798,28 +809,54 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         room that appears to ignore its own decision with no explanation is
         the exact fault this project refuses to ship.
         """
-        state = self._regulators.setdefault(room.room_id, RegulatorState())
         # Dry mode energises the compressor. Treating it as a stop made the
         # guard block a cool-to-dry change for ten minutes as though the
         # compressor were shutting down, then record it as stopped while it
         # was in fact running — after which the minimum *off* time blocked the
         # return to cool, for a stop that never happened.
         # NONE is not a stop. It means the unit keeps what it was last given,
-        # so the compressor stays in whatever state it is already in and there
-        # is no transition to record. Until 0.8.7 `wants` was derived from the
+        # so this room asks for whatever it asked for last cycle and there is
+        # no transition to record. Until 0.8.7 `wants` was derived from the
         # step alone and resolved NONE as "not running", so every time a room
         # reached its band the guard logged a stop that never happened — the
-        # most common state the controller is in. Harmless only while nothing
-        # was ever actually stopped; the moment OFF exists it would let a
-        # genuine stop through inside the minimum run time.
+        # most common state the controller is in.
+        groups = room.groups
+        running_now = any(
+            self._compressors.setdefault(group, CompressorState()).running
+            for group in groups
+        )
         if trace.actuator is ActuatorStep.NONE:
-            wants = state.running
+            wants = self._room_wants.get(room.room_id, running_now)
         else:
             wants = trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
-        permitted, reason = permit_transition(state, want_running=wants, now=now)
-        if not permitted and reason is not None:
-            trace.rejected.append(reason)
-            if state.running:
+
+        # What the *compressor* is being asked for, which is not what this room
+        # is being asked for when another room shares the outdoor unit. A room
+        # reaching its band does not stop a compressor that its neighbour is
+        # still calling on.
+        refusal: str | None = None
+        holding = False
+        for group in groups:
+            compressor = self._compressors.setdefault(group, CompressorState())
+            wanted_by_group = wants or any(
+                self._room_wants.get(other.room_id, False)
+                for other in self.rooms.values()
+                if other.room_id != room.room_id and group in other.groups
+            )
+            permitted, reason = permit_transition(
+                compressor, want_running=wanted_by_group, now=now
+            )
+            if not permitted and reason is not None:
+                refusal = reason
+                holding = holding or compressor.running
+                continue
+            note_transition(compressor, running=wanted_by_group, now=now)
+
+        self._room_wants[room.room_id] = wants
+
+        if refusal is not None:
+            trace.rejected.append(refusal)
+            if holding:
                 # A stop was refused. Leave the decision alone and hold the
                 # compressor: replacing the step with COMPRESSOR cancelled
                 # cover and fan actions outright, which is a guard that exists
@@ -832,7 +869,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 # reason that still applies, and NONE would leave it running.
                 trace.actuator = ActuatorStep.OFF
             return
-        note_transition(state, running=wants, now=now)
 
     def _track_mode(self, room_id: str, mode: Mode, now: datetime) -> None:
         """Remember the mode and when it last changed, for the band ramp."""
@@ -1026,6 +1062,16 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """The outdoor temperature, for the house-wide sensor."""
         return self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
 
+    def compressor_state(self) -> dict[str, CompressorState]:
+        """Cycling state per outdoor unit, for diagnostics.
+
+        Keyed by outdoor unit group, where a head that shares with nothing is
+        keyed by its own entity id. Two rooms with a head each on one outdoor
+        unit appear once here, which is the point: `MIN_RUN` and `MIN_OFF`
+        protect a compressor, not a room.
+        """
+        return dict(self._compressors)
+
     def regulation_state(self) -> dict[str, RegulatorState]:
         """Layer 2 state per room, for diagnostics.
 
@@ -1147,8 +1193,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             moving := self._bool(room.air_movement_entity_id)
         ) is not None:
             return moving
-        state = self.hass.states.get(room.climate_entity_id)
-        return state is not None and state.state not in ("off", "unavailable", "unknown")
+        return any(
+            (state := self.hass.states.get(entity_id)) is not None
+            and state.state not in ("off", "unavailable", "unknown")
+            for entity_id in room.climate_entity_ids
+        )
 
     def _sleeping(self, room: RoomConfig) -> bool:
         """Whether the room's sleep schedule is currently on."""
@@ -1189,17 +1238,29 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         the attribute is visible in diagnostics rather than quietly degrading
         the model.
         """
-        state = self.hass.states.get(room.climate_entity_id)
-        if state is None:
+        states = [
+            state
+            for entity_id in room.climate_entity_ids
+            if (state := self.hass.states.get(entity_id)) is not None
+        ]
+        if not states:
             self._action_source.pop(room.room_id, None)
             return 0
 
-        action = state.attributes.get("hvac_action")
-        if action is not None:
+        # Any head driving counts. A room with two heads has one comfort
+        # target and one thermal response, so what is learned is the room's
+        # rate with whatever was running — the split between heads is not
+        # observable from a single room sensor.
+        actions = [
+            state.attributes.get("hvac_action")
+            for state in states
+            if state.attributes.get("hvac_action") is not None
+        ]
+        if actions:
             self._action_source[room.room_id] = "hvac_action"
-            if action == "cooling":
+            if "cooling" in actions:
                 return -1
-            if action == "heating":
+            if "heating" in actions:
                 return 1
             # idle, off, drying, fan, preheating, defrosting: the compressor
             # is not moving sensible heat in a direction this can learn from.
@@ -1217,12 +1278,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 "reports its mode, so the learned sensible coefficient will "
                 "be diluted by idle time",
                 room.room_id,
-                room.climate_entity_id,
+                ", ".join(room.climate_entity_ids),
             )
         self._action_source[room.room_id] = "hvac_mode"
-        if state.state == "cool":
+        modes = {state.state for state in states}
+        if "cool" in modes:
             return -1
-        if state.state == "heat":
+        if "heat" in modes:
             return 1
         return 0
 
@@ -1237,8 +1299,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
     def _is_drying(self, room: RoomConfig) -> bool:
         """Whether the unit is in dry mode."""
-        state = self.hass.states.get(room.climate_entity_id)
-        return state is not None and state.state == "dry"
+        return any(
+            (state := self.hass.states.get(entity_id)) is not None
+            and state.state == "dry"
+            for entity_id in room.climate_entity_ids
+        )
 
     def _persist_models(self) -> None:
         """Write learned state back to the store, on its own delay."""
@@ -1438,15 +1503,22 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         A missing entity reports everything as unavailable, which stops the
         selector choosing a step that could not be carried out.
         """
-        state = self.hass.states.get(room.climate_entity_id)
-        if state is None:
+        states = [
+            state
+            for entity_id in room.climate_entity_ids
+            if (state := self.hass.states.get(entity_id)) is not None
+        ]
+        if len(states) != len(room.climate_entity_ids) or not states:
             return {
                 "can_cool": False,
                 "can_heat": False,
                 "can_dry": False,
                 "can_fan_only": False,
             }
-        modes = supported_hvac_modes(state)
+        # The intersection across the room's heads. A room can only do what
+        # all of them can: claiming dry mode because one of two heads has it
+        # produces a decision the actuator cannot carry out on the other.
+        modes = set.intersection(*(supported_hvac_modes(state) for state in states))
         return {
             "can_cool": bool(modes & {"cool", "heat_cool", "auto"}),
             "can_heat": bool(modes & {"heat", "heat_cool", "auto"}),
@@ -1734,7 +1806,7 @@ def _watched_entities(rooms: dict[str, RoomConfig]) -> set[str]:
             )
             if entity_id
         )
-        watched.add(room.climate_entity_id)
+        watched.update(room.climate_entity_ids)
         watched.update(room.opening_entity_ids)
         watched.update(room.cover_entity_ids)
     return watched
@@ -1793,7 +1865,8 @@ def _lock_out_shared_climate(
     """
     claimed: dict[str, list[str]] = {}
     for room in rooms.values():
-        claimed.setdefault(room.climate_entity_id, []).append(room.room_id)
+        for entity_id in room.climate_entity_ids:
+            claimed.setdefault(entity_id, []).append(room.room_id)
 
     for entity_id, room_ids in claimed.items():
         if len(room_ids) < 2:
@@ -1812,6 +1885,20 @@ def _lock_out_shared_climate(
     return rooms
 
 
+def _heads(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """A room's heads, reading either shape.
+
+    The scalar `climate_entity_id` is pre-0.8.8. The migration rewrites every
+    stored room, so this fallback exists for an entry that is being read
+    before migration has run, and for nothing else.
+    """
+    heads = raw.get(CONF_CLIMATE_ENTITIES)
+    if heads:
+        return tuple(str(entity) for entity in heads)
+    single = raw.get(CONF_CLIMATE_ENTITY)
+    return (str(single),) if single else ()
+
+
 def _room_from_raw(
     raw: dict[str, Any], bands: dict[Mode, ComfortBand]
 ) -> RoomConfig:
@@ -1819,7 +1906,12 @@ def _room_from_raw(
     return RoomConfig(
         room_id=raw[CONF_ROOM_ID],
         name=raw["name"],
-        climate_entity_id=raw[CONF_CLIMATE_ENTITY],
+        climate_entity_ids=_heads(raw),
+        head_groups={
+            str(entity): str(group)
+            for entity, group in (raw.get(CONF_HEAD_GROUPS) or {}).items()
+            if group
+        },
         bands=bands,
         temperature_entity_id=raw.get(CONF_TEMPERATURE_ENTITY),
         humidity_entity_id=raw.get(CONF_HUMIDITY_ENTITY),

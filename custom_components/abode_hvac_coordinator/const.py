@@ -32,6 +32,15 @@ PRECOOL_DEMAND_MARGIN_C: Final = 2.0
 CONF_ROOMS: Final = "rooms"
 CONF_ROOM_ID: Final = "room_id"
 CONF_CLIMATE_ENTITY: Final = "climate_entity_id"
+#: A room's heads. A list from 0.8.8; `CONF_CLIMATE_ENTITY` is the pre-0.8.8
+#: scalar and is read only by the migration.
+CONF_CLIMATE_ENTITIES: Final = "climate_entity_ids"
+#: Per room, which outdoor unit each of its heads is on. Entity id to group
+#: name. A head absent from it is on an outdoor unit of its own.
+CONF_HEAD_GROUPS: Final = "head_groups"
+#: Entry level. Every outdoor unit group name any room has named, so a later
+#: room can pick one rather than retype it.
+CONF_KNOWN_HEAD_GROUPS: Final = "known_head_groups"
 CONF_TEMPERATURE_ENTITY: Final = "temperature_entity_id"
 CONF_HUMIDITY_ENTITY: Final = "humidity_entity_id"
 CONF_PRESENCE_ENTITY: Final = "presence_entity_id"
@@ -146,6 +155,9 @@ CONF_LOCKOUT_REASONS: Final = "lockout_reasons"
 #: locked out, which is why lockout needs no separate toggle and no second
 #: screen: one field answers both questions.
 NOT_LOCKED_OUT: Final = "Not locked out"
+#: First option on every outdoor-unit dropdown. Means this head does not share
+#: a compressor with any other head, which is the default and the usual case.
+OWN_OUTDOOR_UNIT: Final = "Its own outdoor unit"
 
 #: Offered in the lockout dropdown before the user has added any of their own.
 DEFAULT_LOCKOUT_REASONS: Final = (

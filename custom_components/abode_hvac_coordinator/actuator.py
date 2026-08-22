@@ -216,17 +216,37 @@ class Actuator:
         Nothing is sent that the entity has not said it can do. The mode is
         resolved against its own hvac_modes, the temperature against its
         supported features, and fan and swing against the lists it publishes.
+
+        A room with two heads gets the same instruction on both. It has one
+        band, one target and one commanded setpoint — two heads in one room
+        are two ways of delivering one temperature, not two zones.
         """
-        state = self.hass.states.get(room.climate_entity_id)
+        for entity_id in room.climate_entity_ids:
+            await self._async_command_head(
+                room, trace, entity_id, preferred, temperature, active=active
+            )
+
+    async def _async_command_head(
+        self,
+        room: RoomConfig,
+        trace: DecisionTrace,
+        entity_id: str,
+        preferred: tuple[HVACMode, ...],
+        temperature: float | None,
+        *,
+        active: bool,
+    ) -> None:
+        """One head. Dedupe, capability resolution and errors are per head."""
+        state = self.hass.states.get(entity_id)
         if state is None:
-            trace.rejected.append(f"climate: {room.climate_entity_id} is unavailable")
+            trace.rejected.append(f"climate: {entity_id} is unavailable")
             return
 
         hvac_mode = resolve_hvac_mode(state, preferred)
         if hvac_mode is None:
             wanted = ", ".join(str(mode) for mode in preferred)
             trace.rejected.append(
-                f"climate: {room.climate_entity_id} advertises none of {wanted}"
+                f"climate: {entity_id} advertises none of {wanted}"
             )
             return
 
@@ -235,40 +255,43 @@ class Actuator:
                 f"{preferred[0]} unavailable, using {hvac_mode} instead"
             )
 
-        if self._last_climate.get(room.room_id) == (hvac_mode, temperature):
+        # Keyed by entity, not by room. Two heads in one room resolve their
+        # own modes and fail independently, so one already holding the
+        # instruction must not suppress the other being sent it.
+        if self._last_climate.get(entity_id) == (hvac_mode, temperature):
             return
 
         try:
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
                 SERVICE_SET_HVAC_MODE,
-                {ATTR_ENTITY_ID: room.climate_entity_id, ATTR_HVAC_MODE: hvac_mode},
+                {ATTR_ENTITY_ID: entity_id, ATTR_HVAC_MODE: hvac_mode},
                 blocking=True,
             )
             if temperature is not None:
                 await self._async_set_temperature(
-                    room, trace, state, hvac_mode, temperature
+                    entity_id, trace, state, hvac_mode, temperature
                 )
             if hvac_mode is not HVACMode.OFF:
-                await self._async_set_fan(room, state, active=active)
-                await self._async_set_swing(room, state, active=active)
+                await self._async_set_fan(entity_id, state, active=active)
+                await self._async_set_swing(entity_id, state, active=active)
         except HomeAssistantError as err:
             # A failed actuation must not stop the other rooms being evaluated.
             trace.rejected.append(f"climate: {err}")
             LOGGER.warning(
-                "Setting %s to %s failed: %s", room.climate_entity_id, hvac_mode, err
+                "Setting %s to %s failed: %s", entity_id, hvac_mode, err
             )
             return
 
-        self._last_climate[room.room_id] = (hvac_mode, temperature)
+        self._last_climate[entity_id] = (hvac_mode, temperature)
         trace.reasons.append(
-            f"set {room.climate_entity_id} to {hvac_mode}"
+            f"set {entity_id} to {hvac_mode}"
             + (f" at {temperature:.1f} C" if temperature is not None else "")
         )
 
     async def _async_set_temperature(
         self,
-        room: RoomConfig,
+        entity_id: str,
         trace: DecisionTrace,
         state: State,
         hvac_mode: HVACMode,
@@ -290,7 +313,7 @@ class Actuator:
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
                 SERVICE_SET_TEMPERATURE,
-                {ATTR_ENTITY_ID: room.climate_entity_id, ATTR_TEMPERATURE: target},
+                {ATTR_ENTITY_ID: entity_id, ATTR_TEMPERATURE: target},
                 blocking=True,
             )
             return
@@ -302,7 +325,7 @@ class Actuator:
                 CLIMATE_DOMAIN,
                 SERVICE_SET_TEMPERATURE,
                 {
-                    ATTR_ENTITY_ID: room.climate_entity_id,
+                    ATTR_ENTITY_ID: entity_id,
                     ATTR_TARGET_TEMP_LOW: round(target - RANGE_DEADBAND_C, 1),
                     ATTR_TARGET_TEMP_HIGH: round(target + RANGE_DEADBAND_C, 1),
                 },
@@ -311,11 +334,11 @@ class Actuator:
             return
 
         trace.rejected.append(
-            f"climate: {room.climate_entity_id} takes no temperature target"
+            f"climate: {entity_id} takes no temperature target"
         )
 
     async def _async_set_fan(
-        self, room: RoomConfig, state: State, *, active: bool
+        self, entity_id: str, state: State, *, active: bool
     ) -> None:
         """Ask for a sensible fan mode, if the unit has fan control."""
         features = int(state.attributes.get(ATTR_SUPPORTED_FEATURES) or 0)
@@ -328,12 +351,12 @@ class Actuator:
         await self.hass.services.async_call(
             CLIMATE_DOMAIN,
             SERVICE_SET_FAN_MODE,
-            {ATTR_ENTITY_ID: room.climate_entity_id, ATTR_FAN_MODE: wanted},
+            {ATTR_ENTITY_ID: entity_id, ATTR_FAN_MODE: wanted},
             blocking=True,
         )
 
     async def _async_set_swing(
-        self, room: RoomConfig, state: State, *, active: bool
+        self, entity_id: str, state: State, *, active: bool
     ) -> None:
         """Move the vanes, if the unit has them.
 
@@ -352,7 +375,7 @@ class Actuator:
         await self.hass.services.async_call(
             CLIMATE_DOMAIN,
             SERVICE_SET_SWING_MODE,
-            {ATTR_ENTITY_ID: room.climate_entity_id, ATTR_SWING_MODE: wanted},
+            {ATTR_ENTITY_ID: entity_id, ATTR_SWING_MODE: wanted},
             blocking=True,
         )
 
