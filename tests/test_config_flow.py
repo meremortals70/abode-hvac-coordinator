@@ -20,13 +20,22 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITIES,
     CONF_HOUSE_LOAD_ENTITY,
+    CONF_HUMIDITY_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
     CONF_ROOMS,
     CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
+    CONF_TEMPERATURE_ENTITY,
     DOMAIN,
     STARTUP_FETCH_DELAY,
 )
+
+#: Required from 0.8.9. Every room-step submission in this file needs both,
+#: whether or not the test's own point is about them.
+_REQUIRED_COMFORT_INPUTS = {
+    CONF_TEMPERATURE_ENTITY: "sensor.test_temperature",
+    CONF_HUMIDITY_ENTITY: "sensor.test_humidity",
+}
 
 
 async def test_user_flow_collects_the_first_room(
@@ -41,7 +50,11 @@ async def test_user_flow_collects_the_first_room(
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+        {
+            "name": "First Room",
+            CONF_CLIMATE_ENTITIES: ["climate.first"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
     # the answer for a house that shares no compressors.
@@ -67,7 +80,11 @@ async def test_user_flow_rejects_an_inverted_band(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+        {
+            "name": "First Room",
+            CONF_CLIMATE_ENTITIES: ["climate.first"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
     # the answer for a house that shares no compressors.
@@ -79,6 +96,46 @@ async def test_user_flow_rejects_an_inverted_band(
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "band_inverted"}
+
+
+async def test_the_room_step_rejects_a_room_with_no_temperature_entity(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """0.8.9: comfort inputs are required, not optional, from setup on."""
+    from homeassistant.data_entry_flow import InvalidData
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "name": "First Room",
+                CONF_CLIMATE_ENTITIES: ["climate.first"],
+                CONF_HUMIDITY_ENTITY: "sensor.test_humidity",
+            },
+        )
+
+
+async def test_the_room_step_rejects_a_room_with_no_humidity_entity(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """0.8.9: comfort inputs are required, not optional, from setup on."""
+    from homeassistant.data_entry_flow import InvalidData
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "name": "First Room",
+                CONF_CLIMATE_ENTITIES: ["climate.first"],
+                CONF_TEMPERATURE_ENTITY: "sensor.test_temperature",
+            },
+        )
 
 
 async def test_single_instance_only(
@@ -114,7 +171,11 @@ async def test_options_flow_adds_a_room(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"name": "Second Room", CONF_CLIMATE_ENTITIES: ["climate.second"]},
+        {
+            "name": "Second Room",
+            CONF_CLIMATE_ENTITIES: ["climate.second"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step.
     result = await hass.config_entries.options.async_configure(
@@ -146,7 +207,11 @@ async def test_inverted_band_is_rejected(
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"name": "Third Room", CONF_CLIMATE_ENTITIES: ["climate.third"]},
+        {
+            "name": "Third Room",
+            CONF_CLIMATE_ENTITIES: ["climate.third"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step.
     result = await hass.config_entries.options.async_configure(
@@ -168,7 +233,11 @@ async def test_setup_stores_no_tariff_of_its_own(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+        {
+            "name": "First Room",
+            CONF_CLIMATE_ENTITIES: ["climate.first"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
     # the answer for a house that shares no compressors.
@@ -375,6 +444,7 @@ async def test_disabling_cover_control_is_stored_on_the_room(
             "name": "Office",
             CONF_CLIMATE_ENTITIES: ["climate.office"],
             CONF_ALLOW_COVER_CONTROL: False,
+            **_REQUIRED_COMFORT_INPUTS,
         },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
@@ -574,6 +644,7 @@ async def test_the_room_step_collects_heat_source_and_air_movement(
             CONF_CLIMATE_ENTITIES: ["climate.first"],
             "heat_load_entity_id": "binary_sensor.workstation",
             "air_movement_entity_id": "fan.ceiling",
+            **_REQUIRED_COMFORT_INPUTS,
         },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
@@ -599,7 +670,11 @@ async def test_a_room_saved_without_them_carries_none(
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"name": "First Room", CONF_CLIMATE_ENTITIES: ["climate.first"]},
+        {
+            "name": "First Room",
+            CONF_CLIMATE_ENTITIES: ["climate.first"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
     )
     # The outdoor-unit step. Every head defaults to its own, which is
     # the answer for a house that shares no compressors.

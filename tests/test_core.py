@@ -1278,14 +1278,23 @@ class TestThermalLearning(unittest.TestCase):
         # A compressor interval must teach nothing about passive loss.
         self.assertEqual(model.k_loss.samples, 0)
 
-    def test_a_room_moving_against_the_compressor_teaches_nothing(self):
-        """Door open, or a heat load. Not the unit's fault, not its lesson."""
+    def test_a_room_moving_against_the_compressor_is_not_discarded(self):
+        """0.8.9, finding 9: the negative tail is real information now.
+
+        Before this build, an interval where the room moved against the
+        compressor — a door open, a heat load — was dropped, which truncated
+        the noise distribution and biased what remained high. It is real
+        information about that operating point on that day, and dropping it
+        is exactly what let a bin sit above zero when the true rate there was
+        at or below it.
+        """
         model = _thermal.ThermalModel()
         for _ in range(30):
             model.observe(
                 _interval(indoor_start_c=26.0, indoor_end_c=26.5, compressor=-1)
             )
-        self.assertEqual(model.k_sensible.samples, 0)
+        self.assertTrue(model.k_sensible.converged)
+        self.assertLess(model.k_sensible.value, 0.0)
 
     def test_latent_is_learned_separately_from_sensible(self):
         """The whole reason this model is not a heating-climate model.
@@ -1418,6 +1427,257 @@ class TestThermalPrediction(unittest.TestCase):
         self.assertGreater(bidirectional, 0.0)
 
 
+class TestApproachBins(unittest.TestCase):
+    """0.8.9, finding 9: `k_sensible` binned by the gap to the setpoint."""
+
+    def _observe(self, model, setpoint_c, indoor_c, *, count=25, rate_c=1.0):
+        """`count` intervals holding `setpoint_c` fixed, cooling toward it."""
+        for _ in range(count):
+            model.observe(
+                _interval(
+                    indoor_start_c=indoor_c,
+                    indoor_end_c=indoor_c - rate_c * 0.25,
+                    compressor=-1,
+                    commanded_setpoint_c=setpoint_c,
+                )
+            )
+
+    def test_an_interval_is_attributed_to_the_mean_approach_bin(self):
+        # Setpoint 22, room 24 -> 23.75: mean approach ~1.9, "working" bin.
+        model = _thermal.ThermalModel()
+        self._observe(model, setpoint_c=22.0, indoor_c=24.0)
+        self.assertTrue(model.k_sensible_bins[2].converged)
+        for other in (0, 1, 3):
+            self.assertEqual(model.k_sensible_bins[other].samples, 0)
+
+    def test_each_interval_bins_on_its_own_commanded_setpoint(self):
+        """A bin is chosen from one interval's own approach, never blended.
+
+        The anchor-reset behaviour that keeps a commanded-setpoint change
+        from spanning one interval belongs to the coordinator's `_learn` —
+        exercised in test_init.py, since it needs the regulator state
+        `_learn` reads. What `thermal.py` owns, and what this asserts, is
+        that two intervals at different setpoints are attributed
+        independently rather than averaged into one bin.
+        """
+        model = _thermal.ThermalModel()
+        for _ in range(25):
+            model.observe(
+                _interval(
+                    indoor_start_c=24.0, indoor_end_c=23.75, compressor=-1,
+                    commanded_setpoint_c=23.5,  # mean approach ~0.4 -> at_setpoint
+                )
+            )
+        for _ in range(25):
+            model.observe(
+                _interval(
+                    indoor_start_c=30.0, indoor_end_c=29.0, compressor=-1,
+                    commanded_setpoint_c=20.0,  # mean approach ~9.5 -> pulldown
+                )
+            )
+        self.assertTrue(model.k_sensible_bins[0].converged)
+        self.assertTrue(model.k_sensible_bins[3].converged)
+        self.assertEqual(model.k_sensible_bins[1].samples, 0)
+        self.assertEqual(model.k_sensible_bins[2].samples, 0)
+
+    def test_an_unconverged_bin_falls_back_to_pooled(self):
+        model = _thermal.ThermalModel()
+        # Pool converges from the "close" bin.
+        self._observe(model, setpoint_c=22.0, indoor_c=22.8, count=25)
+        self.assertTrue(model.k_sensible.converged)
+        # The pulldown bin (index 3) has never been observed.
+        self.assertFalse(model.k_sensible_bins[3].converged)
+        self.assertEqual(model._sensible_rate(3), model.k_sensible.value)
+
+    def test_a_converged_bin_is_preferred_to_pooled(self):
+        model = _thermal.ThermalModel()
+        # Pool from a mix of two operating points.
+        self._observe(model, setpoint_c=22.0, indoor_c=22.8, count=25, rate_c=1.0)
+        self._observe(model, setpoint_c=22.0, indoor_c=30.0, count=25, rate_c=3.0)
+        pooled = model.k_sensible.value
+        pulldown_bin = model.k_sensible_bins[3].value
+        self.assertNotAlmostEqual(pooled, pulldown_bin, places=2)
+        self.assertEqual(model._sensible_rate(3), pulldown_bin)
+
+    def test_a_bin_at_or_below_zero_makes_hours_to_reach_none(self):
+        model = _thermal.ThermalModel()
+        # The room loses to the load at the "working" approach every time.
+        for _ in range(25):
+            model.observe(
+                _interval(
+                    indoor_start_c=24.0, indoor_end_c=24.5, compressor=-1,
+                    commanded_setpoint_c=22.0,
+                )
+            )
+        self.assertTrue(model.k_sensible.converged)
+        self.assertLessEqual(model.k_sensible_bins[2].value, 0.0)
+        self.assertIsNone(
+            model.hours_to_reach(24.0, 22.0, None, direct_sun=False)
+        )
+
+    def test_hours_to_reach_uses_each_bins_own_rate(self):
+        model = _thermal.ThermalModel()
+        # Converge three bins at different rates: pulldown fast, working
+        # slower, close slower again — a real inverter's shape.
+        self._observe(model, setpoint_c=15.0, indoor_c=30.0, rate_c=4.0)  # pulldown
+        self._observe(model, setpoint_c=15.0, indoor_c=17.0, rate_c=2.0)  # working
+        self._observe(model, setpoint_c=15.0, indoor_c=15.8, rate_c=1.0)  # close
+        for index in (1, 2, 3):
+            self.assertTrue(model.k_sensible_bins[index].converged)
+
+        piecewise = model.hours_to_reach(30.0, 15.0, None, direct_sun=False)
+        # A single pooled rate across the whole 15 C pull is a strictly worse
+        # estimate than crossing each bin at its own rate — this asserts the
+        # piecewise walk is actually being used rather than collapsing to a
+        # single-rate answer, by comparing against a hand-solved uniform-rate
+        # estimate at the pulldown bin's own rate.
+        pulldown_only = 15.0 / model.k_sensible_bins[3].value
+        self.assertIsNotNone(piecewise)
+        self.assertGreater(piecewise, pulldown_only)
+
+    def test_an_08_8_store_loads_with_bins_empty_and_predictions_unchanged(self):
+        """A pre-0.8.9 record has no `k_sensible_bins` or `k_rh_cooling`."""
+        legacy = {
+            "k_loss": {"value": 0.15, "variance": 0.01, "samples": 60},
+            "k_sensible": {"value": 2.4, "variance": 0.01, "samples": 60},
+            "k_latent": {"value": 8.0, "variance": 0.01, "samples": 60},
+        }
+        model = _thermal.ThermalModel.from_dict(legacy)
+        self.assertAlmostEqual(model.k_sensible.value, 2.4)
+        self.assertFalse(model.k_rh_cooling.converged)
+        for coefficient in model.k_sensible_bins:
+            self.assertEqual(coefficient.samples, 0)
+        self.assertEqual(model._sensible_rate(3), 2.4)
+        self.assertAlmostEqual(
+            model.hours_to_reach(30.0, 20.0, None, direct_sun=False),
+            10.0 / 2.4,
+        )
+
+
+class TestRhCoolingLearning(unittest.TestCase):
+    """0.8.9, finding 17: humidity response while cooling, measured."""
+
+    def test_learns_from_a_cooling_interval_not_a_drying_one(self):
+        model = _thermal.ThermalModel()
+        for _ in range(25):
+            model.observe(
+                _interval(
+                    humidity_start=60.0, humidity_end=62.0, compressor=-1,
+                )
+            )
+        self.assertTrue(model.k_rh_cooling.converged)
+        drying_model = _thermal.ThermalModel()
+        for _ in range(25):
+            drying_model.observe(
+                _interval(
+                    humidity_start=80.0, humidity_end=70.0, drying=True,
+                )
+            )
+        self.assertFalse(drying_model.k_rh_cooling.converged)
+
+    def test_it_can_be_negative_and_survives_the_filter(self):
+        model = _thermal.ThermalModel()
+        for _ in range(25):
+            model.observe(
+                _interval(
+                    humidity_start=70.0, humidity_end=64.0, compressor=-1,
+                )
+            )
+        self.assertTrue(model.k_rh_cooling.converged)
+        self.assertLess(model.k_rh_cooling.value, 0.0)
+
+
+class TestDrawModel(unittest.TestCase):
+    """0.8.9, finding 14: learned per-compressor draw."""
+
+    def test_one_clean_observation_moves_the_estimate(self):
+        model = _thermal.DrawModel()
+        before = model.bins[3].value
+        model.observe(3, 2.4, quality=1.0)
+        self.assertNotAlmostEqual(model.bins[3].value, before, places=3)
+        self.assertGreater(model.bins[3].value, before)
+
+    def test_a_low_quality_observation_moves_it_much_less(self):
+        clean = _thermal.DrawModel()
+        clean.observe(3, 3.0, quality=1.0)
+        noisy = _thermal.DrawModel()
+        noisy.observe(3, 3.0, quality=0.05)
+        start = _thermal.DrawModel().bins[3].value
+        self.assertGreater(
+            abs(clean.bins[3].value - start), abs(noisy.bins[3].value - start)
+        )
+
+    def test_a_large_unrelated_load_is_absorbed_not_rejected(self):
+        model = _thermal.DrawModel()
+        # A kettle-sized outlier, entered at low quality.
+        model.observe(3, 4.5, quality=_thermal.MIN_DRAW_QUALITY)
+        self.assertEqual(model.bins[3].samples, 1)
+
+    def test_a_sustained_change_moves_more_than_one_outlier_of_the_same_size(self):
+        outlier = _thermal.DrawModel()
+        outlier.observe(3, 5.0, quality=0.3)
+        sustained = _thermal.DrawModel()
+        for _ in range(15):
+            sustained.observe(3, 5.0, quality=0.3)
+        start = _thermal.DrawModel().bins[3].value
+        self.assertGreater(
+            abs(sustained.bins[3].value - start), abs(outlier.bins[3].value - start)
+        )
+
+    def test_few_readings_should_be_scored_a_wider_variance_than_many(self):
+        # This is a property of how the coordinator scores quality, not of
+        # DrawModel itself — DrawModel only ever sees the resulting quality
+        # figure. Asserted here at the level DrawModel actually owns: a
+        # lower quality score produces a smaller posterior gain.
+        few = _thermal.Coefficient(3.0)
+        many = _thermal.Coefficient(3.0)
+        few.update(4.0, 1.0, variance_scale=1.0 / 0.2)
+        many.update(4.0, 1.0, variance_scale=1.0 / 0.9)
+        self.assertLess(abs(few.value - 3.0), abs(many.value - 3.0))
+
+    def test_an_unconverged_bin_falls_back_to_pooled_group_draw(self):
+        model = _thermal.DrawModel()
+        for _ in range(25):
+            model.pooled.update(2.8, 1.0)
+        self.assertTrue(model.pooled.converged)
+        self.assertFalse(model.bins[3].converged)
+        self.assertAlmostEqual(model.draw_kw(3, 1.2), 2.8, places=1)
+
+    def test_an_unpopulated_group_falls_back_to_the_callers_constant(self):
+        model = _thermal.DrawModel()
+        self.assertEqual(model.draw_kw(3, 1.2), 1.2)
+
+    def test_two_bins_are_independent(self):
+        model = _thermal.DrawModel()
+        for _ in range(25):
+            model.observe(0, 0.3, quality=1.0)
+            model.observe(3, 3.2, quality=1.0)
+        self.assertTrue(model.bins[0].converged)
+        self.assertTrue(model.bins[3].converged)
+        self.assertLess(model.bins[0].value, model.bins[3].value)
+
+    def test_round_trips_through_persistence(self):
+        model = _thermal.DrawModel()
+        for _ in range(25):
+            model.observe(3, 2.9, quality=1.0)
+        restored = _thermal.DrawModel.from_dict(model.as_dict())
+        self.assertAlmostEqual(restored.bins[3].value, model.bins[3].value)
+        self.assertTrue(restored.bins[3].converged)
+
+    def test_diagnostics_name_every_bin_and_the_pooled_figure(self):
+        model = _thermal.DrawModel()
+        diagnostics = model.diagnostics()
+        self.assertEqual(set(diagnostics), {"bins", "pooled"})
+        self.assertEqual(
+            set(diagnostics["bins"]),
+            {"at_setpoint", "close", "working", "pulldown"},
+        )
+        for entry in (*diagnostics["bins"].values(), diagnostics["pooled"]):
+            self.assertEqual(
+                set(entry), {"value", "variance", "samples", "converged"}
+            )
+
+
 class TestThermalPersistence(unittest.TestCase):
     def test_a_model_survives_a_round_trip(self):
         model = _thermal.ThermalModel()
@@ -1438,9 +1698,22 @@ class TestThermalPersistence(unittest.TestCase):
     def test_diagnostics_name_every_coefficient(self):
         diagnostics = _thermal.ThermalModel().diagnostics()
         self.assertEqual(
-            set(diagnostics), {"k_loss", "k_solar", "k_sensible", "k_latent"}
+            set(diagnostics),
+            {
+                "k_loss",
+                "k_solar",
+                "k_sensible",
+                "k_latent",
+                "k_rh_cooling",
+                "k_sensible_bins",
+            },
         )
         self.assertIn("converged", diagnostics["k_loss"])
+        self.assertEqual(
+            set(diagnostics["k_sensible_bins"]),
+            {"at_setpoint", "close", "working", "pulldown"},
+        )
+        self.assertIn("converged", diagnostics["k_sensible_bins"]["pulldown"])
 
 
 class TestDemandForecast(unittest.TestCase):
@@ -2674,20 +2947,24 @@ class TestPrecoolSeesTheAfternoon(unittest.TestCase):
         self.assertIn("38.0 C", verdict.reason)
 
 
-class TestIndexSensitivities(unittest.TestCase):
-    """Why one humidity threshold could never decide dry against cool."""
+class TestConstantVapourPressure(unittest.TestCase):
+    """0.8.9, finding 17: the floor case when `k_rh_cooling` has not converged.
 
-    def test_a_point_of_humidity_is_worth_more_when_it_is_hotter(self):
-        self.assertGreater(
-            _hci.sensitivity_to_humidity(30.0), _hci.sensitivity_to_humidity(22.0)
-        )
+    `sensitivity_to_temperature`/`sensitivity_to_humidity` are deleted —
+    replaced by projecting both routes forward and evaluating the index at
+    each end, which is what `TestLatentRouteUsesTheLearnedRates` below
+    exercises end to end. This class covers the one new pure helper on its
+    own terms.
+    """
 
-    def test_a_degree_of_cooling_buys_more_than_a_degree_of_index(self):
-        # Cooling at constant relative humidity also drops vapour pressure.
-        self.assertGreater(_hci.sensitivity_to_temperature(26.0, 60.0), 1.0)
+    def test_moisture_held_fixed_raises_relative_humidity_as_it_cools(self):
+        # Same vapour pressure, colder air: relative humidity must rise.
+        rh = _hci.relative_humidity_at_constant_vapour_pressure(26.0, 60.0, 23.0)
+        self.assertGreater(rh, 60.0)
 
-    def test_dry_air_makes_cooling_almost_purely_sensible(self):
-        self.assertLess(_hci.sensitivity_to_temperature(26.0, 5.0), 1.1)
+    def test_no_temperature_change_leaves_relative_humidity_unchanged(self):
+        rh = _hci.relative_humidity_at_constant_vapour_pressure(26.0, 60.0, 26.0)
+        self.assertAlmostEqual(rh, 60.0, places=6)
 
 
 class TestLatentRouteUsesTheLearnedRates(unittest.TestCase):
@@ -2757,6 +3034,100 @@ class TestLatentRouteUsesTheLearnedRates(unittest.TestCase):
         self.assertTrue(
             any("never shown a latent response" in r for r in trace.rejected)
         )
+
+    def test_converged_k_rh_cooling_is_used_in_the_cooling_projection(self):
+        """State 1: the room's own measured response, not the constant-
+        vapour-pressure floor."""
+        step, trace = self._step(
+            k_sensible_c_per_hour=2.0,
+            k_latent_rh_per_hour=6.0,
+            k_rh_cooling_per_hour=-4.0,  # net condensation while cooling
+        )
+        self.assertTrue(
+            any("measured humidity response" in r for r in trace.reasons + trace.rejected)
+        )
+        # A negative k_rh_cooling means cooling removes moisture too, which
+        # can only help cooling's case relative to the unconverged floor.
+        floor_step, _ = self._step(
+            k_sensible_c_per_hour=2.0, k_latent_rh_per_hour=6.0
+        )
+        self.assertIs(step, ActuatorStep.COMPRESSOR)
+        self.assertIs(floor_step, ActuatorStep.COMPRESSOR)
+
+    def test_unconverged_k_rh_cooling_gives_an_improvement_of_exactly_k_sensible(self):
+        """State 2: constant absolute humidity is a floor, not an answer.
+
+        At constant vapour pressure, `comfort_index(T, RH) -
+        comfort_index(T - k_sensible, RH')` collapses to exactly
+        `k_sensible` — the vapour term cancels because `RH'` was solved to
+        hold it fixed. This is the "1.0 derivative" the review pointed at,
+        expressed without a derivative.
+        """
+        inputs = self._inputs(
+            temperature_c=27.0,
+            relative_humidity=70.0,
+            k_sensible_c_per_hour=1.7,
+            k_latent_rh_per_hour=6.0,
+        )
+        trace = _models.DecisionTrace(room_id="office", at=NOW, mode=Mode.OCCUPIED)
+        _modes.select_actuator(
+            Mode.OCCUPIED, ComfortBand(24.0, 26.0),
+            comfort_index(27.0, 70.0), inputs, trace,
+        )
+        message = "\n".join(trace.reasons + trace.rejected)
+        self.assertIn("condensation not yet measured", message)
+        self.assertIn("1.70", message)
+
+    def test_a_humid_room_where_drying_now_wins(self):
+        """A room the old constant-RH derivative sent to cooling.
+
+        A humid room with a middling sensible rate and a strong latent one:
+        under the deleted `sensitivity_to_temperature`, which overstates
+        cooling by up to 64% in hot, humid conditions, cooling used to look
+        artificially strong enough to win. Projected as two index
+        evaluations instead, it does not.
+        """
+        step, trace = self._step(
+            temperature_c=30.0,
+            relative_humidity=80.0,
+            k_sensible_c_per_hour=1.2,
+            k_latent_rh_per_hour=10.0,
+        )
+        self.assertIs(step, ActuatorStep.DRY)
+        self.assertTrue(any("load is latent" in r for r in trace.reasons))
+
+    def test_the_25_percent_handicap_still_applies(self):
+        """Cooling within the DRY_MODE_ADVANTAGE margin still loses the tie."""
+        # Tuned so cooling is faster in raw HCI/hour terms (1.30 vs 1.12)
+        # but not by the required 25% margin (1.12 * 1.25 = 1.395 > 1.30).
+        step, _trace = self._step(
+            temperature_c=30.0,
+            relative_humidity=75.0,
+            k_sensible_c_per_hour=1.3,
+            k_latent_rh_per_hour=8.0,
+        )
+        self.assertIs(step, ActuatorStep.DRY)
+
+    def test_the_trace_names_the_deciding_state(self):
+        # State 3: k_sensible/k_latent themselves unconverged.
+        _, unconverged = self._step(relative_humidity=70.0)
+        self.assertTrue(
+            any("has not converged" in r for r in unconverged.reasons)
+        )
+        # State 2: converged rates, k_rh_cooling not.
+        _, floor = self._step(
+            k_sensible_c_per_hour=2.0, k_latent_rh_per_hour=6.0
+        )
+        message = "\n".join(floor.reasons + floor.rejected)
+        self.assertIn("condensation not yet measured", message)
+        # State 1: k_rh_cooling converged too.
+        _, measured = self._step(
+            k_sensible_c_per_hour=2.0,
+            k_latent_rh_per_hour=6.0,
+            k_rh_cooling_per_hour=1.0,
+        )
+        message = "\n".join(measured.reasons + measured.rejected)
+        self.assertIn("measured humidity response", message)
 
 
 class TestNaiveTimestampsDoNotCrashTheLoop(unittest.TestCase):
@@ -3026,7 +3397,7 @@ class TestStoppingTheCompressor(unittest.TestCase):
         )
         self.assertIs(trace.actuator, ActuatorStep.NONE)
         self.assertTrue(
-            any("no comfort reading" in r for r in trace.rejected), trace.rejected
+            any("not reporting" in r for r in trace.rejected), trace.rejected
         )
 
     def test_the_trace_says_which_input_is_missing(self):
@@ -3046,8 +3417,52 @@ class TestStoppingTheCompressor(unittest.TestCase):
             no_band.rejected,
         )
         self.assertFalse(
-            any("no comfort reading" in r for r in no_band.rejected),
+            any("not reporting" in r for r in no_band.rejected),
             no_band.rejected,
+        )
+
+    def test_a_missing_reading_names_the_entity(self):
+        """0.8.9: a fault to go looking at, not a shrugged-off configuration
+        state — named so the trace says which sensor to check."""
+        missing_temp = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=None,
+                relative_humidity=60.0,
+                temperature_entity_id="sensor.office_temperature",
+                humidity_entity_id="sensor.office_humidity",
+                presence=True,
+            ),
+        )
+        self.assertTrue(
+            any(
+                "sensor.office_temperature" in r and "not reporting" in r
+                for r in missing_temp.rejected
+            ),
+            missing_temp.rejected,
+        )
+        self.assertFalse(
+            any("sensor.office_humidity" in r for r in missing_temp.rejected)
+        )
+
+        missing_both = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=None,
+                relative_humidity=None,
+                temperature_entity_id="sensor.office_temperature",
+                humidity_entity_id="sensor.office_humidity",
+                presence=True,
+            ),
+        )
+        self.assertTrue(
+            any(
+                "sensor.office_temperature" in r and "sensor.office_humidity" in r
+                for r in missing_both.rejected
+            ),
+            missing_both.rejected,
         )
 
     def test_an_open_window_stops_a_running_unit(self):

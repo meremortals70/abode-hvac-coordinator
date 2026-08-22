@@ -6,8 +6,8 @@
         "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
         "data": {
           "name": "Room name",
-          "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
-          "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
+          "temperature_entity_id": "Temperature sensor",
+          "humidity_entity_id": "Humidity sensor",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
           "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
           "window_direction": "Which way the windows face (optional — leave empty for none)",
@@ -63,8 +63,8 @@
         "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
         "data": {
           "name": "Room name",
-          "temperature_entity_id": "Temperature sensor (optional — leave empty for none)",
-          "humidity_entity_id": "Humidity sensor (optional — leave empty for none)",
+          "temperature_entity_id": "Temperature sensor",
+          "humidity_entity_id": "Humidity sensor",
           "presence_entity_id": "Presence sensor (optional — leave empty for none)",
           "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
           "window_direction": "Which way the windows face (optional — leave empty for none)",
@@ -286,6 +286,10 @@
     "room_without_bands": {
       "title": "Rooms with no comfort bands",
       "description": "{rooms} have no comfort bands configured, so they will never be actuated. Add bands from Configure, or set a lockout reason if that is deliberate."
+    },
+    "room_missing_comfort_inputs": {
+      "title": "Rooms missing a temperature or humidity sensor",
+      "description": "{rooms}\n\nBoth a temperature and a humidity sensor are required from 0.8.9 on. These rooms were configured before that, or have had a sensor removed since. Without both, comfort cannot be evaluated for the affected input and the room falls back to holding rather than actuating on it. Add the missing sensor from Configure \u2192 Rooms."
     },
     "tariff_unavailable": {
       "title": "The tariff could not be read",

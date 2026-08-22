@@ -322,13 +322,16 @@ than run the compressor.
 | Stopping the compressor, as distinct from leaving it alone | Built, tested. New in 0.8.7 |
 | A room's heads, and which outdoor unit each is on | Built, tested. New in 0.8.8 |
 | Heat load and air movement inputs | Built, tested. Reachable in the room form from 0.8.7; before it, configured nowhere and always absent |
+| Required comfort inputs at room setup | Built, tested. New in 0.8.9 |
+| `k_sensible` binned by operating point | Built, tested. New in 0.8.9 |
+| Learned per-outdoor-unit draw | Built, tested. New in 0.8.9. Needs a house-load sensor configured; without one, every consumer sees the same assumed constant as before |
+| The dry-versus-cool comparison, without the constant-RH derivative | Built, tested. New in 0.8.9 |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 358 tests at 0.8.8, against 2025.1.4 rather than the 2026.8.x
+pure modules — 389 tests at 0.8.9, against 2025.1.4 rather than the 2026.8.x
 targeted, because the build sandbox is Python 3.12. Running it for the first
 time found two tests that had never passed. See
-[Known limitations](known-limitations.md) and
-[the review](architecture-review-2026-08.md).
+[Known limitations](known-limitations.md).
 
 ### A room has heads; heads sit on outdoor units
 
@@ -365,6 +368,54 @@ calling on.
 applicable. No room's comfort is traded against another's, no starts are
 sequenced and nothing is staggered. The compressor protection simply counts
 compressors.
+
+### The sensible rate and the compressor draw both depend on how far from setpoint the room is
+
+**New in 0.8.9.** `k_sensible` was one coefficient describing exactly one
+operating point — full tilt — because a room spends most of its life near
+setpoint, where an inverter modulates down and the true rate is a fraction
+of that, and the filter averaged the two into a number describing neither.
+
+**Approach** — the magnitude of the gap between the commanded setpoint and
+the room temperature, in the direction the compressor is driving — is binned
+into four: `at_setpoint`, `close`, `working`, `pulldown`. Each is a
+`Coefficient` on the same Kalman machinery as before; the pooled coefficient
+stays and is what an unconverged bin falls back to. The bin an interval is
+attributed to is chosen once, from the mean approach across the interval —
+not re-evaluated every cycle, which would repeat the 0.8.3 fault of an
+anchor replaced faster than it can mature.
+
+The same four bins key a learned draw model per outdoor unit group,
+replacing the flat `ASSUMED_UNIT_KW` constant that stood in for every room's
+rated draw. When exactly one group's compressor changes state and nothing
+else does, the change in house load is that group's draw — folded into the
+filter weighted by how clean the observation was, never gated outright.
+
+**These two ship together because binning the rate alone makes the energy
+forecast worse.** `hold_fraction` is a duty cycle standing in for a draw; as
+`k_sensible` correctly falls near setpoint the fraction saturates toward
+1.0, projecting full rated draw for a room barely running. A learned draw
+per bin is what turns the corrected rate into a corrected forecast rather
+than a more precisely wrong one.
+
+### Comfort inputs are required, and the comparison between drying and cooling no longer uses a derivative
+
+**New in 0.8.9.** A temperature and a humidity sensor are required when a
+room is configured — without both there is no comfort index, and without the
+index this component has nothing to offer that a thermostat does not. An
+existing room missing either keeps running (the fields stay nullable on the
+stored config) and raises a repair issue naming which input is absent.
+
+The choice between drying and cooling used to multiply the learned sensible
+rate by the partial derivative of the comfort index at constant relative
+humidity — overstating cooling's benefit by up to 64% in hot, humid
+conditions, because dry bulb falling also *raises* relative humidity at
+constant vapour pressure, an effect the derivative silently credited to
+cooling. Both routes are now projected forward an hour and the index is
+evaluated at each end directly, using a fourth learned coefficient,
+`k_rh_cooling` — the room's own measured net humidity response while
+cooling — where it has converged, and a constant-vapour-pressure floor where
+it has not.
 
 ### Stopping is a decision, and a separate one from leaving the unit alone
 

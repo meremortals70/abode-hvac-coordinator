@@ -187,32 +187,29 @@ def comfort_index(
     return base
 
 
-def sensitivity_to_temperature(temp_c: float, relative_humidity: float) -> float:
-    """How much the index moves per degree of dry bulb, at fixed humidity.
+def relative_humidity_at_constant_vapour_pressure(
+    from_temp_c: float, from_relative_humidity: float, to_temp_c: float
+) -> float:
+    """The RH a parcel of air reads at a new temperature, moisture unchanged.
 
-    Not 1.0. Cooling the air at constant relative humidity also lowers the
-    vapour pressure, so a degree of cooling buys more than a degree of index.
-    This is what makes the sensible route worth comparing against the latent
-    one on its own terms rather than by a humidity threshold.
+    Used by the dry-versus-cool comparison (finding 17, replacing
+    `sensitivity_to_temperature`/`sensitivity_to_humidity`, both deleted in
+    0.8.9) as the floor case for a room whose `k_rh_cooling` has not yet
+    converged: assume the coil removes no moisture at all, so only the
+    temperature fall changes what the sensor reads.
+
+    Vapour pressure is held fixed and the saturation curve does the rest:
+    `RH' = 100 * e / es(T')`. This is the "1.0 derivative" the review pointed
+    at — cooling credited with no condensation — expressed without a
+    derivative, so it does not need re-deriving if the index formula changes.
     """
-    saturation = _VAPOUR_A * math.exp((_VAPOUR_B * temp_c) / (_VAPOUR_C + temp_c))
-    # d(es)/dT for the Magnus form.
-    d_saturation = saturation * (
-        (_VAPOUR_B * _VAPOUR_C) / ((_VAPOUR_C + temp_c) ** 2)
+    e = vapour_pressure_hpa(from_temp_c, from_relative_humidity)
+    saturation_at_to = _VAPOUR_A * math.exp(
+        (_VAPOUR_B * to_temp_c) / (_VAPOUR_C + to_temp_c)
     )
-    return 1.0 + _E_COEFF * (relative_humidity / 100.0) * d_saturation
-
-
-def sensitivity_to_humidity(temp_c: float) -> float:
-    """How much the index moves per percentage point of relative humidity.
-
-    Depends on temperature only: at a fixed dry bulb, each point of relative
-    humidity adds a fixed slice of the saturation vapour pressure. This is why
-    a single humidity threshold cannot decide between drying and cooling —
-    65% at 22 C and 65% at 30 C move the index by very different amounts.
-    """
-    saturation = _VAPOUR_A * math.exp((_VAPOUR_B * temp_c) / (_VAPOUR_C + temp_c))
-    return _E_COEFF * saturation / 100.0
+    if saturation_at_to <= 0:
+        return from_relative_humidity
+    return 100.0 * e / saturation_at_to
 
 
 def apparent_temperature(

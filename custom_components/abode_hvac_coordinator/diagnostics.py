@@ -104,6 +104,14 @@ async def async_get_config_entry_diagnostics(
             }
             for group, state in coordinator.compressor_state().items()
         },
+        # Learned draw per outdoor unit group (0.8.9, finding 14). Only
+        # groups actually seen this session — a group with no entry has not
+        # had a rated-kW figure asked of it yet and is still on
+        # `ASSUMED_UNIT_KW` everywhere it is used.
+        "draw": {
+            group: model.diagnostics()
+            for group, model in coordinator.draw_models().items()
+        },
         "forecast": (
             coordinator.forecast.as_attributes() if coordinator.forecast else None
         ),

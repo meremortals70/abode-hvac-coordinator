@@ -54,7 +54,7 @@ class ModelStore:
             atomic_writes=True,
             minor_version=STORAGE_MINOR_VERSION,
         )
-        self._data: dict[str, Any] = {"rooms": {}}
+        self._data: dict[str, Any] = {"rooms": {}, "groups": {}}
 
     async def async_load(self) -> None:
         stored = await self._store.async_load()
@@ -78,6 +78,22 @@ class ModelStore:
         """Drop a removed room's learned state."""
         if self._data.get("rooms", {}).pop(room_id, None) is not None:
             self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
+
+    def group(self, group_name: str) -> dict[str, Any]:
+        """Learned state for one outdoor unit group (0.8.9, finding 14).
+
+        Keyed separately from `rooms`: a group is a property of one or more
+        heads sharing a compressor, not of any single room, and outlives any
+        one room being removed and re-added.
+        """
+        groups: dict[str, Any] = self._data.setdefault("groups", {})
+        group: dict[str, Any] = groups.setdefault(group_name, {})
+        return group
+
+    def update_group(self, group_name: str, state: dict[str, Any]) -> None:
+        """Record a group's learned state, written out on a delay."""
+        self._data.setdefault("groups", {})[group_name] = state
+        self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
 
     def _data_for_save(self) -> dict[str, Any]:
         return self._data

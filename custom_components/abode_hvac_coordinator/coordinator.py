@@ -11,6 +11,8 @@ evaluator and hands the resulting decision on.
 from __future__ import annotations
 
 import functools
+import statistics
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
@@ -87,6 +89,7 @@ from .const import (
     DOMAIN,
     EVALUATION_INTERVAL,
     ISSUE_FORECAST_UNAVAILABLE,
+    ISSUE_MISSING_COMFORT_INPUTS,
     ISSUE_NO_BANDS,
     ISSUE_SHARED_CLIMATE_ENTITY,
     ISSUE_TARIFF_UNAVAILABLE,
@@ -146,11 +149,14 @@ from .thermal import (
     MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
 )
 from .thermal import (
-    MIN_INTERVAL_HOURS as MIN_LEARNING_INTERVAL_HOURS,
-)
-from .thermal import (
+    MIN_DRAW_QUALITY,
+    DrawModel,
     Observation,
     ThermalModel,
+    approach_bin,
+)
+from .thermal import (
+    MIN_INTERVAL_HOURS as MIN_LEARNING_INTERVAL_HOURS,
 )
 from .weather import (
     DEMAND_LOOKAHEAD,
@@ -164,6 +170,45 @@ if TYPE_CHECKING:
 
 #: State strings that carry no reading, as distinct from a number.
 _NON_NUMERIC = frozenset({"unknown", "unavailable", "none", ""})
+
+#: 0.8.9, finding 14. How much house-load history to keep, so a compressor
+#: state change can be bracketed on both sides even at a slow evaluation
+#: cadence. Trimmed by age, not by count.
+DRAW_HISTORY_WINDOW = timedelta(minutes=10)
+#: How far back before a state change to average the settled "before" period.
+DRAW_PRE_WINDOW = timedelta(minutes=2)
+#: An inverter ramps rather than steps. This is how long after the change is
+#: noticed before the "after" period is considered settled enough to sample.
+DRAW_RAMP_ALLOWANCE = timedelta(minutes=2)
+#: How long after the ramp allowance to keep averaging the "after" period.
+DRAW_POST_WINDOW = timedelta(minutes=3)
+#: Fewer house-load readings than this in a window scores it low confidence
+#: rather than discarding it — nothing is rejected, only trusted less.
+DRAW_MIN_SAMPLES = 2
+#: A candidate older than this without settling is dropped rather than kept
+#: waiting indefinitely for a house that never settles.
+DRAW_CANDIDATE_MAX_AGE = timedelta(minutes=8)
+#: House-load noise, in watts, against which a window's own spread is scored
+#: for quietness. Not a threshold — it scales the confidence curve.
+DRAW_NOISE_REFERENCE_W = 150.0
+#: Readings in a window at or above this count are scored full confidence for
+#: how many landed, rather than confidence climbing forever with more.
+DRAW_TARGET_SAMPLES = 6
+
+
+@dataclass(slots=True)
+class _DrawCandidate:
+    """One outdoor unit mid-transition, waiting to be scored.
+
+    0.8.9, finding 14. Opened when exactly one group's compressor changes
+    state and closed once the post-change window has settled, or dropped if
+    it goes stale first. `started` is when the transition was noticed —
+    `_house_load_window` for the pre-change period looks back from it.
+    """
+
+    group: str
+    started: datetime
+    changed_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +328,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Learned thermal behaviour, one per room, restored from the store.
         self.models: dict[str, ThermalModel] = {}
         #: The last reading of each room, so the next evaluation can measure
-        #: what actually happened over the interval and learn from it.
-        self._previous: dict[str, tuple[datetime, float, float, int, bool]] = {}
+        #: what actually happened over the interval and learn from it. The
+        #: sixth element is the commanded setpoint in force at the anchor
+        #: (0.8.9, finding 9) — a change to it resets the anchor the same way
+        #: a compressor direction change already does, because the approach
+        #: bin an interval is attributed to is meaningless once what the room
+        #: was being asked to reach has moved.
+        self._previous: dict[
+            str, tuple[datetime, float, float, int, bool, float | None]
+        ] = {}
+        #: Learned per-outdoor-unit draw (0.8.9, finding 14), keyed by group —
+        #: two rooms sharing a compressor share one model.
+        self._draw: dict[str, DrawModel] = {}
+        #: A short rolling window of house-load readings, for bracketing a
+        #: compressor state change on both sides.
+        self._house_load_samples: deque[tuple[datetime, float]] = deque()
+        #: Outdoor units currently mid-transition, waiting to be scored.
+        self._draw_pending: dict[str, _DrawCandidate] = {}
         #: The published demand forecast. Never contains vendor concepts.
         self.forecast: DemandForecast | None = None
         #: Occupancy grace, one per room. Raw presence is the wrong signal for
@@ -658,6 +718,44 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, ISSUE_NO_BANDS)
 
+        # 0.8.9. Required at setup, but a room saved before that or edited
+        # since can still be missing one. Not silently fixed — there is
+        # nothing to fix it to — and not a ConfigEntryError, which would take
+        # correctly configured rooms down with it.
+        if missing := self._rooms_missing_comfort_inputs():
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_MISSING_COMFORT_INPUTS,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_MISSING_COMFORT_INPUTS,
+                translation_placeholders={
+                    "rooms": "; ".join(
+                        f"{name}: {', '.join(kinds)}"
+                        for name, kinds in sorted(missing.items())
+                    )
+                },
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_MISSING_COMFORT_INPUTS)
+
+    def _rooms_missing_comfort_inputs(self) -> dict[str, list[str]]:
+        """Rooms with no temperature sensor, no humidity sensor, or neither."""
+        missing: dict[str, list[str]] = {}
+        for room in self.rooms.values():
+            absent = [
+                kind
+                for kind, entity_id in (
+                    ("temperature", room.temperature_entity_id),
+                    ("humidity", room.humidity_entity_id),
+                )
+                if entity_id is None
+            ]
+            if absent:
+                missing[room.name] = absent
+        return missing
+
     def _shared_climate_entities(self) -> dict[str, list[str]]:
         """Climate entities claimed by more than one room, and by which.
 
@@ -719,6 +817,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         traces: dict[str, DecisionTrace] = {}
         self._pending_announcements.clear()
         self._stale.clear()
+        self._record_house_load_sample(now)
         self._power_context = self._compute_power_context(now)
         for room in self.rooms.values():
             inputs = self._inputs_for(room, now)
@@ -756,6 +855,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         await self._async_announce()
         self._async_remove_stale_devices(set(traces))
+        self._process_draw_candidates(now)
         self.forecast = self._build_forecast(now, traces)
         self._persist_models()
         return traces
@@ -850,7 +950,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 refusal = reason
                 holding = holding or compressor.running
                 continue
+            was_running = compressor.running
             note_transition(compressor, running=wanted_by_group, now=now)
+            if compressor.running != was_running:
+                # 0.8.9, finding 14. The signal this learns draw from: one
+                # group's compressor actually changed state.
+                self._note_compressor_transition(
+                    group, started=compressor.running, now=now
+                )
 
         self._room_wants[room.room_id] = wants
 
@@ -894,11 +1001,24 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         So the anchor advances only when it has been used, or when holding it
         any longer would make it useless.
+
+        **0.8.9, finding 9.** The commanded setpoint joins the anchor tuple.
+        Read the same one cycle lagged as `compressor` and `drying` already
+        are — `_regulate` has not run yet this cycle, so this is last cycle's
+        commanded setpoint, matching what actually drove the interval just
+        completed. A change to it resets the anchor the same way a
+        compressor-direction change already does: the approach bin an
+        interval gets attributed to is meaningless once what the room was
+        being asked to reach has moved.
         """
         temperature = inputs.temperature_c
         humidity = inputs.relative_humidity
         compressor = self._compressor_direction(room)
         drying = self._is_drying(room)
+        commanded = commanded_setpoint(
+            self._regulators.get(room.room_id, RegulatorState()),
+            self._last_target.get(room.room_id),
+        )
 
         if temperature is None or humidity is None:
             # No reading at this end of the interval. Drop the anchor rather
@@ -909,23 +1029,29 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         previous = self._previous.get(room.room_id)
         if previous is None:
             self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying
+                now, temperature, humidity, compressor, drying, commanded
             )
             return
 
-        started, start_c, start_rh, start_compressor, start_drying = previous
+        started, start_c, start_rh, start_compressor, start_drying, start_setpoint = (
+            previous
+        )
         if start_c is None or start_rh is None:
             self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying
+                now, temperature, humidity, compressor, drying, commanded
             )
             return
 
-        if compressor != start_compressor or drying != start_drying:
+        if (
+            compressor != start_compressor
+            or drying != start_drying
+            or commanded != start_setpoint
+        ):
             # What was driving the room changed inside the interval, so it
             # teaches nothing reliable about either state. Start again from
             # here rather than attributing the whole interval to one of them.
             self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying
+                now, temperature, humidity, compressor, drying, commanded
             )
             return
 
@@ -938,7 +1064,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # Stale — Home Assistant was asleep, or a sensor was out. Something
             # almost certainly changed inside it.
             self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying
+                now, temperature, humidity, compressor, drying, commanded
             )
             return
 
@@ -953,10 +1079,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 direct_sun=inputs.direct_sun is True,
                 compressor=start_compressor,
                 drying=start_drying,
+                commanded_setpoint_c=start_setpoint,
             )
         )
         self._previous[room.room_id] = (
-            now, temperature, humidity, compressor, drying
+            now, temperature, humidity, compressor, drying, commanded
         )
 
     def _predicted_to_hold(self, room: RoomConfig) -> bool | None:
@@ -1071,6 +1198,37 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         protect a compressor, not a room.
         """
         return dict(self._compressors)
+
+    def draw_for(self, group: str) -> DrawModel:
+        """The learned draw model for one outdoor unit group, on first use."""
+        if group not in self._draw:
+            self._draw[group] = DrawModel.from_dict(
+                self.store.group(group).get("draw")
+            )
+        return self._draw[group]
+
+    def draw_models(self) -> dict[str, DrawModel]:
+        """Learned draw per outdoor unit group, for diagnostics.
+
+        Only groups actually seen this session — a group with no entry has
+        not had a rated-kW figure asked of it yet and is still on
+        `ASSUMED_UNIT_KW` everywhere it is used.
+        """
+        return dict(self._draw)
+
+    def _rated_kw_for(self, room: RoomConfig) -> float:
+        """The room's projected draw, summed across its compressors.
+
+        Each group's own pulldown-bin estimate, three-level fallback (bin,
+        pooled, `ASSUMED_UNIT_KW`) via `DrawModel.draw_kw`. Pulldown rather
+        than at-setpoint: this feeds a headroom or energy figure for a unit
+        that is currently off or about to be asked to pull toward target,
+        which is the conservative case to size against.
+        """
+        return sum(
+            self.draw_for(group).draw_kw(3, ASSUMED_UNIT_KW)
+            for group in room.groups
+        ) or ASSUMED_UNIT_KW
 
     def regulation_state(self) -> dict[str, RegulatorState]:
         """Layer 2 state per room, for diagnostics.
@@ -1305,12 +1463,148 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             for entity_id in room.climate_entity_ids
         )
 
+    def _record_house_load_sample(self, now: datetime) -> None:
+        """Keep a short rolling window of house-load readings.
+
+        The signal finding 14 learns from: house load is total draw and does
+        not net off solar, so solar cannot confound a step in it. Kept only
+        long enough to bracket a compressor state change on both sides —
+        trimmed by age because the evaluation cadence is not guaranteed
+        constant.
+        """
+        if self.house_load_entity_id is None:
+            return
+        reading = self._number(self.house_load_entity_id, POWER_TOLERANCE)
+        if reading is not None:
+            self._house_load_samples.append((now, reading))
+        cutoff = now - DRAW_HISTORY_WINDOW
+        while self._house_load_samples and self._house_load_samples[0][0] < cutoff:
+            self._house_load_samples.popleft()
+
+    def _house_load_window(
+        self, start: datetime, end: datetime
+    ) -> list[float]:
+        """House-load readings falling in `[start, end)`."""
+        return [
+            reading
+            for stamp, reading in self._house_load_samples
+            if start <= stamp < end
+        ]
+
+    def _note_compressor_transition(
+        self, group: str, *, started: bool, now: datetime
+    ) -> None:
+        """Open a draw candidate for a group whose compressor just flipped.
+
+        0.8.9, finding 14. Re-opens on a state change before the previous
+        candidate settled — the newer transition is the one whose draw can
+        actually be measured, so it replaces rather than queues behind it.
+        """
+        self._draw_pending[group] = _DrawCandidate(
+            group=group, started=now, changed_at=now
+        )
+
+    def _draw_bin_for_group(self, group: str) -> int:
+        """The approach bin to attribute a draw observation to.
+
+        The rooms sharing this outdoor unit, at their last known commanded
+        setpoint against their last known reading — the same regressor
+        finding 9 bins the sensible rate by. No room in the group with both
+        readings available falls back to pulldown, the conservative bin: a
+        transition with nothing to measure approach from is exactly the
+        cold-start case pulldown exists to describe.
+        """
+        gaps = [
+            abs(target - reading)
+            for room in self.rooms.values()
+            if group in room.groups
+            for target in (self._last_target.get(room.room_id),)
+            for reading in (self._number(room.temperature_entity_id),)
+            if target is not None and reading is not None
+        ]
+        if not gaps:
+            return 3
+        return approach_bin(statistics.mean(gaps))
+
+    def _process_draw_candidates(self, now: datetime) -> None:
+        """Settle any draw candidate whose post-change window has matured.
+
+        0.8.9, finding 14. Bracket the transition on both sides — a settled
+        period before it and, after the ramp allowance an inverter needs, a
+        settled period after — and fold the difference into the group's
+        `DrawModel`, weighted by how much the observation is trusted rather
+        than gated on it.
+
+        **Simultaneous changes are skipped, not downweighted.** The design
+        called for scoring a candidate lower when another group changed near
+        its edges; this settles for the simpler rule of dropping a candidate
+        outright if another group is also pending when it matures, since an
+        apportioned residual cannot be checked against anything and solo
+        observations are sufficient at a house's compressor count and
+        evaluation cadence.
+        """
+        stale_cutoff = now - DRAW_CANDIDATE_MAX_AGE
+        mature_at = DRAW_RAMP_ALLOWANCE + DRAW_POST_WINDOW
+        settled: list[str] = []
+        for group, candidate in list(self._draw_pending.items()):
+            if candidate.changed_at < stale_cutoff:
+                settled.append(group)
+                continue
+            if now - candidate.changed_at < mature_at:
+                continue
+            settled.append(group)
+            if len(self._draw_pending) > 1:
+                # Another group was mid-transition at the same time. Neither
+                # side of the step can be attributed cleanly.
+                continue
+
+            pre = self._house_load_window(
+                candidate.changed_at - DRAW_PRE_WINDOW, candidate.changed_at
+            )
+            post = self._house_load_window(
+                candidate.changed_at + DRAW_RAMP_ALLOWANCE,
+                candidate.changed_at + mature_at,
+            )
+            if not pre or not post:
+                continue
+
+            compressor = self._compressors.get(group)
+            started = compressor.running if compressor else True
+            diff_w = statistics.mean(post) - statistics.mean(pre)
+            draw_kw = diff_w / 1000.0 if started else -diff_w / 1000.0
+
+            richness = min(len(pre), len(post), DRAW_TARGET_SAMPLES) / (
+                DRAW_TARGET_SAMPLES
+            )
+            spread = max(
+                statistics.pstdev(pre) if len(pre) > 1 else 0.0,
+                statistics.pstdev(post) if len(post) > 1 else 0.0,
+            )
+            quietness = DRAW_NOISE_REFERENCE_W / (DRAW_NOISE_REFERENCE_W + spread)
+            quality = max(
+                richness * quietness,
+                MIN_DRAW_QUALITY if len(pre) >= DRAW_MIN_SAMPLES
+                and len(post) >= DRAW_MIN_SAMPLES
+                else MIN_DRAW_QUALITY / 2,
+            )
+
+            self.draw_for(group).observe(
+                self._draw_bin_for_group(group), draw_kw, quality
+            )
+
+        for group in settled:
+            self._draw_pending.pop(group, None)
+
     def _persist_models(self) -> None:
         """Write learned state back to the store, on its own delay."""
         for room_id, model in self.models.items():
             record = dict(self.store.room(room_id))
             record["thermal"] = model.as_dict()
             self.store.update_room(room_id, record)
+        for group, draw in self._draw.items():
+            record = dict(self.store.group(group))
+            record["draw"] = draw.as_dict()
+            self.store.update_group(group, record)
 
     def _build_forecast(
         self, now: datetime, traces: dict[str, DecisionTrace]
@@ -1338,6 +1632,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     and trace.actuator is not ActuatorStep.OFF,
                     can_heat=capabilities["can_heat"],
                     can_cool=capabilities["can_cool"],
+                    rated_kw=self._rated_kw_for(room),
                 )
             )
 
@@ -1411,6 +1706,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             relative_humidity=self._number(
                 room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
             ),
+            temperature_entity_id=room.temperature_entity_id,
+            humidity_entity_id=room.humidity_entity_id,
+            k_rh_cooling_per_hour=self._learned(room.room_id, "k_rh_cooling"),
             presence=self._graced_presence(room, now),
             direct_sun=self._direct_sun(room),
             heat_load=self._bool(room.heat_load_entity_id) is True,
@@ -1602,7 +1900,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         running = (
             self._compressor_direction(room) != 0 or self._is_drying(room)
         )
-        headroom_w = 0.0 if running else ASSUMED_UNIT_KW * 1000
+        headroom_w = 0.0 if running else self._rated_kw_for(room) * 1000
         if (
             context.solar_w is not None
             and context.house_load_w is not None
@@ -1645,7 +1943,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self.outdoor_reading(),
             direct_sun=bool(self._direct_sun(room)),
             hours=hours_until_clear,
-            rated_kw=ASSUMED_UNIT_KW,
+            rated_kw=self._rated_kw_for(room),
             can_heat=capabilities["can_heat"],
             can_cool=capabilities["can_cool"],
         )

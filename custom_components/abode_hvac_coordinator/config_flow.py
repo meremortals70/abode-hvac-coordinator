@@ -95,10 +95,16 @@ ROOM_SCHEMA = vol.Schema(
         vol.Required(CONF_CLIMATE_ENTITIES): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="climate", multiple=True)
         ),
-        vol.Optional(CONF_TEMPERATURE_ENTITY): selector.EntitySelector(
+        # Required from 0.8.9. Without both the comfort index cannot be
+        # computed, and without the index this component has nothing to
+        # offer that a thermostat does not. `RoomConfig` keeps both fields
+        # nullable regardless — required at setup is not the same as present
+        # at runtime, and a sensor can still go unavailable after the room
+        # is saved.
+        vol.Required(CONF_TEMPERATURE_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
         ),
-        vol.Optional(CONF_HUMIDITY_ENTITY): selector.EntitySelector(
+        vol.Required(CONF_HUMIDITY_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
         ),
         vol.Optional(CONF_PRESENCE_ENTITY): selector.EntitySelector(

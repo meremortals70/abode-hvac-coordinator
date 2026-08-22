@@ -173,6 +173,13 @@ class RoomInputs:
     now: datetime
     temperature_c: float | None = None
     relative_humidity: float | None = None
+    #: The configured entity ids behind the two readings above, so a room
+    #: with no reading can be named in the trace rather than reported as a
+    #: bare "no comfort reading". None only for a room with no sensor
+    #: configured at all, which 0.8.9 no longer allows at setup but a
+    #: pre-0.8.9 room can still be in.
+    temperature_entity_id: str | None = None
+    humidity_entity_id: str | None = None
     presence: bool | None = None
     #: True while any opening in this room is open.
     opening_open: bool = False
@@ -193,6 +200,11 @@ class RoomInputs:
     #: against cooling on the merits, rather than on a humidity threshold.
     k_sensible_c_per_hour: float | None = None
     k_latent_rh_per_hour: float | None = None
+    #: Net change in relative humidity per hour while the compressor drives
+    #: sensible cooling — condensation and the RH rise from falling dry bulb,
+    #: netted together. None until converged, in which case the dry-versus-
+    #: cool comparison assumes no condensation at all (finding 17).
+    k_rh_cooling_per_hour: float | None = None
     #: Thermal model verdict. None until the model has converged for this room,
     #: in which case COAST is never entered and the fallback holds the band.
     predicted_to_hold: bool | None = None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+import pytest
 from freezegun import freeze_time
 from homeassistant.components.climate import ClimateEntityFeature
 from homeassistant.config_entries import ConfigEntryState
@@ -21,17 +22,20 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_SOC_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
+    CONF_HUMIDITY_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
     CONF_ROOM_ID,
     CONF_ROOMS,
     CONF_SOLAR_POWER_ENTITY,
     DOMAIN,
+    ISSUE_MISSING_COMFORT_INPUTS,
     ISSUE_SHARED_CLIMATE_ENTITY,
     SERVICE_HEADING_HOME,
 )
 from custom_components.abode_hvac_coordinator.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.abode_hvac_coordinator.forecast import ASSUMED_UNIT_KW
 from custom_components.abode_hvac_coordinator.tariff import TariffSeries
 from custom_components.abode_hvac_coordinator.thermal import Coefficient
 
@@ -319,6 +323,140 @@ async def test_one_room_per_climate_entity_raises_no_issue(
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_SHARED_CLIMATE_ENTITY) is None
+
+
+async def test_a_room_missing_comfort_inputs_raises_an_issue_naming_it(
+    hass: HomeAssistant, room_config: dict, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.9. A room saved before comfort inputs existed, or edited to drop
+
+    them, is a pre-0.8.9 storage record — the schema requires both on new
+    entry, but nothing migrates an existing one. The issue must name which
+    room and which input, not just that something is missing, and must
+    leave a fully-configured neighbour alone.
+    """
+    incomplete = {
+        **room_config,
+        CONF_ROOM_ID: "second_room",
+        "name": "Second Room",
+    }
+    del incomplete[CONF_HUMIDITY_ENTITY]
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_ROOMS: [*mock_config_entry.options[CONF_ROOMS], incomplete],
+        },
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    issues = ir.async_get(hass)
+    issue = issues.async_get_issue(DOMAIN, ISSUE_MISSING_COMFORT_INPUTS)
+    assert issue is not None
+    rooms = issue.translation_placeholders["rooms"]
+    assert "Second Room: humidity" in rooms
+    assert "Test Room" not in rooms
+
+
+async def test_a_fully_configured_room_raises_no_missing_comfort_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The ordinary 0.8.9 case, with both inputs present, is untouched."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_MISSING_COMFORT_INPUTS) is None
+
+
+async def test_solar_headroom_uses_the_pulldown_bin_draw_for_an_off_unit(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.9, finding 14, test 20.
+
+    `_rated_kw_for` sizes headroom and energy figures against the pulldown
+    bin specifically, on the stated reasoning that the unit being sized is
+    off or about to be asked to pull toward target — not the at-setpoint
+    bin, which would understate what a cold start actually draws.
+    """
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    room = coordinator.rooms["test_room"]
+    (group,) = room.groups
+    draw = coordinator.draw_for(group)
+
+    # Converge the pulldown bin specifically, away from both the seed value
+    # and the at-setpoint bin, so a wrong bin choice is distinguishable.
+    for _ in range(25):
+        draw.observe(3, 3.4, quality=1.0)
+    for _ in range(25):
+        draw.observe(0, 0.6, quality=1.0)
+
+    assert draw.bins[3].converged
+    assert coordinator._rated_kw_for(room) == pytest.approx(3.4, abs=0.1)
+
+
+async def test_two_rooms_in_one_group_share_one_draw_model(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.9, finding 14, test 18.
+
+    Keyed by outdoor unit group, the same way `CompressorState` was keyed
+    from 0.8.8. Study and guest share a compressor, and observing draw
+    through either room's head must reach the one model, not two.
+    """
+    coordinator = await _setup_two_rooms(
+        hass, mock_config_entry, share_outdoor_unit=True
+    )
+    study = coordinator.rooms["study"]
+    guest = coordinator.rooms["guest"]
+    (study_group,) = study.groups
+    (guest_group,) = guest.groups
+    assert study_group == guest_group == "Study and guest"
+
+    for _ in range(25):
+        coordinator.draw_for(study_group).observe(3, 2.7, quality=1.0)
+
+    assert coordinator.draw_for(guest_group) is coordinator.draw_for(study_group)
+    assert coordinator.draw_for(guest_group).bins[3].converged
+    assert coordinator.draw_for(guest_group).bins[3].value == pytest.approx(
+        2.7, abs=0.1
+    )
+
+
+async def test_no_house_load_sensor_means_no_draw_observations(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.9, finding 14, test 19.
+
+    No `CONF_HOUSE_LOAD_ENTITY` configured: `_record_house_load_sample`
+    returns immediately, nothing is ever attributed to any group, and every
+    consumer of `_rated_kw_for` sees `ASSUMED_UNIT_KW` for as long as the
+    house runs without that sensor.
+    """
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.house_load_entity_id is None
+
+    for _ in range(5):
+        await coordinator.async_refresh()
+
+    room = coordinator.rooms["test_room"]
+    (group,) = room.groups
+    draw = coordinator.draw_for(group)
+    assert draw.bins[3].samples == 0
+    assert draw.pooled.samples == 0
+    assert coordinator._rated_kw_for(room) == ASSUMED_UNIT_KW
 
 
 async def _setup_running(hass, mock_config_entry, **states) -> None:

@@ -32,8 +32,7 @@ from .hci import (
     comfort_index,
     dry_bulb_for_index,
     radiant_load,
-    sensitivity_to_humidity,
-    sensitivity_to_temperature,
+    relative_humidity_at_constant_vapour_pressure,
 )
 from .models import (
     BAND_MODES,
@@ -204,14 +203,30 @@ def _latent_route(
 
     Returns the reason to dry, or None having recorded why not.
 
-    Both routes are measured in hours to close the same excess:
+    Both routes are projected forward one hour and evaluated as index falls,
+    rather than compared through a derivative. A derivative is a claim about
+    the index formula that has to be re-derived by hand whenever the formula
+    changes — this one already has, once. Evaluating `comfort_index` at each
+    end is the same arithmetic, self-checking, and survives a term like wind
+    or radiant being added later.
 
-        cooling   excess / (k_sensible  x  dHCI/dT)
-        drying    excess / (k_latent    x  dHCI/dRH)
+        cooling   comfort_index(T, RH) - comfort_index(T - k_sensible, RH')
+        drying    comfort_index(T, RH) - comfort_index(T, RH - k_latent)
 
-    `k_sensible` is degrees per hour and `k_latent` is humidity points per
-    hour; the sensitivities convert each into index units per hour so the two
-    are comparable. Nothing here is a threshold.
+    `RH'` — what relative humidity reads after cooling — is the one place
+    with a genuine unknown, and it has three states, all named in the trace:
+
+    1. `k_rh_cooling` converged: the room's own measured response, signed and
+       not decomposed. RH rises as dry bulb falls at roughly constant vapour
+       pressure and falls as the coil condenses moisture; the net is what the
+       room feels.
+    2. Not converged: constant absolute humidity, crediting cooling with no
+       condensation at all. This is a floor, not an answer — the "1.0
+       derivative" the review pointed at, expressed without one.
+    3. `k_sensible` or `k_latent` themselves unconverged: the review's
+       original 65% relative-humidity threshold, unchanged. A model state,
+       not a configuration state, and it survives temperature and humidity
+       becoming required fields.
     """
     if inputs.temperature_c is None or inputs.relative_humidity is None:
         trace.rejected.append("dry: no reading to judge the load with")
@@ -221,9 +236,9 @@ def _latent_route(
     latent_rate = inputs.k_latent_rh_per_hour
 
     if sensible_rate is None or latent_rate is None:
-        # Not learned yet. The humidity threshold is a poor test and it is what
-        # there is until the filter converges. Saying so keeps the fallback
-        # visible rather than looking like a decision.
+        # State 3. Not learned yet. The humidity threshold is a poor test and
+        # it is what there is until the filter converges. Saying so keeps the
+        # fallback visible rather than looking like a decision.
         if inputs.relative_humidity >= DRY_MODE_RH_FALLBACK:
             return (
                 f"dry: {inputs.relative_humidity:.0f}% humidity and the model "
@@ -236,10 +251,26 @@ def _latent_route(
         )
         return None
 
-    cooling_per_hour = sensible_rate * sensitivity_to_temperature(
-        inputs.temperature_c, inputs.relative_humidity
-    )
-    drying_per_hour = latent_rate * sensitivity_to_humidity(inputs.temperature_c)
+    temp_c = inputs.temperature_c
+    relative_humidity = inputs.relative_humidity
+    cooled_temp_c = temp_c - sensible_rate
+
+    if inputs.k_rh_cooling_per_hour is not None:
+        # State 1.
+        cooled_rh = relative_humidity + inputs.k_rh_cooling_per_hour
+        rh_state = "measured humidity response"
+    else:
+        # State 2.
+        cooled_rh = relative_humidity_at_constant_vapour_pressure(
+            temp_c, relative_humidity, cooled_temp_c
+        )
+        rh_state = "condensation not yet measured, assuming none"
+    cooled_rh = max(0.0, min(100.0, cooled_rh))
+    dried_rh = max(0.0, relative_humidity - latent_rate)
+
+    start_index = comfort_index(temp_c, relative_humidity)
+    cooling_per_hour = start_index - comfort_index(cooled_temp_c, cooled_rh)
+    drying_per_hour = start_index - comfort_index(temp_c, dried_rh)
 
     if drying_per_hour <= 0:
         trace.rejected.append("dry: this room has never shown a latent response")
@@ -247,16 +278,17 @@ def _latent_route(
 
     if cooling_per_hour > drying_per_hour * DRY_MODE_ADVANTAGE:
         trace.rejected.append(
-            f"dry: cooling closes {cooling_per_hour:.2f} HCI per hour against "
-            f"{drying_per_hour:.2f} for drying — the load is sensible"
+            f"dry: cooling closes {cooling_per_hour:.2f} HCI per hour "
+            f"({rh_state}) against {drying_per_hour:.2f} for drying — the "
+            "load is sensible"
         )
         return None
 
     hours = overshoot / drying_per_hour if drying_per_hour else 0.0
     return (
         f"dry: drying closes {drying_per_hour:.2f} HCI per hour against "
-        f"{cooling_per_hour:.2f} for cooling, about {hours * 60:.0f} min — "
-        "the load is latent"
+        f"{cooling_per_hour:.2f} for cooling ({rh_state}), about "
+        f"{hours * 60:.0f} min — the load is latent"
     )
 
 
@@ -349,14 +381,25 @@ def select_actuator(
         # take is not grounds for withdrawing it. Stopping here would be a
         # guard failing closed against comfort, which is the fault finding 3
         # was spent reversing.
-        #
-        # Named separately so the trace says which of the two is missing. One
-        # line covering both told you nothing about where to look.
-        trace.rejected.append(
-            "all actuators: no comfort reading for this room"
-            if hci is None
-            else "all actuators: no band configured for this mode"
-        )
+        if hci is None:
+            # Named entity, not a generic "no comfort reading". Temperature
+            # and humidity are required at setup from 0.8.9, so a room
+            # reaching this line is either mid-outage or was configured
+            # before the requirement existed — either way this is a fault to
+            # go looking at, not a configuration state to shrug off.
+            missing = [
+                entity_id or kind
+                for kind, value, entity_id in (
+                    ("temperature sensor", inputs.temperature_c, inputs.temperature_entity_id),
+                    ("humidity sensor", inputs.relative_humidity, inputs.humidity_entity_id),
+                )
+                if value is None
+            ]
+            trace.rejected.append(
+                "all actuators: not reporting — " + ", ".join(missing)
+            )
+        else:
+            trace.rejected.append("all actuators: no band configured for this mode")
         return ActuatorStep.NONE
 
     demand = _demand_direction(mode, band, hci)

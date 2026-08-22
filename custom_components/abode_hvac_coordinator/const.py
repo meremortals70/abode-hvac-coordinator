@@ -202,3 +202,9 @@ ISSUE_NO_BANDS: Final = "room_without_bands"
 #: error rather than a warning: the affected rooms are locked out until it is
 #: resolved, so it is not something that can be left standing.
 ISSUE_SHARED_CLIMATE_ENTITY: Final = "shared_climate_entity"
+#: A room configured before 0.8.9 with no temperature sensor, no humidity
+#: sensor, or neither. Both became required at setup in 0.8.9 — without them
+#: the comfort index cannot be computed — but required at setup is not the
+#: same as present at runtime, so an existing room missing one is reported
+#: rather than taken down.
+ISSUE_MISSING_COMFORT_INPUTS: Final = "room_missing_comfort_inputs"
