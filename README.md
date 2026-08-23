@@ -5,8 +5,8 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.8.9 — alpha, not proven
-> The architecture is built and 389 tests pass. **Nothing since v0.5.3 has been
+> ### Status: v0.8.11 — alpha, not proven
+> The architecture is built and 443 tests pass. **Nothing since v0.5.3 has been
 > confirmed working on real hardware**, and two releases shipped with faults
 > that only appeared on first install. Treat your first week as a test and read
 > [Known limitations](docs/known-limitations.md) before you rely on it.
