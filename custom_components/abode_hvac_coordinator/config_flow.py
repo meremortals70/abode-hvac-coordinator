@@ -997,10 +997,6 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             or []
         )
 
-    def _suggested_lockout(self) -> dict[str, Any]:
-        reason = self._existing().get(CONF_LOCKOUT_REASON)
-        return {CONF_LOCKOUT_REASON: reason} if reason else {}
-
     def _suggested_bands(self) -> dict[str, Any]:
         """A room being edited shows its own bands; a new one shows defaults."""
         existing = self._existing()
