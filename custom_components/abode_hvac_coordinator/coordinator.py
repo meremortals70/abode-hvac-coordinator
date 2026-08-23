@@ -1846,8 +1846,22 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _build_forecast(
         self, now: datetime, traces: dict[str, DecisionTrace]
     ) -> DemandForecast:
-        """Project HVAC energy over the horizon. No vendor concepts in it."""
+        """Project HVAC energy over the horizon. No vendor concepts in it.
+
+        The horizon needs the outdoor temperature across the whole horizon,
+        not at this instant — a mild reading right now says nothing about a
+        heatwave arriving at hour three. Where a weather forecast is
+        configured, the mean forecast temperature over the horizon window
+        replaces the instantaneous reading; without one, the instantaneous
+        reading is used unchanged, exactly as before this fix.
+        """
         outdoor = self._number(self.outdoor_entity_id)
+        if self.trajectory is not None:
+            forecast_mean = self.trajectory.mean_between(
+                now, now + timedelta(hours=DEFAULT_HORIZON_HOURS)
+            )
+            if forecast_mean is not None:
+                outdoor = forecast_mean
         inputs: list[RoomForecastInput] = []
         for room_id, room in self.rooms.items():
             trace = traces.get(room_id)
