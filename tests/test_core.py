@@ -2569,6 +2569,53 @@ class TestOuterLoopRegulation(unittest.TestCase):
         state = _regulate.RegulatorState(trim_c=-1.4)
         self.assertIsNone(_regulate.commanded_setpoint(state, None))
 
+    def _simulate_room(self, *, head_to_room_offset_c, target_c=24.0, hours=12.0,
+                        interval_minutes=10.0):
+        """Closed-loop convergence, not just the integrator's arithmetic.
+
+        Every other test in this class drives `integrate()` with an error
+        that is fixed by the caller, which only proves the accumulator's
+        maths. This drives it with an error produced by the loop's own
+        output: the plant is assumed to reach whatever setpoint is commanded
+        (the unit's own fast inner thermostat loop, which is not under test
+        here), offset by a fixed head-to-room gap — the exact failure this
+        module exists to correct. What's being checked is that the trim this
+        loop produces actually pulls the room into the deadband, and stays
+        there, rather than merely staying bounded.
+        """
+        state = _regulate.RegulatorState()
+        at = NOW
+        room_c = target_c + head_to_room_offset_c
+        interval = timedelta(minutes=interval_minutes)
+        steps = int(hours * 60 / interval_minutes)
+        for _ in range(steps):
+            at += interval
+            commanded = _regulate.commanded_setpoint(state, target_c)
+            room_c = commanded + head_to_room_offset_c
+            _regulate.integrate(
+                state, target_c=target_c, room_c=room_c, now=at, regulating=True,
+            )
+        return room_c, state
+
+    def test_a_steady_head_to_room_offset_is_driven_into_the_deadband(self):
+        for offset in (1.5, -1.5, 2.5, -2.5):
+            with self.subTest(offset=offset):
+                room_c, state = self._simulate_room(head_to_room_offset_c=offset)
+                self.assertLessEqual(
+                    abs(room_c - 24.0), _regulate.DEADBAND_C,
+                    f"offset {offset:+.1f} C: room settled at {room_c:.2f} C, "
+                    f"trim {state.trim_c:+.2f} C",
+                )
+
+    def test_an_offset_beyond_the_trim_limit_is_not_silently_hidden(self):
+        # MAX_TRIM_C is 3.0; an offset bigger than that is the "unit is
+        # undersized or the sensor is in the wrong place" case the module's
+        # own docstring calls out. The loop must pin and say so, not pretend.
+        room_c, state = self._simulate_room(head_to_room_offset_c=4.5, hours=24.0)
+        self.assertGreater(abs(room_c - 24.0), _regulate.DEADBAND_C)
+        self.assertAlmostEqual(abs(state.trim_c), _regulate.MAX_TRIM_C, places=6)
+        self.assertTrue(any("not keeping up" in note for note in state.notes))
+
 
 class TestShortCycleGuard(unittest.TestCase):
     """Short cycling is the most damaging thing a controller can do to a split."""
