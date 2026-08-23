@@ -155,40 +155,57 @@ adding one for another system to consume needs no code change here.
 If a constraint and the comfort band cannot both hold, the controller says so
 and holds the constraint.
 
-**`no_grid_import` is still absolute — what changed is how the controller
-decides whether it is currently satisfied.** This project has no control over
-where household power comes from, so it cannot enforce the constraint
-directly. What it can do is estimate its own projected need and read the
-battery's state of charge, then decide whether a given room may keep running
-without importing. That decision is optional (nothing engages until battery,
-solar and house-load readings are all configured — see
+**`no_grid_import` is still absolute — what changed, across two builds, is
+how the controller responds to it.** This project has no control over where
+household power comes from, so it cannot enforce the constraint directly.
+What it does since 0.8.10 is throttle: it estimates how much energy the
+battery can spare, converts that into a setpoint ceiling using the room's
+own learned rate and draw at each operating point, and holds the compressor
+to that ceiling rather than either running it flat out or refusing it
+outright. That decision is optional (nothing engages until battery, solar
+and house-load readings are all configured — see
 [Configuration](configuration.md#power)), it is assessed per room against
-shared live readings rather than negotiated between rooms, and it is checked
-inline inside the same actuator selection that already checks whether the
-unit can physically heat or cool — not as an override layered on afterward.
+shared live readings rather than negotiated between rooms, and it is applied
+inside the same regulation step that trims the commanded setpoint for every
+other reason — not as an override layered on afterward.
 
-**Since 0.8.7 the refusal also reaches the hardware.** Before it, a refused
-room's decision was recorded in the trace and nothing was commanded, so a unit
-already running carried on through the whole window. The constraint had no
-actuation behind it at all.
+**The boolean veto that stood from 0.8.5 to 0.8.9 is retired, not narrowed —
+and replaced by a checkbox the room's occupant controls, not a mechanism the
+controller applies on its own judgement.** `allow_comfort_reduction`, off by
+default, per room. Off, power management does not touch the room at all:
+comfort wins unconditionally and the room holds its band regardless of the
+constraint, exactly as if the feature were not configured. On, the
+constraint is enforced for that room — the ceiling applies whether the room
+is already inside its band or calling for correction, holding it as close to
+the band as the remaining energy allows rather than running it flat out or
+refusing it. **No state of this feature, in any configuration, ever commands
+the compressor off for a power reason** — enforcing the constraint means
+throttling toward it, never abandoning the room. Where the budget cannot
+even afford holding at setpoint, the ceiling floors at "ask for nothing
+colder than the room already is" rather than becoming a stop.
 
-**It fails open.** A room is refused only on a positively computed shortfall:
-readings present, model converged, relief time known, and the arithmetic
-short. Every case the controller cannot answer leaves the room its comfort.
-Before 0.8.6 all four unknowns — a stale reading, a series that never clears,
-no solved target yet, an unconverged thermal model — returned a refusal, and
-since an unconverged model is the state every fresh install sits in, enabling
-power management stopped the compressor in occupied rooms for a whole
-no-import window on the strength of a coefficient that had never been
-measured. Comfort is a hard constraint, and a projection the controller cannot
-make is not grounds for withdrawing it.
+**Since 0.8.7 the actuation reaches the hardware; since 0.8.10 a grid sensor
+lets the controller measure rather than only project.** One signed power
+reading, its sign settled once at setup against live evidence and never
+inferred again, gives the controller `battery = house_load − solar − grid`
+— a diagnostic view of the rate energy actually leaves the battery. The
+setpoint ceiling itself is bounded by the battery's rated maximum discharge
+power, entered at setup rather than derived from this reading. The grid
+sensor's own contribution is measurement: it lets a `no_grid_import`
+window's actual import be reported afterward, rather than reconstructed
+from a projection nobody could verify.
+
+**It fails open.** The ceiling applies only when every reading the budget
+needs is present; any missing or stale figure leaves the room unthrottled,
+exactly as an unconfigured feature would. Comfort is a hard constraint, and a
+number the controller cannot compute is not grounds for constraining it.
 See [Tariff](tariff.md#no_grid_import-what-it-actually-does).
 
 ### One writer per actuator
 
 | Actuator | Owner |
 |---|---|
-| Battery | Whoever owns the battery. **Never this project** — this project only ever reads state of charge, to decide whether a room may keep running under `no_grid_import` |
+| Battery | Whoever owns the battery. **Never this project** — this project only ever reads state of charge and grid flow, to decide how gently a room may run under `no_grid_import` |
 | Climate entities | The regulation layer, driven by Layer 3 |
 | Covers | The cover layer, driven by Layer 3 |
 
@@ -317,21 +334,83 @@ than run the compressor.
 | Thermal model | Built, tested |
 | Demand forecast | Built, tested |
 | Actuation | Built, tested |
-| Power-aware compressor decision (`no_grid_import`) | Built and tested. The coordinator wiring has run against Home Assistant since 0.8.6 — against 2025.1.4, not the targeted 2026.8.x |
+| Power-aware compressor decision (`no_grid_import`) | Built and tested. Rebuilt in 0.8.10: the boolean veto retired in favour of a setpoint ceiling — see below |
 | Per-room cover-control override | Built, tested |
 | Stopping the compressor, as distinct from leaving it alone | Built, tested. New in 0.8.7 |
 | A room's heads, and which outdoor unit each is on | Built, tested. New in 0.8.8 |
 | Heat load and air movement inputs | Built, tested. Reachable in the room form from 0.8.7; before it, configured nowhere and always absent |
 | Required comfort inputs at room setup | Built, tested. New in 0.8.9 |
-| `k_sensible` binned by operating point | Built, tested. New in 0.8.9 |
+| `k_sensible` binned by operating point | Built, tested. New in 0.8.9. The one caller left reading the pooled figure regardless of approach (the dry-versus-cool comparison) was fixed in 0.8.10 |
 | Learned per-outdoor-unit draw | Built, tested. New in 0.8.9. Needs a house-load sensor configured; without one, every consumer sees the same assumed constant as before |
 | The dry-versus-cool comparison, without the constant-RH derivative | Built, tested. New in 0.8.9 |
+| The grid sensor, and derived battery power | Built, tested. New in 0.8.10. Optional; without it the power budget still runs on the energy figure alone |
+| The power budget and setpoint ceiling, replacing the boolean veto | Built, tested. New in 0.8.10 |
+| Per-room permission to extend the ceiling past the comfort band | Built, tested. New in 0.8.10 |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 389 tests at 0.8.9, against 2025.1.4 rather than the 2026.8.x
+pure modules — 422 tests at 0.8.10, against 2025.1.4 rather than the 2026.8.x
 targeted, because the build sandbox is Python 3.12. Running it for the first
 time found two tests that had never passed. See
 [Known limitations](known-limitations.md).
+
+### The power budget replaces the boolean veto
+
+**New in 0.8.10.** From 0.8.5 to 0.8.9, `no_grid_import` was enforced by a
+boolean: a room whose projected energy need exceeded the battery's spare
+capacity had its compressor refused outright, above its comfort band, on a
+positively computed shortfall. That refusal is gone. The only actuators this
+project has ever owned are the commanded setpoint and fan speed — the
+compressor itself is continuously variable — and 0.8.9's approach bins
+finally gave an operating point both a rate and a cost, which is what
+rationing needs.
+
+`_power_ceiling` computes an allowance in kWh from the battery's spare
+energy, bounded by the battery's **rated maximum discharge power** — a
+nameplate specification entered at setup (`CONF_BATTERY_MAX_DISCHARGE_KW`),
+not learned or assumed unbounded — minus the rest of the house's own
+measured draw. The allowance selects the most permissive approach bin the
+room's compressor group can afford, and that bin's approach becomes a
+ceiling on how far below (heating: above) the room's own reading the
+commanded setpoint may go.
+
+**The ceiling never stops the compressor, and the checkbox is a single,
+unconditional gate on the whole mechanism.** `allow_comfort_reduction`, off
+by default, per room. Off, power management does not touch the room at
+all — comfort wins and the band is held regardless of the constraint, even
+while the room sits comfortably inside it. On, the constraint is enforced:
+the ceiling applies whether the room is inside its band or calling for
+correction, holding it as close to the band as the remaining energy allows —
+running at the largest output the budget affords, spread across the hours
+until the constraint clears, degrading gradually as the battery depletes
+rather than either running flat out or being abandoned. Where even holding
+at setpoint cannot be afforded, the ceiling floors at zero further
+correction — never at an actuator state that turns the unit off.
+
+Anti-windup follows the same rule finding 7 (0.8.6) established for a
+guard-refused start: the regulation integrator does not wind against a
+setpoint the ceiling is actively capping.
+
+### The grid sensor
+
+**New in 0.8.10.** One signed power reading, normalised at the point of
+reading into import watts. The sign convention is resolved once, at setup,
+from live evidence — `house_load − solar` as a lower bound on what the house
+must be drawing from somewhere, compared against the raw reading's own sign
+— and stored. Never inferred again at runtime; a persistent disagreement
+between live evidence and the stored convention is named in a repair issue,
+never auto-corrected.
+
+`battery = house_load − solar − grid` is a derived, diagnostic figure —
+published so the actual rate energy leaves the battery can be seen, though
+the power budget itself is bounded by the rated maximum discharge power
+(above) rather than by this reading. Optional: without a grid sensor
+configured, the budget still runs on the energy and rated-discharge figures
+alone, and no breach can be measured.
+
+A `no_grid_import` window's actual grid import is integrated across the
+window and, where it exceeds a small noise floor, reported in a repair issue
+naming the kWh — a measured figure, not a reconstruction, and the same
+mechanism whether or not any room's comfort-reduction checkbox is set.
 
 ### A room has heads; heads sit on outdoor units
 
@@ -422,8 +501,11 @@ it has not.
 **New in 0.8.7.** The actuator step carries both, as distinct values.
 
 `OFF` commands the climate entity off: lockout, unoccupied, an opening in the
-room, coasting, a deferred precondition, a direction the unit cannot deliver,
-and a room refused under `no_grid_import`.
+room, coasting, a deferred precondition, and a direction the unit cannot
+deliver. (A fifth reason existed here from 0.8.7 to 0.8.9 — a room refused
+under `no_grid_import` — retired in 0.8.10; see §3, "Tariff constraints are
+absolute". Power management now throttles via a setpoint ceiling and never
+produces `OFF`.)
 
 `NONE` commands nothing, and the unit holds the trimmed setpoint it was last
 given against its own sensor until the next evaluation: a room inside its band,

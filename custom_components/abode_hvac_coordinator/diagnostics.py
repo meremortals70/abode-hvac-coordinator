@@ -38,6 +38,7 @@ async def async_get_config_entry_diagnostics(
                 "overhang_projection_m": room.overhang_projection_m,
                 "overhang_height_m": room.overhang_height_m,
                 "lockout_reason": room.lockout_reason,
+                "allow_comfort_reduction": room.allow_comfort_reduction,
                 "bands": {
                     str(mode): {"low": band.low, "high": band.high}
                     for mode, band in room.bands.items()
@@ -112,6 +113,9 @@ async def async_get_config_entry_diagnostics(
             group: model.diagnostics()
             for group, model in coordinator.draw_models().items()
         },
+        # 0.8.10, findings 10/11/15. Per-room budget, ceiling and bin are on
+        # each room's own trace; this is the shared, house-level half.
+        "power": coordinator.power_state(),
         "forecast": (
             coordinator.forecast.as_attributes() if coordinator.forecast else None
         ),

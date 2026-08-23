@@ -143,8 +143,8 @@ class TestNoStrayConstantsInCalls(unittest.TestCase):
 #: path can be built and tested in a plain Python session.
 PURE_MODULES = (
     "const", "forecast", "forms", "grace", "hci", "models", "modes",
-    "psychro", "regulate", "scheduling", "staleness", "sun", "tariff",
-    "thermal", "weather",
+    "power", "psychro", "regulate", "scheduling", "staleness", "sun",
+    "tariff", "thermal", "weather",
 )
 
 

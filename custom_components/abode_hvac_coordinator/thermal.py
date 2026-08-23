@@ -394,6 +394,30 @@ class ThermalModel:
         projected = indoor_c + rate * hours
         return lower_c <= projected <= upper_c
 
+    def sensible_rate_at(self, approach_c: float) -> float | None:
+        """The best available `k_sensible` for one approach.
+
+        0.8.10. Fixes a gap disclosed at the 0.8.9 handover: the
+        dry-versus-cool comparison (`modes._latent_route`) was still reading
+        the pooled coefficient regardless of the bin an interval belongs to,
+        even though `hours_to_reach` and `energy_for` both went bin-aware in
+        0.8.9. The pooled figure describes full tilt on average; a room
+        deciding between drying and cooling is usually close to its band,
+        where the true rate is a fraction of that.
+
+        Same fallback shape as `DrawModel.draw_kw`: this bin if converged,
+        else the pooled coefficient, else `None` — which tells the caller
+        nothing has converged at all, and it should fall back to the
+        humidity threshold rather than trust a number the filter has not
+        settled on. Never the raw seed.
+        """
+        coefficient = self.k_sensible_bins[approach_bin(approach_c)]
+        if coefficient.converged:
+            return coefficient.value
+        if self.k_sensible.converged:
+            return self.k_sensible.value
+        return None
+
     def _sensible_rate(self, bin_index: int) -> float:
         """The compressor's rate at one operating point, bin or pooled.
 

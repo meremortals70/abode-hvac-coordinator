@@ -136,6 +136,13 @@ class RoomConfig:
     #: compressor. That covers two rooms on one outdoor unit and two heads in
     #: one room with the same rule, and needs no objects to keep in step.
     head_groups: Mapping[str, str] = field(default_factory=dict)
+    #: 0.8.10, finding 15. Off by default. With it on, the power budget's
+    #: setpoint ceiling keeps applying even once the room needs correction,
+    #: rather than lifting there — the room runs gently rather than at full
+    #: output, and never stops. A yes/no the user answers, not a magnitude:
+    #: the limit itself is whatever the remaining energy can buy, which the
+    #: controller already computes.
+    allow_comfort_reduction: bool = False
 
     def group_of(self, entity_id: str) -> str:
         """Which compressor a head runs on.
@@ -333,6 +340,24 @@ class DecisionTrace:
     #: Published so a decision that depended on the model can be checked
     #: against what the model actually believed at the time.
     model: dict[str, Any] = field(default_factory=dict)
+    #: 0.8.10, findings 10/11/15. None means the power budget did not apply
+    #: this cycle — power management unconfigured, no `no_grid_import`
+    #: window active, or the room needed correction and comfort reduction is
+    #: not permitted (the ceiling has lifted). Otherwise the approach-bin
+    #: ceiling actually applied to `commanded_dry_bulb_c` this cycle.
+    power_ceiling_c: float | None = None
+    #: The allowable average draw the ceiling was computed from, in kW.
+    power_budget_kw: float | None = None
+    #: Which approach bin the ceiling came from — "at_setpoint", "close",
+    #: "working" or "pulldown" — or None with no ceiling in force.
+    power_bin: str | None = None
+    #: Whether finding 15's checkbox is why the ceiling is applying above the
+    #: room's own comfort band right now, distinct from a room merely reading
+    #: a degree high while still inside it.
+    comfort_reduction_active: bool = False
+    #: Measured, not projected — None when no grid sensor is configured.
+    #: True means the house is drawing from the grid right now.
+    grid_importing_now: bool | None = None
 
     def as_attributes(self) -> dict[str, Any]:
         """Flatten for publication as entity attributes."""
@@ -380,4 +405,11 @@ class DecisionTrace:
             "reasons": list(self.reasons),
             "rejected": list(self.rejected),
             "model": dict(self.model),
+            "power_ceiling_c": self.power_ceiling_c,
+            "power_budget_kw": (
+                None if self.power_budget_kw is None else round(self.power_budget_kw, 3)
+            ),
+            "power_bin": self.power_bin,
+            "comfort_reduction_active": self.comfort_reduction_active,
+            "grid_importing_now": self.grid_importing_now,
         }

@@ -1,0 +1,107 @@
+"""Grid-aware power budgeting.
+
+Pure. No Home Assistant imports. 0.8.10, findings 10 and 11.
+
+Replaces the boolean `_power_available` veto with a kWh-and-ceiling
+mechanism. The compressor was always continuously variable — the setpoint
+and fan speed levers were already in `actuator.py` — what was missing was a
+rate and a cost at an operating point, which 0.8.9's approach bins supply.
+
+WHAT CHANGED FROM THE PRE-0.8.10 VETO
+--------------------------------------
+The old `_power_available` could refuse the compressor outright, above the
+comfort band, on a positively computed shortfall. That refusal is retired
+here, not narrowed. Comfort is the constraint, not the variable: the budget
+now only ever shapes *how gently* the compressor runs, via a setpoint
+ceiling, and never turns it off. A room whose battery genuinely cannot carry
+it still runs; the shortfall is reported afterward from measured grid
+import, not enforced beforehand from a projection.
+
+The ceiling itself normally lifts the moment a room actually needs
+correction (`demand` is not None) — the point where comfort, not cost, must
+decide. `allow_comfort_reduction` is the one room-level exception: with it
+set, the ceiling keeps applying even then, because the room's occupant has
+said they would rather run gently than run at whatever the compressor wants.
+"""
+
+from __future__ import annotations
+
+#: A positive raw reading means the house is drawing from the grid.
+GRID_SIGN_IMPORTING = "importing"
+#: A positive raw reading means the house is feeding the grid.
+GRID_SIGN_EXPORTING = "exporting"
+
+#: Below this, `house_load - solar` is not decisive either way about the
+#: grid reading's sign — solar could be covering the load, the battery could
+#: be carrying it, or the grid could genuinely be near zero. No default is
+#: offered in that case; the setup step says so rather than guessing.
+AMBIGUOUS_BELOW_W = 500.0
+
+
+def normalise_grid_import_w(raw_w: float, sign: str) -> float:
+    """Positive means importing, regardless of the stored convention."""
+    return raw_w if sign == GRID_SIGN_IMPORTING else -raw_w
+
+
+def derive_battery_w(house_load_w: float, solar_w: float, grid_import_w: float) -> float:
+    """Positive means the battery is discharging."""
+    return house_load_w - solar_w - grid_import_w
+
+
+def implied_sign(
+    house_load_w: float, solar_w: float, grid_reading_w: float
+) -> str | None:
+    """Best-guess sign convention from one live snapshot, or None if ambiguous.
+
+    `house_load - solar` is a lower bound on what the house must be drawing
+    from somewhere. Where that figure is clearly positive, the grid
+    reading's own sign resolves the question: if the reading reads positive
+    while the house is a net draw, positive most plausibly means import;
+    if the reading reads negative under the same condition, positive means
+    export.
+    """
+    lower_bound = house_load_w - solar_w
+    if lower_bound < AMBIGUOUS_BELOW_W:
+        return None
+    return GRID_SIGN_IMPORTING if grid_reading_w > 0 else GRID_SIGN_EXPORTING
+
+
+def allowable_draw_kw(
+    available_kwh: float,
+    hours_until_clear: float,
+    max_discharge_kw: float | None,
+    other_house_draw_kw: float,
+) -> float:
+    """The average kW this room may draw without importing.
+
+    The lesser of the energy figure spread evenly over the remaining hours
+    and what the battery can actually deliver on top of the rest of the
+    house's own measured draw. Never negative: a house already over its own
+    discharge ceiling gets a zero allowance, not a negative one.
+
+    `max_discharge_kw` is the battery's rated maximum discharge power, a
+    nameplate figure entered at setup (`CONF_BATTERY_MAX_DISCHARGE_KW`) —
+    not learned. It is a specification, not something that varies or needs
+    tracking over time.
+    """
+    if hours_until_clear <= 0:
+        return 0.0
+    energy_rate_kw = max(available_kwh, 0.0) / hours_until_clear
+    if max_discharge_kw is None:
+        return max(energy_rate_kw, 0.0)
+    plant_rate_kw = max(max_discharge_kw - other_house_draw_kw, 0.0)
+    return max(min(energy_rate_kw, plant_rate_kw), 0.0)
+
+
+def ceiling_bin(allowance_kw: float, draw_kw_by_bin: list[float]) -> int | None:
+    """The most permissive bin whose learned draw still fits the allowance.
+
+    `draw_kw_by_bin` is ordered at_setpoint, close, working, pulldown —
+    increasing draw. The allowance is read backwards from pulldown: the
+    largest-approach bin that still fits is the operating point the room
+    may run at, because the ceiling should cost as much of the allowance as
+    it can afford, not as little. `None` means even holding at setpoint
+    would exceed it.
+    """
+    fitting = [index for index, kw in enumerate(draw_kw_by_bin) if kw <= allowance_kw]
+    return max(fitting) if fitting else None

@@ -3622,3 +3622,129 @@ class TestOutdoorUnits(unittest.TestCase):
             head_groups={"climate.a": "Pair", "climate.b": "Pair"},
         )
         self.assertEqual(config.groups, ("Pair", "climate.c"))
+
+
+class TestSensibleRateAt(unittest.TestCase):
+    """0.8.10. Closes the gap disclosed at the 0.8.9 handover: the dry-versus-
+    cool comparison read the pooled `k_sensible` regardless of approach.
+    """
+
+    def test_a_converged_bin_is_preferred_to_the_pooled_figure(self):
+        model = _thermal.ThermalModel()
+        model.k_sensible = _thermal.Coefficient(value=2.0, variance=0.01, samples=40)
+        model.k_sensible_bins[0] = _thermal.Coefficient(
+            value=0.3, variance=0.01, samples=40
+        )
+        # Close to setpoint: the at_setpoint bin (index 0) applies.
+        self.assertAlmostEqual(model.sensible_rate_at(0.2), 0.3)
+
+    def test_an_unconverged_bin_falls_back_to_the_pooled_figure(self):
+        model = _thermal.ThermalModel()
+        model.k_sensible = _thermal.Coefficient(value=2.0, variance=0.01, samples=40)
+        # No bin has converged. Pooled describes full tilt and is what
+        # every prior build actually used for this decision.
+        self.assertAlmostEqual(model.sensible_rate_at(0.2), 2.0)
+
+    def test_nothing_converged_returns_none(self):
+        """None tells the caller to fall back to the humidity threshold —
+        never the raw seed, which would look like a decision."""
+        model = _thermal.ThermalModel()
+        self.assertIsNone(model.sensible_rate_at(0.2))
+
+    def test_a_room_near_setpoint_and_one_mid_pulldown_get_different_rates(self):
+        """The point of the fix: two approaches, two answers, where the
+        pooled figure alone would have given the same wrong one to both."""
+        model = _thermal.ThermalModel()
+        model.k_sensible = _thermal.Coefficient(value=2.0, variance=0.01, samples=40)
+        model.k_sensible_bins[0] = _thermal.Coefficient(
+            value=0.3, variance=0.01, samples=40
+        )
+        model.k_sensible_bins[3] = _thermal.Coefficient(
+            value=2.5, variance=0.01, samples=40
+        )
+        near_setpoint = model.sensible_rate_at(0.2)
+        mid_pulldown = model.sensible_rate_at(5.0)
+        self.assertNotEqual(near_setpoint, mid_pulldown)
+        self.assertAlmostEqual(near_setpoint, 0.3)
+        self.assertAlmostEqual(mid_pulldown, 2.5)
+
+
+_power = importlib.import_module("hvac_core.power")
+
+
+class TestGridSignConvention(unittest.TestCase):
+    """0.8.10, finding 11."""
+
+    def test_positive_means_importing(self):
+        self.assertEqual(
+            _power.normalise_grid_import_w(500.0, _power.GRID_SIGN_IMPORTING), 500.0
+        )
+
+    def test_positive_means_exporting_flips_the_sign(self):
+        self.assertEqual(
+            _power.normalise_grid_import_w(500.0, _power.GRID_SIGN_EXPORTING), -500.0
+        )
+
+    def test_battery_power_is_the_house_balance(self):
+        # 3120 W load, 180 W solar, 0 W grid: the battery must supply 2940 W.
+        self.assertAlmostEqual(
+            _power.derive_battery_w(3120.0, 180.0, 0.0), 2940.0
+        )
+
+    def test_unambiguous_evidence_implies_the_convention(self):
+        """The worked example from the design: house load 3120, solar 180,
+        grid reads -2840. The house must be drawing ~2940 W from somewhere;
+        a negative reading under that condition implies positive = export.
+        """
+        self.assertEqual(
+            _power.implied_sign(3120.0, 180.0, -2840.0), _power.GRID_SIGN_EXPORTING
+        )
+
+    def test_unambiguous_evidence_the_other_way(self):
+        self.assertEqual(
+            _power.implied_sign(3120.0, 180.0, 2840.0), _power.GRID_SIGN_IMPORTING
+        )
+
+    def test_ambiguous_evidence_offers_no_default(self):
+        """Solar covers the load: house_load - solar is near zero, and the
+        grid reading alone cannot resolve the convention."""
+        self.assertIsNone(_power.implied_sign(500.0, 480.0, -20.0))
+
+
+class TestAllowableDraw(unittest.TestCase):
+    """0.8.10, finding 10."""
+
+    def test_bounded_by_energy_when_no_discharge_ceiling_is_known(self):
+        self.assertAlmostEqual(
+            _power.allowable_draw_kw(4.0, 2.0, None, 0.0), 2.0
+        )
+
+    def test_bounded_by_the_plant_when_that_is_tighter(self):
+        # 4 kWh over 2 h wants 2 kW, but the battery can only spare 1 kW
+        # once the rest of the house's 2 kW is subtracted from a 3 kW ceiling.
+        self.assertAlmostEqual(
+            _power.allowable_draw_kw(4.0, 2.0, 3.0, 2.0), 1.0
+        )
+
+    def test_never_negative(self):
+        self.assertEqual(_power.allowable_draw_kw(-5.0, 2.0, 3.0, 5.0), 0.0)
+
+    def test_zero_hours_is_zero_allowance(self):
+        self.assertEqual(_power.allowable_draw_kw(4.0, 0.0, None, 0.0), 0.0)
+
+
+class TestCeilingBin(unittest.TestCase):
+    """0.8.10, finding 10. Bins ordered at_setpoint..pulldown, increasing
+    draw; the ceiling reads backwards for the most permissive fit."""
+
+    def test_the_loosest_affordable_bin_is_chosen(self):
+        draw = [0.2, 0.5, 0.9, 1.5]
+        self.assertEqual(_power.ceiling_bin(1.0, draw), 2)
+
+    def test_everything_fits(self):
+        draw = [0.2, 0.5, 0.9, 1.5]
+        self.assertEqual(_power.ceiling_bin(2.0, draw), 3)
+
+    def test_nothing_fits(self):
+        draw = [0.2, 0.5, 0.9, 1.5]
+        self.assertIsNone(_power.ceiling_bin(0.1, draw))

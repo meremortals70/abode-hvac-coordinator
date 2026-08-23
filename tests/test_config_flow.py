@@ -15,10 +15,14 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.abode_hvac_coordinator.const import (
+    CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_DISCHARGE_KW,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITIES,
+    CONF_GRID_ENTITY,
+    CONF_GRID_SIGN,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
@@ -29,6 +33,7 @@ from custom_components.abode_hvac_coordinator.const import (
     DOMAIN,
     STARTUP_FETCH_DELAY,
 )
+from custom_components.abode_hvac_coordinator.power import GRID_SIGN_EXPORTING
 
 #: Required from 0.8.9. Every room-step submission in this file needs both,
 #: whether or not the test's own point is about them.
@@ -459,10 +464,92 @@ async def test_disabling_cover_control_is_stored_on_the_room(
     assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COVER_CONTROL] is False
 
 
+async def test_the_bands_step_offers_the_comfort_reduction_checkbox(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """0.8.10, finding 15. A yes/no on the bands step, off by default."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "Office",
+            CONF_CLIMATE_ENTITIES: ["climate.office"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert set(result["data_schema"].schema).issuperset(
+        {CONF_ALLOW_COMFORT_REDUCTION}
+    )
+    default_field = next(
+        key
+        for key in result["data_schema"].schema
+        if str(key) == CONF_ALLOW_COMFORT_REDUCTION
+    )
+    assert default_field.default() is False
+
+
+async def test_permitting_comfort_reduction_is_stored_on_the_room(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """Ticking it on for one room reaches the stored RoomConfig."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "Office",
+            CONF_CLIMATE_ENTITIES: ["climate.office"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "occupied_low": 24.0,
+            "occupied_high": 27.0,
+            CONF_ALLOW_COMFORT_REDUCTION: True,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION] is True
+
+
+async def test_comfort_reduction_defaults_off_when_not_submitted(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "Office",
+            CONF_CLIMATE_ENTITIES: ["climate.office"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION] is False
+
+
 async def test_the_power_step_stores_all_five_fields(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """Vendor-neutral entity pickers plus the two numeric settings."""
+    """Vendor-neutral entity pickers plus the two numeric settings.
+
+    The grid field (0.8.10) is on the same step but is not part of this
+    test's "five" — submitted empty here, it takes the direct save path
+    rather than routing through the sign-convention step.
+    """
     mock_config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -480,9 +567,11 @@ async def test_the_power_step_stores_all_five_fields(
     assert fields == {
         CONF_BATTERY_SOC_ENTITY,
         CONF_BATTERY_CAPACITY_KWH,
+        CONF_BATTERY_MAX_DISCHARGE_KW,
         CONF_SOLAR_POWER_ENTITY,
         CONF_HOUSE_LOAD_ENTITY,
         CONF_RESERVE_MARGIN_KWH,
+        CONF_GRID_ENTITY,
     }
 
     result = await hass.config_entries.options.async_configure(
@@ -501,6 +590,86 @@ async def test_the_power_step_stores_all_five_fields(
     assert result["data"][CONF_SOLAR_POWER_ENTITY] == "sensor.solar_power"
     assert result["data"][CONF_HOUSE_LOAD_ENTITY] == "sensor.house_load"
     assert result["data"][CONF_RESERVE_MARGIN_KWH] == 2.0
+    assert result["data"][CONF_GRID_ENTITY] is None
+    assert result["data"][CONF_BATTERY_MAX_DISCHARGE_KW] is None
+
+
+async def test_the_power_step_stores_the_battery_max_discharge(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The battery's rated maximum discharge power, entered rather than
+    learned — see `power.allowable_draw_kw`."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+            CONF_BATTERY_CAPACITY_KWH: 13.5,
+            CONF_BATTERY_MAX_DISCHARGE_KW: 5.0,
+            CONF_SOLAR_POWER_ENTITY: "sensor.solar_power",
+            CONF_HOUSE_LOAD_ENTITY: "sensor.house_load",
+            CONF_RESERVE_MARGIN_KWH: 2.0,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BATTERY_MAX_DISCHARGE_KW] == 5.0
+
+
+async def test_the_power_step_routes_to_the_sign_step_for_a_new_grid_entity(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Choosing a grid entity for the first time asks which way it reads.
+
+    0.8.10, finding 11. Settled at setup, from live evidence, not inferred.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.house_load", "3120")
+    hass.states.async_set("sensor.solar_power", "180")
+    hass.states.async_set("sensor.grid_power", "-2840")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+            CONF_BATTERY_CAPACITY_KWH: 13.5,
+            CONF_SOLAR_POWER_ENTITY: "sensor.solar_power",
+            CONF_HOUSE_LOAD_ENTITY: "sensor.house_load",
+            CONF_RESERVE_MARGIN_KWH: 2.0,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "power_grid_sign"
+    # house_load - solar = 2940 W, comfortably past the ambiguity threshold;
+    # the grid reads negative, so the implied convention is "exporting".
+    schema_field = next(iter(result["data_schema"].schema))
+    assert schema_field.default() == GRID_SIGN_EXPORTING
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_GRID_SIGN: GRID_SIGN_EXPORTING}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_GRID_ENTITY] == "sensor.grid_power"
+    assert result["data"][CONF_GRID_SIGN] == GRID_SIGN_EXPORTING
 
 
 async def test_the_power_step_leaves_the_feature_unconfigured_by_default(

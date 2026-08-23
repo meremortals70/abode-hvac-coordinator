@@ -24,6 +24,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFl
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
@@ -31,11 +32,14 @@ from .const import (
     CONF_BAND_LOW,
     CONF_BANDS,
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_DISCHARGE_KW,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITIES,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
+    CONF_GRID_ENTITY,
+    CONF_GRID_SIGN,
     CONF_HEAD_GROUPS,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
@@ -85,6 +89,7 @@ from .forms import (
     known_lockout_reasons,
     room_from_input,
 )
+from .power import GRID_SIGN_EXPORTING, GRID_SIGN_IMPORTING, implied_sign
 from .sun import WINDOW_DIRECTIONS
 
 ROOM_SCHEMA = vol.Schema(
@@ -156,6 +161,23 @@ def _metres_selector() -> selector.NumberSelector:
     )
 
 
+def _reading_w(hass: Any, entity_id: str | None) -> float | None:
+    """A live numeric reading, for the sign-convention guess. Best-effort:
+
+    the setup step is a convenience, not a source of truth — an unreadable
+    value here just means no default is offered, never a wrong one.
+    """
+    if entity_id is None:
+        return None
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    try:
+        return float(state.state)
+    except ValueError:
+        return None
+
+
 def _minutes_selector() -> selector.NumberSelector:
     """A minutes box for the grace timings."""
     return selector.NumberSelector(
@@ -171,6 +193,16 @@ def _kwh_selector() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=0, max=100, step=0.1, unit_of_measurement="kWh",
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def _kw_selector() -> selector.NumberSelector:
+    """A kW box, for the battery's rated maximum discharge power."""
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0, max=50, step=0.1, unit_of_measurement="kW",
             mode=selector.NumberSelectorMode.BOX,
         )
     )
@@ -248,13 +280,21 @@ def room_schema(lockout_reasons: list[str]) -> vol.Schema:
 
 BANDS_SCHEMA = vol.Schema(
     {
-        vol.Optional(f"{mode}_{bound}"): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0, max=50, step=0.5, mode=selector.NumberSelectorMode.BOX
+        **{
+            vol.Optional(f"{mode}_{bound}"): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=50, step=0.5, mode=selector.NumberSelectorMode.BOX
+                )
             )
-        )
-        for mode in BAND_MODES
-        for bound in (CONF_BAND_LOW, CONF_BAND_HIGH)
+            for mode in BAND_MODES
+            for bound in (CONF_BAND_LOW, CONF_BAND_HIGH)
+        },
+        #: 0.8.10, finding 15. A yes/no, not a magnitude — the limit itself
+        #: is whatever the power budget computes, not a number the user
+        #: would be guessing at.
+        vol.Optional(
+            CONF_ALLOW_COMFORT_REDUCTION, default=False
+        ): selector.BooleanSelector(),
     }
 )
 
@@ -377,6 +417,9 @@ class _RoomSteps:
                 errors["base"] = "band_inverted"
             else:
                 self._room[CONF_BANDS] = bands
+                self._room[CONF_ALLOW_COMFORT_REDUCTION] = bool(
+                    user_input.get(CONF_ALLOW_COMFORT_REDUCTION, False)
+                )
                 return self._save_room()
 
         suggested = self._suggested_bands()
@@ -432,6 +475,10 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         """Initialize the flow."""
         self._room = {}
         self._editing: str | None = None
+        #: 0.8.10. Holds the power step's answers across the extra sign-
+        #: convention step, so nothing is written to the entry until the
+        #: whole group is settled together.
+        self._pending_power_options: dict[str, Any] = {}
 
     @property
     def _rooms(self) -> list[dict[str, Any]]:
@@ -532,6 +579,15 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
     def _reserve_margin_kwh(self) -> str | None:
         return self._stored(CONF_RESERVE_MARGIN_KWH)
+
+    def _battery_max_discharge_kw(self) -> str | None:
+        return self._stored(CONF_BATTERY_MAX_DISCHARGE_KW)
+
+    def _grid_entity_id(self) -> str | None:
+        return self._stored(CONF_GRID_ENTITY)
+
+    def _grid_sign(self) -> str | None:
+        return self._stored(CONF_GRID_SIGN)
 
     def _tariff_entry_id(self) -> str | None:
         return self._stored(CONF_TARIFF_ENTRY_ID)
@@ -708,13 +764,13 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
     async def async_step_power(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Battery and solar readings for the power-aware compressor decision.
+        """Battery, solar and grid readings for the power budget.
 
-        All five optional, and nothing engages unless every one of them is
-        set: `no_grid_import` is observed but not acted on until then, exactly
-        as before this existed. This integration never writes to the battery
-        — see Architecture — it only reads what it needs to decide whether it
-        may keep running.
+        The first five are optional and nothing engages unless every one of
+        them is set. The grid sensor (0.8.10, finding 11) joins them in
+        spirit but is asked for here as its own field, since choosing it is
+        what triggers the sign-convention step next — a step that cannot
+        run without knowing which entity to read.
         """
         if user_input is None:
             suggested = {
@@ -722,9 +778,11 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                 for key in (
                     CONF_BATTERY_SOC_ENTITY,
                     CONF_BATTERY_CAPACITY_KWH,
+                    CONF_BATTERY_MAX_DISCHARGE_KW,
                     CONF_SOLAR_POWER_ENTITY,
                     CONF_HOUSE_LOAD_ENTITY,
                     CONF_RESERVE_MARGIN_KWH,
+                    CONF_GRID_ENTITY,
                 )
                 if (
                     value := self.config_entry.options.get(
@@ -740,6 +798,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                         )
                     ),
                     vol.Optional(CONF_BATTERY_CAPACITY_KWH): _kwh_selector(),
+                    vol.Optional(CONF_BATTERY_MAX_DISCHARGE_KW): _kw_selector(),
                     vol.Optional(CONF_SOLAR_POWER_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             domain="sensor", device_class="power"
@@ -751,6 +810,11 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                         )
                     ),
                     vol.Optional(CONF_RESERVE_MARGIN_KWH): _kwh_selector(),
+                    vol.Optional(CONF_GRID_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="power"
+                        )
+                    ),
                 }
             )
             return self.async_show_form(
@@ -765,18 +829,105 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                         self._solar_entity_id(),
                         self._house_load_entity_id(),
                         self._reserve_margin_kwh(),
+                        self._grid_entity_id(),
+                        self._battery_max_discharge_kw(),
                     )
                 },
             )
 
-        options = dict(self.config_entry.options)
-        options[CONF_BATTERY_SOC_ENTITY] = user_input.get(CONF_BATTERY_SOC_ENTITY)
-        options[CONF_BATTERY_CAPACITY_KWH] = user_input.get(
-            CONF_BATTERY_CAPACITY_KWH
+        self._pending_power_options = {
+            CONF_BATTERY_SOC_ENTITY: user_input.get(CONF_BATTERY_SOC_ENTITY),
+            CONF_BATTERY_CAPACITY_KWH: user_input.get(CONF_BATTERY_CAPACITY_KWH),
+            CONF_BATTERY_MAX_DISCHARGE_KW: user_input.get(
+                CONF_BATTERY_MAX_DISCHARGE_KW
+            ),
+            CONF_SOLAR_POWER_ENTITY: user_input.get(CONF_SOLAR_POWER_ENTITY),
+            CONF_HOUSE_LOAD_ENTITY: user_input.get(CONF_HOUSE_LOAD_ENTITY),
+            CONF_RESERVE_MARGIN_KWH: user_input.get(CONF_RESERVE_MARGIN_KWH),
+            CONF_GRID_ENTITY: user_input.get(CONF_GRID_ENTITY),
+        }
+        new_grid_entity = user_input.get(CONF_GRID_ENTITY)
+        if new_grid_entity is not None and new_grid_entity != self._grid_entity_id():
+            # A new or changed grid entity means any stored sign convention
+            # no longer has anything to say about it. Resolved fresh, from
+            # live evidence, never carried over.
+            return await self.async_step_power_grid_sign()
+        if new_grid_entity is None:
+            self._pending_power_options[CONF_GRID_SIGN] = None
+        else:
+            self._pending_power_options[CONF_GRID_SIGN] = self._grid_sign()
+        return self._save_power_options()
+
+    async def async_step_power_grid_sign(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Which direction a positive grid reading means.
+
+        0.8.10, finding 11. Settled here, from live evidence, and stored —
+        never inferred at runtime and never auto-corrected afterward. Getting
+        it wrong moves the derived battery figure by twice the grid flow, and
+        can report a breach that never happened, so this is worth a step
+        rather than a guess carried silently.
+        """
+        grid_entity_id = self._pending_power_options.get(CONF_GRID_ENTITY)
+        house_load_w = _reading_w(self.hass, self._pending_power_options.get(
+            CONF_HOUSE_LOAD_ENTITY
+        ))
+        solar_w = _reading_w(self.hass, self._pending_power_options.get(
+            CONF_SOLAR_POWER_ENTITY
+        ))
+        grid_w = _reading_w(self.hass, grid_entity_id)
+
+        if user_input is not None:
+            self._pending_power_options[CONF_GRID_SIGN] = user_input[CONF_GRID_SIGN]
+            return self._save_power_options()
+
+        guess = None
+        if grid_w is not None and house_load_w is not None and solar_w is not None:
+            guess = implied_sign(house_load_w, solar_w, grid_w)
+
+        options_list = [GRID_SIGN_EXPORTING, GRID_SIGN_IMPORTING]
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_GRID_SIGN,
+                    **({"default": guess} if guess else {}),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options_list,
+                        translation_key=CONF_GRID_SIGN,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
         )
-        options[CONF_SOLAR_POWER_ENTITY] = user_input.get(CONF_SOLAR_POWER_ENTITY)
-        options[CONF_HOUSE_LOAD_ENTITY] = user_input.get(CONF_HOUSE_LOAD_ENTITY)
-        options[CONF_RESERVE_MARGIN_KWH] = user_input.get(CONF_RESERVE_MARGIN_KWH)
+        return self.async_show_form(
+            step_id="power_grid_sign",
+            data_schema=schema,
+            description_placeholders={
+                "grid_entity_id": grid_entity_id or "",
+                "grid_reading": "unknown" if grid_w is None else f"{grid_w:.0f} W",
+                "house_load": (
+                    "unknown" if house_load_w is None else f"{house_load_w:.0f} W"
+                ),
+                "solar": "unknown" if solar_w is None else f"{solar_w:.0f} W",
+                "evidence": (
+                    "Ambiguous on this evidence — solar could be covering the "
+                    "load, the battery could be carrying it, or the grid "
+                    "could genuinely be near zero."
+                    if guess is None
+                    else (
+                        f"The house must be drawing from somewhere, and your "
+                        f"grid sensor reads "
+                        f"{'positive' if grid_w and grid_w > 0 else 'negative'}."
+                    )
+                ),
+            },
+        )
+
+    def _save_power_options(self) -> ConfigFlowResult:
+        options = dict(self.config_entry.options)
+        options.update(self._pending_power_options)
         options.setdefault(CONF_ROOMS, self._rooms)
         return self.async_create_entry(title="", data=options)
 
@@ -854,12 +1005,17 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         reason = self._existing().get(CONF_LOCKOUT_REASON)
         return {CONF_LOCKOUT_REASON: reason} if reason else {}
 
-    def _suggested_bands(self) -> dict[str, float]:
+    def _suggested_bands(self) -> dict[str, Any]:
         """A room being edited shows its own bands; a new one shows defaults."""
-        existing = self._existing().get(CONF_BANDS, {})
-        if existing:
-            return bands_as_suggestions(existing)
-        return default_band_suggestions()
+        existing = self._existing()
+        bands = existing.get(CONF_BANDS, {})
+        suggested: dict[str, Any] = (
+            bands_as_suggestions(bands) if bands else default_band_suggestions()
+        )
+        suggested[CONF_ALLOW_COMFORT_REDUCTION] = existing.get(
+            CONF_ALLOW_COMFORT_REDUCTION, False
+        )
+        return suggested
 
     def _save_room(self) -> ConfigFlowResult:
         """Add or replace the room in the entry options."""

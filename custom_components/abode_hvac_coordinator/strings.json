@@ -33,14 +33,15 @@
       },
       "bands": {
         "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nOff by default. On, if the power budget cannot fully hold this room during a no-import window, it keeps the room as comfortable as the remaining energy allows rather than running at full output — it never stops the room either way.",
         "data": {
           "occupied_low": "Occupied — lower bound",
           "occupied_high": "Occupied — upper bound",
           "sleep_low": "Sleep — lower bound (optional)",
           "sleep_high": "Sleep — upper bound (optional)",
           "precool_low": "Precool — lower bound (optional)",
-          "precool_high": "Precool — upper bound (optional)"
+          "precool_high": "Precool — upper bound (optional)",
+          "allow_comfort_reduction": "Allow power management to reduce comfort in this room"
         }
       },
       "room_outdoor": {
@@ -90,14 +91,15 @@
       },
       "bands": {
         "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nOff by default. On, if the power budget cannot fully hold this room during a no-import window, it keeps the room as comfortable as the remaining energy allows rather than running at full output — it never stops the room either way.",
         "data": {
           "occupied_low": "Occupied — lower bound",
           "occupied_high": "Occupied — upper bound",
           "sleep_low": "Sleep — lower bound (optional)",
           "sleep_high": "Sleep — upper bound (optional)",
           "precool_low": "Precool — lower bound (optional)",
-          "precool_high": "Precool — upper bound (optional)"
+          "precool_high": "Precool — upper bound (optional)",
+          "allow_comfort_reduction": "Allow power management to reduce comfort in this room"
         }
       },
       "init": {
@@ -166,18 +168,27 @@
       },
       "power": {
         "title": "Power-aware operation",
-        "description": "Optional, and inactive until every field below is set. This integration never writes to your battery — see Architecture — it only reads these to decide whether the compressor may keep running when the tariff currently forbids grid import.\n\n{power}",
+        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's occupant has permitted comfort reduction (set per room, on the room's comfort bands step). It never stops the compressor for this.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\n{power}",
         "data": {
           "battery_soc_entity_id": "Battery charge sensor (percentage)",
           "battery_capacity_kwh": "Battery usable capacity (kWh)",
+          "battery_max_discharge_kw": "Battery maximum discharge power (kW)",
           "solar_power_entity_id": "Solar output sensor",
           "house_load_entity_id": "House load sensor (total current draw)",
-          "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)"
+          "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)",
+          "grid_power_entity_id": "Grid power sensor (signed, watts)"
         }
       },
       "room_outdoor": {
         "title": "Outdoor units",
         "description": "Only answer this where two air conditioners share the compressor outside. If each has its own, leave them as they are.\n\nTwo air conditioners in one room is not this — select both in the room's air conditioner field instead. This is for air conditioners whose heads run off the same outdoor unit, whether they are in one room or two.\n\nType a name to create a new outdoor unit. Names already in use appear in the list."
+      },
+      "power_grid_sign": {
+        "title": "Which way does the grid sensor read?",
+        "description": "{grid_entity_id}\n  reading now          {grid_reading}\n  house load           {house_load}\n  solar                {solar}\n\n{evidence}\n\nSettled once, here, from what the component can currently see. Never inferred at runtime and never changed automatically afterward — if live readings later disagree persistently, a repair issue names it rather than the component correcting itself.",
+        "data": {
+          "grid_sign": "Which direction does a positive number mean?"
+        }
       }
     },
     "error": {
@@ -289,7 +300,7 @@
     },
     "room_missing_comfort_inputs": {
       "title": "Rooms missing a temperature or humidity sensor",
-      "description": "{rooms}\n\nBoth a temperature and a humidity sensor are required from 0.8.9 on. These rooms were configured before that, or have had a sensor removed since. Without both, comfort cannot be evaluated for the affected input and the room falls back to holding rather than actuating on it. Add the missing sensor from Configure \u2192 Rooms."
+      "description": "{rooms}\n\nBoth a temperature and a humidity sensor are required from 0.8.9 on. These rooms were configured before that, or have had a sensor removed since. Without both, comfort cannot be evaluated for the affected input and the room falls back to holding rather than actuating on it. Add the missing sensor from Configure → Rooms."
     },
     "tariff_unavailable": {
       "title": "The tariff could not be read",
@@ -302,6 +313,18 @@
     "shared_climate_entity": {
       "title": "Two rooms are configured against the same air conditioner",
       "description": "{conflicts}\n\nOne climate entity cannot be driven by more than one room. Each room solves its own setpoint and would command that entity every cycle, so the two would overwrite one another with no error reported anywhere.\n\nThe affected rooms are locked out and will not actuate until this is resolved. Give each room its own climate entity, or remove all but one of them, from Configure → Rooms.\n\nA ducted system genuinely does serve several rooms from one indoor unit. This controller cannot drive one yet: it solves a dry-bulb target per room, and a ducted system has a single setpoint with a damper per zone."
+    },
+    "no_grid_import_without_grid_sensor": {
+      "title": "A no-import window is active with no grid sensor configured",
+      "description": "The current tariff plan declares `no_grid_import`, and no grid power sensor is configured. This component can neither honour nor verify that rule without one — comfort is unaffected, but the power budget is running on the energy figure alone and no breach can be measured. Add a grid power sensor from Configure → Power-aware operation."
+    },
+    "grid_sign_contradicted": {
+      "title": "The grid sensor's sign no longer matches what was configured",
+      "description": "Live readings have repeatedly disagreed with the stored sign convention — a firmware update, a swapped entity, or an edited template sensor are the usual causes. Nothing has been changed automatically: revisit Configure → Power-aware operation and re-confirm which direction a positive reading means."
+    },
+    "power_shortfall": {
+      "title": "A no-import window imported {kwh} kWh from the grid",
+      "description": "The window closed having measured {kwh} kWh of grid import against it. With comfort reduction off for the affected room, this is the constraint being breached outright — comfort was held and the house imported anyway. With it on, this is the cost of holding comfort as closely as the battery allowed. Either way, the figure is measured, not projected: worth checking the reserve margin, the battery size, or the tariff rule against it."
     }
   },
   "selector": {
@@ -315,6 +338,12 @@
         "south_west": "South-west",
         "west": "West",
         "north_west": "North-west"
+      }
+    },
+    "grid_sign": {
+      "options": {
+        "importing": "Positive means importing",
+        "exporting": "Positive means exporting"
       }
     }
   }

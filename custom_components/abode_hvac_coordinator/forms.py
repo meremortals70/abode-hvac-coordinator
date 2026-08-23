@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .const import (
+    CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
@@ -90,6 +91,9 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_ANNOUNCE: bool(user_input.get(CONF_ANNOUNCE, False)),
         CONF_ANNOUNCE_TARGETS: user_input.get(CONF_ANNOUNCE_TARGETS, []),
         CONF_LOCKOUT_REASON: _lockout_reason(user_input.get(CONF_LOCKOUT_REASON)),
+        CONF_ALLOW_COMFORT_REDUCTION: bool(
+            user_input.get(CONF_ALLOW_COMFORT_REDUCTION, False)
+        ),
     }
 
 
@@ -351,13 +355,24 @@ def describe_power(
     solar_entity_id: str | None,
     house_load_entity_id: str | None,
     reserve_margin_kwh: str | None,
+    grid_entity_id: str | None = None,
+    battery_max_discharge_kw: str | None = None,
 ) -> str:
     """The power-aware settings, as readable lines.
 
-    All five are required together before any of this engages. Showing which
-    are missing is more useful than a single on/off line, because a partial
-    setup is the state most installs will pass through on the way to a
-    complete one.
+    The first five are required together before any of this engages. Showing
+    which are missing is more useful than a single on/off line, because a
+    partial setup is the state most installs will pass through on the way to
+    a complete one.
+
+    The grid sensor (0.8.10, finding 11) is not part of that group — the
+    budget still runs on the energy figure alone without it, just without a
+    measured breach figure afterward.
+
+    The maximum discharge power is a nameplate spec, entered rather than
+    learned — see `CONF_BATTERY_MAX_DISCHARGE_KW`. Optional: without it the
+    budget is bounded only by the energy figure, not by what the inverter
+    can physically deliver.
     """
     fields = {
         "Battery charge sensor": battery_soc_entity_id,
@@ -371,12 +386,28 @@ def describe_power(
         ),
     }
     lines = [f"  {label}: {value or 'Nothing selected'}" for label, value in fields.items()]
+    lines.append(
+        "  Battery max discharge power: "
+        + (f"{battery_max_discharge_kw} kW" if battery_max_discharge_kw else "Not set")
+    )
+    lines.append(f"  Grid power sensor: {grid_entity_id or 'Nothing selected'}")
     if all(fields.values()):
         lines.append(
-            "  Active: the compressor will hold rather than run from the "
-            "grid when the tariff forbids it and neither solar nor the "
-            "battery can cover it."
+            "  Active: while the tariff forbids grid import, a room whose "
+            "occupant has permitted comfort reduction is throttled to what "
+            "the battery affords rather than stopped. It is never turned "
+            "off for this."
         )
+        if not battery_max_discharge_kw:
+            lines.append(
+                "  Without the maximum discharge power, the throttle is "
+                "bounded only by stored energy, not by what the battery can "
+                "physically deliver."
+            )
+        if not grid_entity_id:
+            lines.append(
+                "  Without the grid sensor, no breach is measured afterward."
+            )
     else:
         lines.append(
             "  Inactive — every field above must be set. Until then "

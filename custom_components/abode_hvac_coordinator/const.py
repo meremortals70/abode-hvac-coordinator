@@ -81,6 +81,30 @@ CONF_HOUSE_LOAD_ENTITY: Final = "house_load_entity_id"
 #: installer enters — not derived, not defaulted from the capacity.
 CONF_RESERVE_MARGIN_KWH: Final = "reserve_margin_kwh"
 
+#: The battery's rated maximum discharge power, in kW. A nameplate figure —
+#: 5 kW for a Powerwall 2, for example — entered once because it is a
+#: specification, not something that varies or needs learning. Bounds the
+#: power budget's allowance so a room is never told it can afford an output
+#: the inverter cannot physically deliver.
+CONF_BATTERY_MAX_DISCHARGE_KW: Final = "battery_max_discharge_kw"
+
+#: 0.8.10, finding 11. One signed power entity in watts. Optional like the
+#: other five, and joins them: whoever configures power management is
+#: configuring a rule about grid flow, and without a grid reading the
+#: component is inferring the thing it is named after.
+CONF_GRID_ENTITY: Final = "grid_power_entity_id"
+#: Which direction a positive reading means. Settled at setup from live
+#: evidence and stored — never inferred at runtime, never auto-corrected.
+#: One of `power.GRID_SIGN_IMPORTING` / `power.GRID_SIGN_EXPORTING`.
+CONF_GRID_SIGN: Final = "grid_sign"
+
+#: Per room. 0.8.10, finding 15. Off by default: the power budget's setpoint
+#: ceiling (finding 10) never applies once the room actually needs
+#: correction — comfort decides there, not cost. On, the ceiling keeps
+#: applying above the band too, and the room runs at the largest output the
+#: remaining energy allows rather than being abandoned.
+CONF_ALLOW_COMFORT_REDUCTION: Final = "allow_comfort_reduction"
+
 # --- tariff, read from Abode Power Tariffs ------------------------------
 
 #: The domain that owns the plan. This integration reads from it and never
@@ -208,3 +232,17 @@ ISSUE_SHARED_CLIMATE_ENTITY: Final = "shared_climate_entity"
 #: same as present at runtime, so an existing room missing one is reported
 #: rather than taken down.
 ISSUE_MISSING_COMFORT_INPUTS: Final = "room_missing_comfort_inputs"
+#: The interval series carries `no_grid_import` and no grid entity is
+#: configured — a plan asserting a rule the house can neither honour nor
+#: verify. 0.8.10, finding 11.
+ISSUE_GRID_REQUIRED: Final = "no_grid_import_without_grid_sensor"
+#: Live readings have repeatedly contradicted the stored sign convention.
+#: Named rather than auto-corrected: the component disagrees with a recorded
+#: answer, it does not silently overrule one.
+ISSUE_GRID_SIGN_CONTRADICTED: Final = "grid_sign_contradicted"
+#: A `no_grid_import` window closed having measured real grid import against
+#: it. The number itself says whether it is the checkbox doing its job
+#: (comfort was held at a cost) or the constraint being breached outright
+#: (comfort was never traded and the house imported anyway). 0.8.10,
+#: findings 15 and 16.
+ISSUE_POWER_SHORTFALL: Final = "power_shortfall"

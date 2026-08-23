@@ -19,8 +19,12 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.abode_hvac_coordinator.const import (
+    CONF_ALLOW_COMFORT_REDUCTION,
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_DISCHARGE_KW,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_GRID_ENTITY,
+    CONF_GRID_SIGN,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
@@ -28,14 +32,19 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_ROOMS,
     CONF_SOLAR_POWER_ENTITY,
     DOMAIN,
+    ISSUE_GRID_REQUIRED,
+    ISSUE_GRID_SIGN_CONTRADICTED,
     ISSUE_MISSING_COMFORT_INPUTS,
+    ISSUE_POWER_SHORTFALL,
     ISSUE_SHARED_CLIMATE_ENTITY,
     SERVICE_HEADING_HOME,
 )
+from custom_components.abode_hvac_coordinator.coordinator import _PowerContext
 from custom_components.abode_hvac_coordinator.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.abode_hvac_coordinator.forecast import ASSUMED_UNIT_KW
+from custom_components.abode_hvac_coordinator.power import GRID_SIGN_IMPORTING
 from custom_components.abode_hvac_coordinator.tariff import TariffSeries
 from custom_components.abode_hvac_coordinator.thermal import Coefficient
 
@@ -237,14 +246,17 @@ async def test_an_unconverged_model_keeps_its_comfort(
     )
 
 
-async def test_a_projected_shortfall_still_holds_the_compressor(
+async def test_a_projected_shortfall_no_longer_stops_the_compressor(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """0.8.6. A computed shortfall is still a refusal.
+    """0.8.10. The boolean veto is retired; comfort decides above the band.
 
-    Failing open applies to what the controller cannot answer, not to what it
-    can. With a converged model and a solved target, 20% of 10 kWh against an
-    8 kWh reserve margin leaves nothing to spend and the room is refused.
+    Before 0.8.10 this exact setup — a converged model, a solved target, and
+    20% of 10 kWh against an 8 kWh reserve margin — refused the compressor
+    outright. `_power_available` is gone: a room that actually needs
+    correction runs at whatever it needs, and comfort reduction is off by
+    default, so no ceiling applies either. The shortfall is reported
+    afterward from measured grid import (finding 16), not enforced here.
     """
     await _setup_with_power(
         hass,
@@ -260,8 +272,6 @@ async def test_a_projected_shortfall_still_holds_the_compressor(
     coordinator = mock_config_entry.runtime_data
     coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
 
-    # Converge the room's model and give it a solved target, so the projection
-    # is available and the arithmetic — not an unknown — decides.
     model = coordinator.model_for("test_room")
     model.k_sensible = Coefficient(value=2.0, variance=0.01, samples=40)
     model.k_loss = Coefficient(value=0.15, variance=0.01, samples=40)
@@ -272,11 +282,87 @@ async def test_a_projected_shortfall_still_holds_the_compressor(
 
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
-    assert state.attributes["actuator"] == "off"
-    assert any(
+    assert state.attributes["actuator"] == "compressor"
+    assert not any(
         "no grid import permitted" in reason
         for reason in state.attributes["rejected"]
     )
+    assert state.attributes["power_ceiling_c"] is None
+
+
+async def test_comfort_reduction_throttles_a_room_that_needs_correction(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.10, finding 15. With the checkbox on, the same shortfall throttles
+    rather than either stopping the room or ignoring the budget entirely.
+    """
+    rooms = list(mock_config_entry.options[CONF_ROOMS])
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: True}
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}
+    )
+    await _setup_with_power(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+        sensor__battery_soc="20.0",
+        sensor__solar_power="0",
+        sensor__house_load="500",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+
+    model = coordinator.model_for("test_room")
+    model.k_sensible = Coefficient(value=2.0, variance=0.01, samples=40)
+    model.k_loss = Coefficient(value=0.15, variance=0.01, samples=40)
+    model.k_solar = Coefficient(value=1.0, variance=0.01, samples=40)
+    coordinator._last_target["test_room"] = 24.0
+
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    # Never stopped — the compressor is still commanded, just capped.
+    assert state.attributes["actuator"] == "compressor"
+    assert state.attributes["comfort_reduction_active"] is True
+    assert state.attributes["power_ceiling_c"] is not None
+
+
+async def test_the_checkbox_off_means_power_management_never_touches_the_room(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Corrected after being built wrong: the ceiling must not apply to a
+    room merely sitting inside its band when the checkbox is off. Off means
+    comfort wins unconditionally — power management does not touch this
+    room at all, not even a "harmless" gentle throttle while it's already
+    comfortable.
+    """
+    await _setup_with_power(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="25.0",
+        sensor__test_humidity="50.0",
+        binary_sensor__test_presence="on",
+        sensor__battery_soc="20.0",
+        sensor__solar_power="0",
+        sensor__house_load="500",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+    # A very tight budget: if the ceiling applied at all here, it would bind.
+    coordinator.reserve_margin_kwh = 9.9
+
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["power_ceiling_c"] is None
+    assert state.attributes["power_budget_kw"] is None
 
 
 async def test_two_rooms_on_one_climate_entity_are_locked_out(
@@ -371,6 +457,265 @@ async def test_a_fully_configured_room_raises_no_missing_comfort_issue(
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_MISSING_COMFORT_INPUTS) is None
+
+
+async def test_no_grid_import_without_a_grid_sensor_raises_an_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.10, finding 11. The plan asserts a rule about grid flow; without a
+    grid sensor this component can neither honour nor verify it — and this
+    fires whether or not the other five power fields are configured at all.
+    """
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+    coordinator._async_check_configuration()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_REQUIRED) is not None
+
+
+async def test_a_configured_grid_sensor_raises_no_such_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+    coordinator._async_check_configuration()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_REQUIRED) is None
+
+
+async def test_no_constraints_at_all_raises_no_grid_required_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Whatever is or is not configured, an ordinary window raises nothing."""
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_REQUIRED) is None
+
+
+async def test_measured_import_across_a_window_raises_the_shortfall_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.10, findings 15/16. The warning is built from measured grid
+    import integrated across the `no_grid_import` window, not a projection —
+    and it fires regardless of the comfort-reduction checkbox.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    now = dt_util.utcnow()
+    coordinator.tariff = _no_grid_import_series(now)
+
+    importing_context = _PowerContext(engaged=True, grid_import_w=2000.0)
+    # 2 kW for 30 s, six times: 6 * 2000 * (30/3600) / 1000 = 0.1 kWh.
+    for _ in range(6):
+        coordinator._track_grid(now, importing_context)
+
+    # The window clears: the next reading carries no constraint.
+    coordinator.tariff = TariffSeries.from_response(
+        {
+            "intervals": [
+                {
+                    "start_time": (now + timedelta(hours=1)).isoformat(),
+                    "end_time": (now + timedelta(hours=2)).isoformat(),
+                    "rate": "off_peak",
+                    "per_kwh": 0.20,
+                    "export_per_kwh": 0.05,
+                    "constraints": [],
+                },
+            ]
+        },
+        now + timedelta(hours=1),
+    )
+    coordinator._track_grid(
+        now + timedelta(hours=1), _PowerContext(engaged=True, grid_import_w=0.0)
+    )
+
+    issues = ir.async_get(hass)
+    issue = issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL)
+    assert issue is not None
+    assert issue.translation_placeholders["kwh"] == "0.10"
+
+
+async def test_import_outside_a_no_grid_import_window_is_not_counted(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    now = dt_util.utcnow()
+    coordinator.tariff = TariffSeries.from_response(
+        {
+            "intervals": [
+                {
+                    "start_time": (now - timedelta(hours=1)).isoformat(),
+                    "end_time": (now + timedelta(hours=6)).isoformat(),
+                    "rate": "off_peak",
+                    "per_kwh": 0.20,
+                    "export_per_kwh": 0.05,
+                    "constraints": [],
+                },
+            ]
+        },
+        now,
+    )
+    for _ in range(6):
+        coordinator._track_grid(
+            now, _PowerContext(engaged=True, grid_import_w=5000.0)
+        )
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL) is None
+
+
+async def test_persistent_sign_disagreement_raises_a_repair_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.10, finding 11. A contradiction check, not the mechanism: this
+    never corrects the stored convention, only names a persistent
+    disagreement.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    # House load 3120, solar 180: a decisive 2940 W lower bound. Stored
+    # convention says positive = importing; a positive grid_import_w that
+    # is actually the result of a negative raw reading under "importing"
+    # would agree. Feed a reading that contradicts it: the raw sign, under
+    # the stored "importing" convention, implies the opposite of what the
+    # evidence supports.
+    contradicting = _PowerContext(
+        engaged=True, house_load_w=3120.0, solar_w=180.0, grid_import_w=-2840.0
+    )
+    for _ in range(15):
+        coordinator._track_grid(dt_util.utcnow(), contradicting)
+    coordinator._async_check_configuration()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED) is not None
+
+
+async def test_agreeing_evidence_raises_no_sign_contradiction_issue(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    agreeing = _PowerContext(
+        engaged=True, house_load_w=3120.0, solar_w=180.0, grid_import_w=2840.0
+    )
+    for _ in range(15):
+        coordinator._track_grid(dt_util.utcnow(), agreeing)
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED) is None
+
+
+async def test_diagnostics_report_house_level_power_figures(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.10. Grid/battery figures and the learned discharge ceiling sit at
+    the top level; per-room budget and ceiling ride on each room's trace.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+    assert diagnostics["power"]["grid_entity_id"] == "sensor.grid_power"
+    assert diagnostics["power"]["grid_sign"] == GRID_SIGN_IMPORTING
+    assert diagnostics["power"]["battery_max_discharge_kw"] is None
+    room_trace = diagnostics["traces"]["test_room"]
+    assert "power_ceiling_c" in room_trace
+    assert "comfort_reduction_active" in room_trace
+
+
+async def test_diagnostics_report_the_configured_max_discharge(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The maximum discharge power is entered, not learned — diagnostics
+    should show exactly the configured figure, with no convergence state."""
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_BATTERY_MAX_DISCHARGE_KW: 5.0,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+    assert diagnostics["power"]["battery_max_discharge_kw"] == 5.0
 
 
 async def test_solar_headroom_uses_the_pulldown_bin_draw_for_an_off_unit(

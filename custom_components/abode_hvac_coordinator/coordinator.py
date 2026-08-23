@@ -49,6 +49,7 @@ from homeassistant.util.unit_conversion import SpeedConverter
 from .actuator import Actuator, mean_cover_position, supported_hvac_modes
 from .const import (
     COAST_HORIZON_HOURS,
+    CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
@@ -56,12 +57,15 @@ from .const import (
     CONF_BAND_LOW,
     CONF_BANDS,
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_DISCHARGE_KW,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CLIMATE_ENTITIES,
     CONF_CLIMATE_ENTITY,
     CONF_COVER_ENTITIES,
     CONF_DIRECT_SUN_ENTITY,
     CONF_FAN_ENTITY,
+    CONF_GRID_ENTITY,
+    CONF_GRID_SIGN,
     CONF_HEAD_GROUPS,
     CONF_HEAT_LOAD_ENTITY,
     CONF_HOUSE_LOAD_ENTITY,
@@ -89,8 +93,11 @@ from .const import (
     DOMAIN,
     EVALUATION_INTERVAL,
     ISSUE_FORECAST_UNAVAILABLE,
+    ISSUE_GRID_REQUIRED,
+    ISSUE_GRID_SIGN_CONTRADICTED,
     ISSUE_MISSING_COMFORT_INPUTS,
     ISSUE_NO_BANDS,
+    ISSUE_POWER_SHORTFALL,
     ISSUE_SHARED_CLIMATE_ENTITY,
     ISSUE_TARIFF_UNAVAILABLE,
     ISSUE_UNRECOGNISED_CONSTRAINT,
@@ -118,6 +125,15 @@ from .grace import Announcement, GraceSettings, GraceState, evaluate_grace
 from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index
 from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
 from .modes import evaluate_room
+from .power import (
+    AMBIGUOUS_BELOW_W,
+    GRID_SIGN_IMPORTING,
+    allowable_draw_kw,
+    ceiling_bin,
+    derive_battery_w,
+    implied_sign,
+    normalise_grid_import_w,
+)
 from .psychro import dew_point_c
 from .regulate import (
     CompressorState,
@@ -146,14 +162,18 @@ from .tariff import (
     TariffSeries,
 )
 from .thermal import (
-    MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
-)
-from .thermal import (
+    APPROACH_AT_SETPOINT_C,
+    APPROACH_CLOSE_C,
+    APPROACH_WORKING_C,
+    BIN_NAMES,
     MIN_DRAW_QUALITY,
     DrawModel,
     Observation,
     ThermalModel,
     approach_bin,
+)
+from .thermal import (
+    MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
 )
 from .thermal import (
     MIN_INTERVAL_HOURS as MIN_LEARNING_INTERVAL_HOURS,
@@ -195,6 +215,12 @@ DRAW_NOISE_REFERENCE_W = 150.0
 #: how many landed, rather than confidence climbing forever with more.
 DRAW_TARGET_SAMPLES = 6
 
+#: 0.8.10, finding 11. Consecutive evaluations the live grid reading may
+#: disagree with the stored sign convention before it is named as a repair
+#: issue. A single odd reading — a momentary spike, a noisy sensor — is not
+#: a contradiction; a run of them across several minutes is.
+_GRID_SIGN_DISAGREEMENT_THRESHOLD = 10
+
 
 @dataclass(slots=True)
 class _DrawCandidate:
@@ -226,6 +252,14 @@ class _PowerContext:
     solar_w: float | None = None
     house_load_w: float | None = None
     reserve_margin_kwh: float | None = None
+    #: 0.8.10, finding 11. None whenever no grid entity is configured, or the
+    #: reading is missing or stale — every consumer treats that exactly like
+    #: an unconfigured feature: the budget falls back to the energy figure
+    #: alone, and no breach is measured.
+    grid_import_w: float | None = None
+    #: Derived, not read: `house_load - solar - grid_import`. Positive means
+    #: the battery is discharging.
+    battery_w: float | None = None
 
 
 def _optional_float(value: object) -> float | None:
@@ -323,6 +357,34 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 config_entry.data.get(CONF_RESERVE_MARGIN_KWH),
             )
         )
+        #: The battery's rated maximum discharge power, in kW. Entered at
+        #: setup, not learned — it's a nameplate spec (5 kW for a Powerwall
+        #: 2), not a quantity that varies or needs tracking over time.
+        self.battery_max_discharge_kw: float | None = _optional_float(
+            config_entry.options.get(
+                CONF_BATTERY_MAX_DISCHARGE_KW,
+                config_entry.data.get(CONF_BATTERY_MAX_DISCHARGE_KW),
+            )
+        )
+        #: 0.8.10, finding 11. Optional, and joins the five above. Without
+        #: it the budget still runs on the energy figure alone — see
+        #: `allowable_draw_kw` — it just cannot measure a breach afterward.
+        self.grid_entity_id: str | None = config_entry.options.get(
+            CONF_GRID_ENTITY, config_entry.data.get(CONF_GRID_ENTITY)
+        )
+        self.grid_sign: str | None = config_entry.options.get(
+            CONF_GRID_SIGN, config_entry.data.get(CONF_GRID_SIGN)
+        )
+        #: How many consecutive evaluations the live grid reading has
+        #: disagreed with the stored sign convention, and the repair issue
+        #: this raises once persistent enough. Reset the moment the evidence
+        #: agrees again — a single odd reading is not a contradiction.
+        self._grid_sign_disagreements = 0
+        #: The `no_grid_import` window currently being measured, its start
+        #: time as the key, and the kWh of import integrated into it so far.
+        self._breach_window_start: datetime | None = None
+        self._breach_kwh = 0.0
+        self._last_breach_reported_kwh: float | None = None
         #: Why each room is or is not precooling, for the trace.
         self._demand_reason: dict[str, str] = {}
         #: Learned thermal behaviour, one per room, restored from the store.
@@ -740,6 +802,40 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, ISSUE_MISSING_COMFORT_INPUTS)
 
+        # 0.8.10, finding 11. `no_grid_import` can arrive from Abode Power
+        # Tariffs whether or not this integration has power management
+        # configured at all — the plan is asserting a rule about grid flow,
+        # and without a grid sensor this component can neither honour nor
+        # verify it.
+        interval = self._interval_at(dt_util.utcnow()) if self.tariff else None
+        if (
+            interval is not None
+            and CONSTRAINT_NO_GRID_IMPORT in interval.constraints
+            and self.grid_entity_id is None
+        ):
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_GRID_REQUIRED,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_GRID_REQUIRED,
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_GRID_REQUIRED)
+
+        if self._grid_sign_disagreements >= _GRID_SIGN_DISAGREEMENT_THRESHOLD:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_GRID_SIGN_CONTRADICTED,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_GRID_SIGN_CONTRADICTED,
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED)
+
     def _rooms_missing_comfort_inputs(self) -> dict[str, list[str]]:
         """Rooms with no temperature sensor, no humidity sensor, or neither."""
         missing: dict[str, list[str]] = {}
@@ -819,8 +915,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._stale.clear()
         self._record_house_load_sample(now)
         self._power_context = self._compute_power_context(now)
+        self._track_grid(now, self._power_context)
         for room in self.rooms.values():
             inputs = self._inputs_for(room, now)
+            capabilities = self._capabilities(room)
             self._learn(room, inputs, now)
             trace = evaluate_room(room, inputs)
             trace.model = self.model_for(room.room_id).diagnostics()
@@ -836,6 +934,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 elif "precool" in reason:
                     trace.rejected.append(reason)
             trace.stale_feeds = self._stale.get(room.room_id, [])
+            self._power_ceiling(room, inputs, trace, now, capabilities)
             # Guard first. The regulator's anti-windup gate has to see the
             # step that will actually be carried out, not the one that was
             # wanted before the short-cycle guard had its say.
@@ -875,6 +974,46 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         than the one the comfort index solved for.
         """
         state = self._regulators.setdefault(room.room_id, RegulatorState())
+
+        # 0.8.10. Whether the power ceiling is actually binding this cycle —
+        # would the uncapped commanded setpoint go further than the ceiling
+        # allows. Computed before `integrate` runs so anti-windup can see it:
+        # winding the trim further against a bound the ceiling is enforcing
+        # is the same fault finding 7 fixed for the short-cycle guard, in a
+        # second place.
+        # Direction comes from the target against the room reading, not from
+        # `trace.demand` — the ceiling's primary case is a room *inside* its
+        # band (demand is None there), where the solved target still exists
+        # and still says which way the compressor is being asked to work.
+        direction: str | None = None
+        if trace.target_dry_bulb_c is not None and inputs.temperature_c is not None:
+            gap = trace.target_dry_bulb_c - inputs.temperature_c
+            if gap < -0.01:
+                direction = "cool"
+            elif gap > 0.01:
+                direction = "heat"
+
+        binding = False
+        uncapped = (
+            None
+            if trace.target_dry_bulb_c is None
+            else round(trace.target_dry_bulb_c + state.trim_c, 1)
+        )
+        if (
+            trace.power_ceiling_c is not None
+            and inputs.temperature_c is not None
+            and direction is not None
+            and uncapped is not None
+        ):
+            if direction == "cool":
+                binding = uncapped < round(
+                    inputs.temperature_c - trace.power_ceiling_c, 1
+                )
+            else:
+                binding = uncapped > round(
+                    inputs.temperature_c + trace.power_ceiling_c, 1
+                )
+
         integrate(
             state,
             target_c=trace.target_dry_bulb_c,
@@ -883,17 +1022,42 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # The trim is only meaningful while the unit is working toward the
             # solved target. That is true of a commanded compressor step and
             # equally true of one the guard is holding on; it is not true of a
-            # start the guard has just refused, which is what integrating on
-            # the pre-guard decision used to wind against.
+            # start the guard has just refused, or of a cycle the power
+            # ceiling is actively capping, both of which used to wind against
+            # a bound the loop was not free to correct.
             regulating=(
-                trace.actuator is ActuatorStep.COMPRESSOR or trace.hold_compressor
+                (trace.actuator is ActuatorStep.COMPRESSOR or trace.hold_compressor)
+                and not binding
             ),
         )
         trace.reasons.extend(state.notes)
         trace.regulation_trim_c = state.trim_c
-        trace.commanded_dry_bulb_c = commanded_setpoint(
-            state, trace.target_dry_bulb_c
-        )
+        commanded = commanded_setpoint(state, trace.target_dry_bulb_c)
+
+        if (
+            trace.power_ceiling_c is not None
+            and commanded is not None
+            and inputs.temperature_c is not None
+            and direction is not None
+        ):
+            if direction == "cool":
+                floor_c = round(inputs.temperature_c - trace.power_ceiling_c, 1)
+                if commanded < floor_c:
+                    commanded = floor_c
+                    trace.reasons.append(
+                        f"power budget: commanded held at {commanded:.1f} C, "
+                        f"{trace.power_ceiling_c:.1f} C ceiling"
+                    )
+            else:
+                cap_c = round(inputs.temperature_c + trace.power_ceiling_c, 1)
+                if commanded > cap_c:
+                    commanded = cap_c
+                    trace.reasons.append(
+                        f"power budget: commanded held at {commanded:.1f} C, "
+                        f"{trace.power_ceiling_c:.1f} C ceiling"
+                    )
+
+        trace.commanded_dry_bulb_c = commanded
 
     def _guard_cycling(
         self, room: RoomConfig, trace: DecisionTrace, now: datetime
@@ -1239,6 +1403,27 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         an evening.
         """
         return dict(self._regulators)
+
+    def power_state(self) -> dict[str, Any]:
+        """House-level power figures, for diagnostics. 0.8.10.
+
+        Per-room budget, ceiling and bin already ride on each room's trace
+        (`power_ceiling_c`, `power_budget_kw`, `power_bin`,
+        `comfort_reduction_active`); this is the shared, house-wide half.
+        """
+        context = self._power_context
+        return {
+            "grid_entity_id": self.grid_entity_id,
+            "grid_sign": self.grid_sign,
+            "grid_import_w": context.grid_import_w if context else None,
+            "battery_w": context.battery_w if context else None,
+            "battery_max_discharge_kw": self.battery_max_discharge_kw,
+            "grid_sign_disagreements": self._grid_sign_disagreements,
+            "last_breach_reported_kwh": self._last_breach_reported_kwh,
+            "current_breach_window_kwh": (
+                round(self._breach_kwh, 3) if self._breach_window_start else None
+            ),
+        }
 
     def forecast_peak(self) -> float | None:
         """The hottest hour the forecast can see, for the house-wide sensor."""
@@ -1716,7 +1901,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             has_covers=bool(room.cover_entity_ids),
             allow_cover_control=room.allow_cover_control,
             cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
-            power_available=self._power_available(room, now, capabilities),
             **capabilities,
             opening_open=any(
                 self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is True
@@ -1736,13 +1920,36 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             mode_changed_at=self._mode_changed_at.get(room.room_id),
             heading_home=room.room_id in self._heading_home,
             precondition_deadline=self._heading_home.get(room.room_id),
-            k_sensible_c_per_hour=self._learned(room.room_id, "k_sensible"),
+            k_sensible_c_per_hour=self._sensible_rate_for(room, now),
             k_latent_rh_per_hour=self._learned(room.room_id, "k_latent"),
             predicted_to_hold=self._predicted_to_hold(room),
             forecast_demand_ahead=self._demand_ahead(room, now),
             sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
             is True,
         )
+
+    def _sensible_rate_for(self, room: RoomConfig, now: datetime) -> float | None:
+        """The `k_sensible` figure the dry-versus-cool decision should use.
+
+        0.8.10. Closes the gap disclosed at the 0.8.9 handover:
+        `hours_to_reach` and `energy_for` both went bin-aware in 0.8.9, but
+        this call site kept reading the pooled coefficient regardless of how
+        close the room actually is to its target.
+
+        Approach here is last cycle's commanded setpoint against the current
+        reading — the same pairing `_learn` anchors an interval on, since
+        `RoomInputs` is assembled before `evaluate_room` has produced this
+        cycle's own target. Falls back to the pooled-only figure when either
+        half is not yet known, which is every room's first cycle.
+        """
+        commanded = commanded_setpoint(
+            self._regulators.get(room.room_id, RegulatorState()),
+            self._last_target.get(room.room_id),
+        )
+        reading = self._number(room.temperature_entity_id, INDOOR_TOLERANCE)
+        if commanded is None or reading is None:
+            return self._learned(room.room_id, "k_sensible")
+        return self.model_for(room.room_id).sensible_rate_at(abs(commanded - reading))
 
     def _learned(self, room_id: str, name: str) -> float | None:
         """A learned coefficient, or None until it has converged.
@@ -1845,120 +2052,246 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         ):
             return _PowerContext(engaged=False)
 
+        solar_w = self._number(self.solar_entity_id, POWER_TOLERANCE)
+        house_load_w = self._number(self.house_load_entity_id, POWER_TOLERANCE)
+
+        grid_import_w: float | None = None
+        battery_w: float | None = None
+        if self.grid_entity_id is not None and self.grid_sign is not None:
+            grid_raw_w = self._number(self.grid_entity_id, POWER_TOLERANCE)
+            if grid_raw_w is not None:
+                grid_import_w = normalise_grid_import_w(grid_raw_w, self.grid_sign)
+                if solar_w is not None and house_load_w is not None:
+                    battery_w = derive_battery_w(house_load_w, solar_w, grid_import_w)
+
         return _PowerContext(
             engaged=True,
             battery_soc_percent=self._number(
                 self.battery_soc_entity_id, POWER_TOLERANCE
             ),
             battery_capacity_kwh=self.battery_capacity_kwh,
-            solar_w=self._number(self.solar_entity_id, POWER_TOLERANCE),
-            house_load_w=self._number(self.house_load_entity_id, POWER_TOLERANCE),
+            solar_w=solar_w,
+            house_load_w=house_load_w,
             reserve_margin_kwh=self.reserve_margin_kwh,
+            grid_import_w=grid_import_w,
+            battery_w=battery_w,
         )
 
-    def _power_available(
-        self, room: RoomConfig, now: datetime, capabilities: dict[str, bool]
-    ) -> bool:
-        """Whether this room may run the compressor right now.
+    #: Approach, in °C, at which each bin's ceiling caps `commanded_dry_bulb_c`.
+    #: The upper edge of the bin's own range — `at_setpoint`'s ceiling is
+    #: where `close` begins, and so on. `pulldown` has no meaningful upper
+    #: edge, so its ceiling is large enough to never bind in practice: the
+    #: bin fitting the budget at all already means nothing tighter is needed.
+    _BIN_CEILING_C = (
+        APPROACH_AT_SETPOINT_C,
+        APPROACH_CLOSE_C,
+        APPROACH_WORKING_C,
+        99.0,
+    )
 
-        Power management is optional and never overrides comfort by itself —
-        it only answers the one question the tariff's `no_grid_import`
-        constraint raises: can this room be carried without the grid.
+    def _track_grid(self, now: datetime, context: _PowerContext) -> None:
+        """Check the grid sign convention, and integrate measured import
+        across any active `no_grid_import` window.
 
-        **This fails open.** Every path that cannot answer the question
-        returns True and the room keeps its comfort. False is returned only
-        for a positively computed shortfall: readings present, model
-        converged, relief time known, and the arithmetic saying the battery
-        will not reach it.
-
-        That is a reversal. Five paths — a missing or stale reading, a series
-        that does not clear inside its horizon, no solved target yet, and an
-        unconverged thermal model — previously returned False. An unconverged
-        model is the state every fresh install is in, so switching power
-        management on stopped the compressor in occupied rooms for the whole
-        of a no-import window on the strength of a coefficient that had never
-        been measured. Comfort is a hard constraint; a projection the
-        controller cannot make is not grounds for withdrawing it.
-
-        A room that is genuinely being refused is still refused, and the
-        reason still reaches the trace.
+        0.8.10, finding 11. Runs once per evaluation regardless of whether
+        any room is under a power constraint this cycle — the breach record
+        is a house-level fact, not a per-room question.
         """
+        self._check_grid_sign(context)
+
+        interval = self._interval_at(now) if self.tariff is not None else None
+        if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
+            self._close_breach_window(reported=self._breach_kwh > 0.0)
+            return
+
+        if self._breach_window_start != interval.start:
+            self._close_breach_window(reported=self._breach_kwh > 0.0)
+            self._breach_window_start = interval.start
+            self._breach_kwh = 0.0
+
+        if context.grid_import_w is not None and context.grid_import_w > 0:
+            elapsed_hours = EVALUATION_INTERVAL.total_seconds() / 3600.0
+            self._breach_kwh += context.grid_import_w * elapsed_hours / 1000.0
+
+    def _check_grid_sign(self, context: _PowerContext) -> None:
+        """Compare the stored sign convention against live evidence.
+
+        0.8.10, finding 11. A contradiction check, not the mechanism: this
+        never corrects the stored convention, only counts how often live
+        readings disagree with it, so a persistent disagreement can be named
+        as a repair issue rather than silently mis-deriving the battery
+        figure forever.
+        """
+        if self.grid_entity_id is None or self.grid_sign is None:
+            self._grid_sign_disagreements = 0
+            return
+        if (
+            context.house_load_w is None
+            or context.solar_w is None
+            or context.grid_import_w is None
+        ):
+            return
+        lower_bound = context.house_load_w - context.solar_w
+        if lower_bound < AMBIGUOUS_BELOW_W:
+            # Not decisive evidence either way this cycle. Neither confirms
+            # nor contradicts, so it does not move the counter.
+            return
+        implied = implied_sign(context.house_load_w, context.solar_w, (
+            context.grid_import_w
+            if self.grid_sign == GRID_SIGN_IMPORTING
+            else -context.grid_import_w
+        ))
+        if implied is None or implied == self.grid_sign:
+            self._grid_sign_disagreements = 0
+        else:
+            self._grid_sign_disagreements += 1
+
+    def _close_breach_window(self, *, reported: bool) -> None:
+        """Raise or clear the shortfall issue for the window just ended.
+
+        0.8.10, findings 15/16. A trivial amount of import — a kettle
+        overlapping the boundary by one cycle — is not a shortfall worth a
+        repair issue, so anything under 0.05 kWh is treated as noise.
+        """
+        if reported and self._breach_kwh >= 0.05:
+            self._last_breach_reported_kwh = round(self._breach_kwh, 2)
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_POWER_SHORTFALL,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_POWER_SHORTFALL,
+                translation_placeholders={
+                    "kwh": f"{self._last_breach_reported_kwh:.2f}"
+                },
+            )
+        self._breach_window_start = None
+        self._breach_kwh = 0.0
+
+    def _power_ceiling(
+        self,
+        room: RoomConfig,
+        inputs: RoomInputs,
+        trace: DecisionTrace,
+        now: datetime,
+        capabilities: dict[str, bool],
+    ) -> None:
+        """The setpoint ceiling a tight power budget places on this room.
+
+        0.8.10, findings 10 and 15. Replaces the pre-0.8.10 boolean veto.
+
+        **`allow_comfort_reduction` is the single gate for the whole
+        mechanism, not just for the above-band case.** Off (the default),
+        power management does not touch this room at all — comfort wins
+        unconditionally, and the room holds its band regardless of the
+        constraint, exactly as if power management were not configured. On,
+        the constraint is enforced for this room: when the band cannot be
+        held within it, the room is kept as close to the band as the budget
+        allows, and the ceiling applies whether the room is already inside
+        its band or calling for correction. **This never stops the
+        compressor either way** — enforcing the constraint means throttling
+        toward it, never abandoning the room.
+
+        This was corrected after being built the other way around: the
+        first version applied a gentle within-band ceiling regardless of the
+        checkbox, treating it as harmless because comfort was never at risk.
+        That was Claude's own invention, not what was asked for. The
+        checkbox is the user's choice between comfort and power management
+        being the more important thing for this room, full stop — not a
+        magnitude knob on top of an always-on baseline.
+        """
+        if not room.allow_comfort_reduction:
+            # Power management is not enforced for this room. Comfort wins
+            # unconditionally; nothing below this line applies.
+            return
+        if trace.actuator is ActuatorStep.OFF:
+            # Lockout, unoccupied, coasting, or already stopped for another
+            # reason. Nothing running to throttle, and nothing to hold a
+            # ceiling against.
+            return
         context = self._power_context
         if context is None or not context.engaged:
-            return True
+            return
         if self.tariff is None:
-            return True
+            return
         interval = self.tariff.interval_at(now)
         if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
-            return True
-
-        # A unit that is already running has its own draw inside the house
-        # load figure, so adding the rating on top counts it twice and reads
-        # as unaffordable the moment the compressor starts — the reading that
-        # justified starting it becomes the reading that stops it. Only a unit
-        # that is currently off needs headroom found for it.
-        running = (
-            self._compressor_direction(room) != 0 or self._is_drying(room)
-        )
-        headroom_w = 0.0 if running else self._rated_kw_for(room) * 1000
-        if (
-            context.solar_w is not None
-            and context.house_load_w is not None
-            and context.solar_w >= context.house_load_w + headroom_w
-        ):
-            return True
+            return
 
         if (
             context.battery_soc_percent is None
             or context.battery_capacity_kwh is None
             or context.reserve_margin_kwh is None
         ):
-            LOGGER.debug(
-                "%s: power management engaged but a live reading is missing "
-                "or stale; comfort is held",
-                room.room_id,
-            )
-            return True
+            return
 
         hours_until_clear = self.tariff.hours_until_clear(
             CONSTRAINT_NO_GRID_IMPORT, now
         )
-        if hours_until_clear is None:
-            LOGGER.debug(
-                "%s: the tariff series does not reach the end of the "
-                "no-import window; comfort is held",
-                room.room_id,
-            )
-            return True
-
-        target = self._last_target.get(room.room_id)
-        if target is None:
-            # First cycle for this room. Nothing to project against yet.
-            return True
-
-        projected_kwh = self.model_for(room.room_id).energy_for(
-            self._number(room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id)
-            or target,
-            target,
-            self.outdoor_reading(),
-            direct_sun=bool(self._direct_sun(room)),
-            hours=hours_until_clear,
-            rated_kw=self._rated_kw_for(room),
-            can_heat=capabilities["can_heat"],
-            can_cool=capabilities["can_cool"],
-        )
-        if projected_kwh is None:
-            LOGGER.debug(
-                "%s: the thermal model cannot project an energy need yet; "
-                "comfort is held",
-                room.room_id,
-            )
-            return True
+        if hours_until_clear is None or hours_until_clear <= 0:
+            return
 
         available_kwh = (
             context.battery_soc_percent / 100.0
         ) * context.battery_capacity_kwh - context.reserve_margin_kwh
-        return available_kwh >= projected_kwh
+
+        running = self._compressor_direction(room) != 0 or self._is_drying(room)
+        own_draw_kw = self._rated_kw_for(room) if running else 0.0
+        other_house_draw_kw = 0.0
+        if context.house_load_w is not None:
+            other_house_draw_kw = max(context.house_load_w / 1000.0 - own_draw_kw, 0.0)
+
+        allowance_kw = allowable_draw_kw(
+            available_kwh,
+            hours_until_clear,
+            self.battery_max_discharge_kw,
+            other_house_draw_kw,
+        )
+
+        draw_by_bin = [
+            sum(
+                self.draw_for(group).draw_kw(bin_index, ASSUMED_UNIT_KW)
+                for group in room.groups
+            )
+            for bin_index in range(len(BIN_NAMES))
+        ]
+        bin_index = ceiling_bin(allowance_kw, draw_by_bin)
+
+        trace.power_budget_kw = round(allowance_kw, 3)
+        # Whether the room is actually being held back by this right now —
+        # not just whether the checkbox is on, which the room config already
+        # shows. True only while the room needs correction and is being
+        # throttled toward it rather than held there in full.
+        trace.comfort_reduction_active = trace.demand is not None
+        trace.grid_importing_now = (
+            None if context.grid_import_w is None else context.grid_import_w > 0
+        )
+        if bin_index is None:
+            # Even holding at setpoint would exceed the allowance. Never a
+            # refusal: the ceiling floors at "ask for nothing colder (or
+            # warmer) than the room already is", which throttles hard
+            # without ever commanding the unit off.
+            trace.power_ceiling_c = 0.0
+            trace.power_bin = BIN_NAMES[0]
+            trace.reasons.append(
+                "power budget: even holding at setpoint exceeds the "
+                f"{allowance_kw:.2f} kW allowance; ceiling held at 0.0 C"
+            )
+            return
+
+        trace.power_ceiling_c = self._BIN_CEILING_C[bin_index]
+        trace.power_bin = BIN_NAMES[bin_index]
+        trace.reasons.append(
+            f"power budget: {allowance_kw:.2f} kW allowance, "
+            f"{BIN_NAMES[bin_index]} bin, ceiling "
+            f"{trace.power_ceiling_c:.1f} C approach"
+            + (
+                ", comfort reduction in effect"
+                if trace.demand is not None
+                else ""
+            )
+        )
 
     def _interval_at(self, at: datetime) -> Interval | None:
         """The tariff interval in force, or None if there is no tariff.
@@ -2232,6 +2565,7 @@ def _room_from_raw(
         cover_entity_ids=tuple(raw.get(CONF_COVER_ENTITIES, []) or []),
         allow_cover_control=bool(raw.get(CONF_ALLOW_COVER_CONTROL, True)),
         lockout_reason=raw.get(CONF_LOCKOUT_REASON),
+        allow_comfort_reduction=bool(raw.get(CONF_ALLOW_COMFORT_REDUCTION, False)),
     )
 
 
