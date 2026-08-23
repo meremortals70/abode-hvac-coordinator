@@ -873,15 +873,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             if len(names) > 1
         }
 
-    def _rooms_sharing_a_climate_entity(self) -> frozenset[str]:
-        """Room ids that must not actuate because they share an entity."""
-        shared = set(self._shared_climate_entities())
-        return frozenset(
-            room.room_id
-            for room in self.rooms.values()
-            if any(entity_id in shared for entity_id in room.climate_entity_ids)
-        )
-
     @callback
     def async_request_heading_home(
         self, room_id: str, deadline: datetime | None = None
