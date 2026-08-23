@@ -317,10 +317,6 @@ class _RoomSteps:
 
     _room: dict[str, Any]
 
-    def _known_lockout_reasons(self) -> list[str]:
-        """Built-in reasons plus any the user has added, deduplicated."""
-        return known_lockout_reasons(self._stored_lockout_reasons())
-
     def _stored_lockout_reasons(self) -> list[str]:
         """Reasons the user has typed before. Empty for a fresh install."""
         return []
