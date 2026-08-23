@@ -49,7 +49,7 @@ from homeassistant.components.cover import (
     ATTR_CURRENT_POSITION,
     ATTR_POSITION,
 )
-from homeassistant.components.cover import (
+from homeassistant.components.cover.const import (
     DOMAIN as COVER_DOMAIN,
 )
 from homeassistant.const import (
