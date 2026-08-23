@@ -1816,6 +1816,23 @@ class TestThermalPersistence(unittest.TestCase):
             self.assertFalse(model.k_loss.converged)
             self.assertEqual(model.k_loss.samples, 0)
 
+    def test_a_non_finite_stored_coefficient_starts_fresh(self):
+        """`float("nan")` and `float("inf")` both parse without raising, so a
+        corrupted store file would otherwise load a broken number silently
+        and poison every prediction built on it."""
+        for broken in ("nan", "inf", "-inf"):
+            restored = _thermal.Coefficient.from_dict(
+                {"value": broken, "variance": 0.01, "samples": 50}, default=0.15
+            )
+            self.assertEqual(restored.value, 0.15)
+            self.assertEqual(restored.samples, 0)
+
+            restored = _thermal.Coefficient.from_dict(
+                {"value": 0.2, "variance": broken, "samples": 50}, default=0.15
+            )
+            self.assertEqual(restored.value, 0.15)
+            self.assertEqual(restored.samples, 0)
+
     def test_diagnostics_name_every_coefficient(self):
         diagnostics = _thermal.ThermalModel().diagnostics()
         self.assertEqual(
