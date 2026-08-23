@@ -37,6 +37,15 @@ GRID_SIGN_EXPORTING = "exporting"
 #: offered in that case; the setup step says so rather than guessing.
 AMBIGUOUS_BELOW_W = 500.0
 
+#: A raw grid reading within this of zero is treated as no flow, not as a
+#: flow whose direction happens to be indeterminate. There is no sign to
+#: read off a number that means nothing moved — a `no_grid_import` window
+#: on battery, with solar covering nothing overnight, sits here every time,
+#: and it is the single most common reading this feature sees. Set above
+#: any plausible float noise a real sensor could report at rest, and well
+#: below any real, meaningful grid flow.
+NO_FLOW_BELOW_W = 5.0
+
 
 def normalise_grid_import_w(raw_w: float, sign: str) -> float:
     """Positive means importing, regardless of the stored convention."""
@@ -59,7 +68,16 @@ def implied_sign(
     while the house is a net draw, positive most plausibly means import;
     if the reading reads negative under the same condition, positive means
     export.
+
+    A raw reading of zero, or close to it, is not ambiguous evidence about
+    the sign — it is not evidence about the sign at all. Nothing moved, so
+    there is no direction to have read wrong. Configuring at night, on
+    battery, with a `no_grid_import` constraint already in force, is exactly
+    when this comes up, and it should offer no default rather than a
+    confidently wrong one.
     """
+    if abs(grid_reading_w) < NO_FLOW_BELOW_W:
+        return None
     lower_bound = house_load_w - solar_w
     if lower_bound < AMBIGUOUS_BELOW_W:
         return None
@@ -105,3 +123,24 @@ def ceiling_bin(allowance_kw: float, draw_kw_by_bin: list[float]) -> int | None:
     """
     fitting = [index for index, kw in enumerate(draw_kw_by_bin) if kw <= allowance_kw]
     return max(fitting) if fitting else None
+
+
+def solar_offset_kw(
+    solar_kw: float, other_house_draw_kw: float
+) -> tuple[float, float]:
+    """Split solar into what the rest of the house consumes and what is left.
+
+    0.8.11, finding 18. Solar is a direct, primary offset against current
+    draw, checked first — the battery only becomes a binding constraint at
+    all where solar is insufficient to cover the house. Returns
+    `(other_house_draw_kw_net, solar_credit_kw)`: the first is what the rest
+    of the house still needs from the battery or grid after solar has paid
+    down as much of it as it can, which shrinks how much of the discharge
+    ceiling and the reserve energy the rest of the house is spoken for; the
+    second is whatever solar is left over once the house is covered, which
+    this room may draw on directly, free of both the energy and discharge-
+    rate limits that bound the battery-sourced portion of its allowance.
+    """
+    other_house_draw_kw_net = max(other_house_draw_kw - solar_kw, 0.0)
+    solar_credit_kw = max(solar_kw - other_house_draw_kw, 0.0)
+    return other_house_draw_kw_net, solar_credit_kw

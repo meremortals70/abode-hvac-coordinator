@@ -16,6 +16,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
+from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import (
@@ -126,13 +127,13 @@ from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index
 from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
 from .modes import evaluate_room
 from .power import (
-    AMBIGUOUS_BELOW_W,
     GRID_SIGN_IMPORTING,
     allowable_draw_kw,
     ceiling_bin,
     derive_battery_w,
     implied_sign,
     normalise_grid_import_w,
+    solar_offset_kw,
 )
 from .psychro import dew_point_c
 from .regulate import (
@@ -1281,6 +1282,57 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             upper_c=upper_c,
         )
 
+    def _cheaper_window_imminent(self, room: RoomConfig, now: datetime) -> bool:
+        """Whether a strictly cheaper tariff interval begins soon enough that
+        the band is predicted to hold unaided until it starts.
+
+        0.8.11, finding 12. The room-level half of the pool's finding 19b —
+        `per_kwh` was parsed and reached no decision — folded into a general
+        principle rather than built as its own separate mechanism: every
+        decision point evaluates the cheapest way to deliver the comfort
+        band, and for a room approaching the edge of its band that means
+        checking whether waiting a short while costs nothing.
+
+        Bounded at `COAST_HORIZON_HOURS`, the same horizon `_predicted_to_
+        hold` already trusts for "the band holds unaided" — never further
+        out than that, and never when the model cannot positively say the
+        wait is safe.
+        """
+        if self.tariff is None:
+            return False
+        current = self.tariff.interval_at(now)
+        if current is None or current.per_kwh is None:
+            return False
+        cheaper_at = self.tariff.cheaper_interval_ahead(
+            now, current.per_kwh, timedelta(hours=COAST_HORIZON_HOURS)
+        )
+        if cheaper_at is None:
+            return False
+
+        model = self.model_for(room.room_id)
+        indoor = self._number(room.temperature_entity_id)
+        humidity = self._number(room.humidity_entity_id)
+        if indoor is None or humidity is None:
+            return False
+        band = room.band_for(Mode.SLEEP if self._sleeping(room) else Mode.OCCUPIED)
+        if band is None:
+            return False
+        lower_c = dry_bulb_for_index(band.low, humidity)
+        upper_c = dry_bulb_for_index(band.high, humidity)
+        hours = (cheaper_at - now).total_seconds() / 3600.0
+
+        return (
+            model.holds_through(
+                indoor,
+                self._number(self.outdoor_entity_id),
+                direct_sun=self._direct_sun(room) is True,
+                hours=hours,
+                lower_c=lower_c,
+                upper_c=upper_c,
+            )
+            is True
+        )
+
     def _demand_ahead(self, room: RoomConfig, now: datetime) -> bool:
         """Whether this room is forecast to need cooling later today.
 
@@ -1923,6 +1975,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             k_sensible_c_per_hour=self._sensible_rate_for(room, now),
             k_latent_rh_per_hour=self._learned(room.room_id, "k_latent"),
             predicted_to_hold=self._predicted_to_hold(room),
+            cheaper_window_imminent=self._cheaper_window_imminent(room, now),
             forecast_demand_ahead=self._demand_ahead(room, now),
             sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
             is True,
@@ -2121,6 +2174,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         readings disagree with it, so a persistent disagreement can be named
         as a repair issue rather than silently mis-deriving the battery
         figure forever.
+
+        0.8.11. An inconclusive cycle — no real flow to read a sign off, or
+        not enough house draw to be decisive — resets the counter exactly
+        like an agreeing one. Only a run of genuine, sizeable disagreements
+        can ever raise the issue; a night of correctly-inconclusive zero
+        readings must not leave the counter primed to trip on the first
+        reading the next morning.
         """
         if self.grid_entity_id is None or self.grid_sign is None:
             self._grid_sign_disagreements = 0
@@ -2131,16 +2191,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             or context.grid_import_w is None
         ):
             return
-        lower_bound = context.house_load_w - context.solar_w
-        if lower_bound < AMBIGUOUS_BELOW_W:
-            # Not decisive evidence either way this cycle. Neither confirms
-            # nor contradicts, so it does not move the counter.
-            return
-        implied = implied_sign(context.house_load_w, context.solar_w, (
+        raw_reading_w = (
             context.grid_import_w
             if self.grid_sign == GRID_SIGN_IMPORTING
             else -context.grid_import_w
-        ))
+        )
+        implied = implied_sign(context.house_load_w, context.solar_w, raw_reading_w)
         if implied is None or implied == self.grid_sign:
             self._grid_sign_disagreements = 0
         else:
@@ -2168,6 +2224,41 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
         self._breach_window_start = None
         self._breach_kwh = 0.0
+
+    def _sustained_solar_kw(
+        self, now: datetime, hours_until_clear: float, current_solar_kw: float
+    ) -> float:
+        """How much of today's solar this room may count on for the rest of
+        the constrained window.
+
+        0.8.11, finding 18. Extends the instantaneous solar offset with the
+        weather forecast's clear-sky fraction — the existing, previously
+        unused `solar_fraction_at` — so a window that runs past sunset, or
+        into cloud the forecast already expects, is not credited with
+        today's current solar persisting for hours it will not. The worst
+        (lowest) fraction ratio across the remaining hours derates the
+        whole window's credit; nothing here forecasts house load, only
+        solar, since only solar has a forecast to read.
+
+        Without a forecast configured, or with no solar right now, the
+        instantaneous reading is used unchanged — exactly as before this
+        finding, so an install without a weather entity loses nothing.
+        """
+        if self.trajectory is None or current_solar_kw <= 0:
+            return current_solar_kw
+        now_fraction = self.trajectory.solar_fraction_at(now)
+        if not now_fraction:
+            return current_solar_kw
+        worst_ratio = 1.0
+        hours = max(1, ceil(hours_until_clear))
+        for hour in range(1, hours + 1):
+            later_fraction = self.trajectory.solar_fraction_at(
+                now + timedelta(hours=hour)
+            )
+            if later_fraction is None:
+                continue
+            worst_ratio = min(worst_ratio, later_fraction / now_fraction)
+        return current_solar_kw * worst_ratio
 
     def _power_ceiling(
         self,
@@ -2242,7 +2333,21 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         if context.house_load_w is not None:
             other_house_draw_kw = max(context.house_load_w / 1000.0 - own_draw_kw, 0.0)
 
-        allowance_kw = allowable_draw_kw(
+        # 0.8.11, finding 18. Solar checked first, as a direct offset — the
+        # battery only binds where solar is insufficient. Whatever solar is
+        # left over after paying down the rest of the house goes straight to
+        # this room, free of the battery's own energy and discharge-rate
+        # limits; whatever solar the rest of the house still needs shrinks
+        # how much of the battery's discharge rate is left for this room.
+        current_solar_kw = (context.solar_w or 0.0) / 1000.0
+        sustained_solar_kw = self._sustained_solar_kw(
+            now, hours_until_clear, current_solar_kw
+        )
+        other_house_draw_kw, solar_credit_kw = solar_offset_kw(
+            sustained_solar_kw, other_house_draw_kw
+        )
+
+        allowance_kw = solar_credit_kw + allowable_draw_kw(
             available_kwh,
             hours_until_clear,
             self.battery_max_discharge_kw,

@@ -110,6 +110,22 @@ def evaluate_mode(
     elif inputs.predicted_to_hold is None:
         trace.rejected.append("coast: thermal model has not converged for this room")
 
+    # 0.8.11, finding 12. The band may not hold indefinitely unaided, but it
+    # may hold long enough for a strictly cheaper tariff interval to begin —
+    # the cheapest way to deliver the same comfort outcome is to wait for
+    # it, and this is only ever True when the model can positively say the
+    # wait is safe (see coordinator._cheaper_window_imminent).
+    if inputs.cheaper_window_imminent and inputs.coasting_permitted:
+        trace.reasons.append(
+            "a cheaper tariff window begins soon and the band holds until then"
+        )
+        return Mode.COAST, base
+    if inputs.cheaper_window_imminent and not inputs.coasting_permitted:
+        trace.rejected.append(
+            "coast: a cheaper window is imminent, but this window does not "
+            "permit coasting"
+        )
+
     return base, None
 
 

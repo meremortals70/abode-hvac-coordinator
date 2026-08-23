@@ -21,11 +21,10 @@ rules:
     status: todo
     comment: |
       tests/test_config_flow.py covers the room, bands, global menu, outdoor,
-      tariff, forecast and power steps and, as of 0.8.10, has actually been
-      run green — 28 tests, against Home Assistant 2025.1.4 under
-      pytest-homeassistant-custom-component 0.13.205. 0.8.10 added the grid
-      entity field and sign-convention step to the power step, and the
-      comfort-reduction checkbox to the bands step.
+      tariff, forecast and power steps and, as of 0.8.11, has actually been
+      run green — 28 tests, unchanged since 0.8.10, against Home Assistant
+      2025.1.4 under pytest-homeassistant-custom-component 0.13.205. 0.8.11
+      added no new config-flow steps or fields.
 
       Still todo, for two reasons. The run was against 2025.1.4, not the
       2026.8.x this integration targets; the build sandbox is Python 3.12 and
@@ -82,17 +81,16 @@ rules:
   test-coverage:
     status: todo
     comment: |
-      The pure modules have 350 tests in tests/test_core.py, run directly
-      with python3 and passing. As of 0.8.10 the Home Assistant side tests
-      run too: 422 tests pass in total across test_core, test_attributes,
-      test_config_flow and test_init. 0.8.10 added tests for the grid sign
-      convention, the power budget and setpoint ceiling replacing the
-      boolean veto, the comfort-reduction checkbox as a single gate on the
-      whole mechanism, measured-breach recording, and the bin-aware fix to
-      the dry-versus-cool sensible rate — the key new-behaviour tests (the
-      retired veto, the breach kWh arithmetic, the checkbox gating) checked
-      by reinstating the defect and confirming the test fails for the
-      stated reason.
+      The pure modules have 364 tests in tests/test_core.py, run directly
+      with python3 and passing. As of 0.8.11 the Home Assistant side tests
+      run too: 443 tests pass in total across test_core, test_attributes,
+      test_config_flow and test_init. 0.8.11 added tests for the price-aware
+      coast deferral (findings 12/19b), the direct solar offset ahead of the
+      battery in the power budget (finding 18), re-asserting the commanded
+      setpoint from live entity state rather than memory (finding 19a), and
+      the corrected zero-flow handling in the grid sign check — each of the
+      new mechanisms checked by reinstating the defect and confirming the
+      test fails for the stated reason before being restored.
 
       Still todo for the same reason as config-flow-test-coverage: the run is
       against Home Assistant 2025.1.4, not the 2026.8.x targeted, and two
@@ -159,7 +157,7 @@ rules:
       Home Assistant 2025.1.4 (the newest this Python 3.12 build sandbox can
       install) and the 2026.8.x targeted — ClimateEntityFeature, the climate
       ATTR_* and SERVICE_* names, and AddConfigEntryEntitiesCallback. The
-      count is unchanged from 0.8.5, including through 0.8.10. Nothing in
+      count is unchanged from 0.8.5, including through 0.8.11. Nothing in
       shipped code depends on the older names. Not "done" until mypy has run
       against the targeted
       version with no errors at all.

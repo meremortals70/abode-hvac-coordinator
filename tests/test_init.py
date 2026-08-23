@@ -27,6 +27,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_GRID_SIGN,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
+    CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_RESERVE_MARGIN_KWH,
     CONF_ROOM_ID,
     CONF_ROOMS,
@@ -332,6 +333,56 @@ async def test_comfort_reduction_throttles_a_room_that_needs_correction(
     assert state.attributes["power_ceiling_c"] is not None
 
 
+async def test_solar_widens_the_ceiling_beyond_what_the_battery_alone_affords(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.11, finding 18. Same battery shortfall as the test above, but
+    with solar covering the rest of the house and leaving a surplus — the
+    surplus goes straight to this room, unconstrained by the battery limits
+    that alone would have floored the ceiling at zero.
+    """
+    rooms = list(mock_config_entry.options[CONF_ROOMS])
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: True}
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}
+    )
+    await _setup_with_power(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+        sensor__battery_soc="20.0",
+        # 2 kW solar, 500 W rest-of-house: 1.5 kW surplus for this room,
+        # same battery shortfall (20% of 10 kWh against an 8 kWh reserve)
+        # as the no-solar test above, which floors the ceiling at zero.
+        sensor__solar_power="2000",
+        sensor__house_load="500",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+
+    model = coordinator.model_for("test_room")
+    model.k_sensible = Coefficient(value=2.0, variance=0.01, samples=40)
+    model.k_loss = Coefficient(value=0.15, variance=0.01, samples=40)
+    model.k_solar = Coefficient(value=1.0, variance=0.01, samples=40)
+    coordinator._last_target["test_room"] = 24.0
+
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor"
+    # The unconverged model's ASSUMED_UNIT_KW (1.2) fits under the 1.5 kW
+    # solar surplus alone, so the pulldown bin is affordable and the ceiling
+    # is well above the 0.0 floor the no-solar version of this scenario hits.
+    assert state.attributes["power_ceiling_c"] is not None
+    assert state.attributes["power_ceiling_c"] > 0.5
+    assert state.attributes["power_bin"] == "pulldown"
+
+
 async def test_the_checkbox_off_means_power_management_never_touches_the_room(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
@@ -457,6 +508,92 @@ async def test_a_fully_configured_room_raises_no_missing_comfort_issue(
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_MISSING_COMFORT_INPUTS) is None
+
+
+async def test_no_cheaper_window_never_reaches_the_thermal_model(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.11, finding 12. The coordinator's own wiring: no cheaper interval
+    within the horizon means `_cheaper_window_imminent` returns False before
+    ever consulting the thermal model, on an unconverged model exactly as a
+    fresh install has."""
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_temperature", "24.0")
+    hass.states.async_set("sensor.test_humidity", "50.0")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    now = dt_util.utcnow()
+    coordinator.tariff = TariffSeries.from_response(
+        {
+            "intervals": [
+                {
+                    "start_time": (now - timedelta(minutes=30)).isoformat(),
+                    "end_time": (now + timedelta(hours=3)).isoformat(),
+                    "rate": "flat",
+                    "per_kwh": 0.30,
+                    "export_per_kwh": 0.05,
+                    "constraints": [],
+                },
+            ]
+        },
+        now,
+    )
+    room = coordinator.rooms["test_room"]
+    assert coordinator._cheaper_window_imminent(room, now) is False
+
+
+async def test_a_cheaper_window_the_model_confirms_holding_until_is_imminent(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The positive path, end to end through the coordinator's own reading
+    of the tariff, the band, and the thermal model."""
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.test_outdoor",
+        },
+    )
+    hass.states.async_set("sensor.test_temperature", "25.5")
+    hass.states.async_set("sensor.test_humidity", "50.0")
+    hass.states.async_set("sensor.test_outdoor", "32.0")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    now = dt_util.utcnow()
+    coordinator.tariff = TariffSeries.from_response(
+        {
+            "intervals": [
+                {
+                    "start_time": (now - timedelta(minutes=30)).isoformat(),
+                    "end_time": (now + timedelta(minutes=10)).isoformat(),
+                    "rate": "peak",
+                    "per_kwh": 0.50,
+                    "export_per_kwh": 0.05,
+                    "constraints": [],
+                },
+                {
+                    "start_time": (now + timedelta(minutes=10)).isoformat(),
+                    "end_time": (now + timedelta(hours=3)).isoformat(),
+                    "rate": "off_peak",
+                    "per_kwh": 0.20,
+                    "export_per_kwh": 0.05,
+                    "constraints": [],
+                },
+            ]
+        },
+        now,
+    )
+    model = coordinator.model_for("test_room")
+    model.k_loss = Coefficient(value=0.5, variance=0.01, samples=40)
+    model.k_solar = Coefficient(value=0.0, variance=0.01, samples=40)
+
+    room = coordinator.rooms["test_room"]
+    assert coordinator._cheaper_window_imminent(room, now) is True
 
 
 async def test_no_grid_import_without_a_grid_sensor_raises_an_issue(
@@ -643,6 +780,80 @@ async def test_persistent_sign_disagreement_raises_a_repair_issue(
 
     issues = ir.async_get(hass)
     assert issues.async_get_issue(DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED) is not None
+
+
+async def test_a_zero_grid_reading_never_raises_a_contradiction(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.11. Overnight, on battery, in a no_grid_import window: house_load
+    minus solar is decisive by the old logic, but the grid reads exactly
+    zero every cycle. This must never be treated as evidence of anything —
+    it is the single most common reading this feature sees.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    no_flow_overnight = _PowerContext(
+        engaged=True, house_load_w=800.0, solar_w=0.0, grid_import_w=0.0
+    )
+    for _ in range(50):
+        coordinator._track_grid(dt_util.utcnow(), no_flow_overnight)
+    coordinator._async_check_configuration()
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED) is None
+    assert coordinator._grid_sign_disagreements == 0
+
+
+async def test_an_inconclusive_reading_resets_the_counter(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """A run of real disagreements followed by inconclusive readings must
+    not leave the counter primed to trip on the next real disagreement —
+    inconclusive resets exactly like agreeing does."""
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    contradicting = _PowerContext(
+        engaged=True, house_load_w=3120.0, solar_w=180.0, grid_import_w=-2840.0
+    )
+    for _ in range(9):
+        coordinator._track_grid(dt_util.utcnow(), contradicting)
+    assert coordinator._grid_sign_disagreements == 9
+
+    no_flow = _PowerContext(
+        engaged=True, house_load_w=800.0, solar_w=0.0, grid_import_w=0.0
+    )
+    coordinator._track_grid(dt_util.utcnow(), no_flow)
+    assert coordinator._grid_sign_disagreements == 0
+
+    # One more real disagreement after the reset must not, by itself, raise
+    # the issue — the counter genuinely restarted from zero.
+    coordinator._track_grid(dt_util.utcnow(), contradicting)
+    coordinator._async_check_configuration()
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED) is None
+
 
 
 async def test_agreeing_evidence_raises_no_sign_contradiction_issue(
@@ -875,9 +1086,16 @@ async def test_an_open_window_stops_a_running_unit(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.attributes["actuator"] == "off", state.attributes
-    assert [call.data["hvac_mode"] for call in calls] == ["off"], [
-        call.data for call in calls
-    ]
+    # 0.8.11. The window's own state-change listener schedules a refresh
+    # that lands inside this same frozen instant, alongside the explicit
+    # one above -- two evaluations, both computing OFF, neither able to
+    # see the other's command take effect on the entity within the same
+    # instant. Re-asserting from live state rather than from memory means
+    # both correctly re-send rather than the second trusting a command the
+    # first has not been confirmed to have landed. Harmless duplication,
+    # not a missed divergence -- every call is still "off".
+    sent = [call.data["hvac_mode"] for call in calls]
+    assert sent and set(sent) == {"off"}, sent
 
     # And it projects no energy. `_build_forecast` decided this from the mode,
     # which is the same hole in a second place: a room stopped for an open
@@ -918,6 +1136,107 @@ async def test_a_room_within_band_is_left_alone(
     assert state is not None
     assert state.attributes["actuator"] == "none", state.attributes
     assert calls == [], [call.data for call in calls]
+
+
+async def test_a_stable_decision_does_not_resend_once_the_entity_confirms_it(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.11. The other half of finding 19a: re-asserting from live state
+    must not mean resending forever once the entity has actually confirmed
+    the command took effect."""
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    commanded = state.attributes["commanded_dry_bulb_c"]
+    assert commanded is not None
+
+    # Simulate the dongle confirming the command actually took effect.
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            "temperature": commanded,
+        },
+    )
+
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    temp_calls = async_mock_service(hass, "climate", "set_temperature")
+    with freeze_time(dt_util.utcnow() + timedelta(seconds=30)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert calls == [], [call.data for call in calls]
+    assert temp_calls == [], [call.data for call in temp_calls]
+
+
+async def test_a_wall_change_is_overridden_on_the_next_cycle(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.11, finding 19a. There is no manual-override concept — the
+    coordinator always re-asserts from its own computed decision, never
+    from memory of the last command it sent. A change made at the wall
+    (or by any other automation) is simply overridden on the next cycle,
+    the same as any other stale command would be.
+    """
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    commanded = state.attributes["commanded_dry_bulb_c"]
+    assert commanded is not None
+
+    # Confirm the entity, then change it again — as if someone walked up to
+    # the wall controller and set a different temperature.
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            "temperature": commanded,
+        },
+    )
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+            "temperature": commanded + 4.0,
+        },
+    )
+
+    temp_calls = async_mock_service(hass, "climate", "set_temperature")
+    with freeze_time(dt_util.utcnow() + timedelta(seconds=30)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    # The coordinator's own computed decision is re-sent, overriding the
+    # wall change — nothing here treats the wall change as intent to honour.
+    assert temp_calls, "expected the setpoint to be re-asserted"
+    assert temp_calls[-1].data["temperature"] == commanded
 
 
 async def test_reaching_the_band_does_not_record_a_compressor_stop(

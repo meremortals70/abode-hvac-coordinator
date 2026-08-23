@@ -115,6 +115,47 @@ def resolve_hvac_mode(
     return next((mode for mode in preferred if mode in available), None)
 
 
+#: Float tolerance for comparing a desired setpoint against what the entity
+#: currently reports, so a rounding difference of a hundredth of a degree
+#: does not read as a real divergence worth re-commanding.
+_LIVE_TEMPERATURE_TOLERANCE_C = 0.05
+
+
+def _matches_live_state(
+    state: State, hvac_mode: HVACMode, temperature: float | None
+) -> bool:
+    """Whether the entity is already reporting the mode and setpoint wanted.
+
+    0.8.11. There is no override to detect and no intent to infer from a
+    mismatch — this only answers "is a command still necessary", by reading
+    what the entity itself currently reports rather than trusting this
+    coordinator's memory of what it last sent.
+    """
+    if state.state != str(hvac_mode):
+        return False
+    if temperature is None or hvac_mode is HVACMode.OFF:
+        return True
+    features = int(state.attributes.get(ATTR_SUPPORTED_FEATURES) or 0)
+    if features & ClimateEntityFeature.TARGET_TEMPERATURE_RANGE and hvac_mode in (
+        HVACMode.HEAT_COOL,
+        HVACMode.AUTO,
+    ):
+        low = state.attributes.get(ATTR_TARGET_TEMP_LOW)
+        high = state.attributes.get(ATTR_TARGET_TEMP_HIGH)
+        if low is None or high is None:
+            return False
+        return (
+            abs(float(low) - (temperature - RANGE_DEADBAND_C))
+            < _LIVE_TEMPERATURE_TOLERANCE_C
+            and abs(float(high) - (temperature + RANGE_DEADBAND_C))
+            < _LIVE_TEMPERATURE_TOLERANCE_C
+        )
+    current = state.attributes.get(ATTR_TEMPERATURE)
+    if current is None:
+        return False
+    return abs(float(current) - temperature) < _LIVE_TEMPERATURE_TOLERANCE_C
+
+
 def _pick(available: list[str], preferred: tuple[str, ...]) -> str | None:
     """First preferred value present in a list, matched case-insensitively."""
     lowered = {value.lower(): value for value in available}
@@ -258,7 +299,23 @@ class Actuator:
         # Keyed by entity, not by room. Two heads in one room resolve their
         # own modes and fail independently, so one already holding the
         # instruction must not suppress the other being sent it.
-        if self._last_climate.get(entity_id) == (hvac_mode, temperature):
+        #
+        # 0.8.11. There is no manual-override concept in this design — this
+        # is an autonomous coordinator, and the fix for an outcome someone
+        # does not want is to change the room's comfort bands, not to expect
+        # the hardware to hold a setting made at the wall. The dedupe check
+        # exists only to avoid re-sending a command that is already in
+        # effect, and "already in effect" has to mean what the entity is
+        # actually reporting right now, not what this coordinator remembers
+        # having sent. Comparing only against `_last_climate` meant a wall
+        # change could sit for one or more cycles before something
+        # incidental caused a re-command; the dongle already reports the
+        # true state, so there is no reason not to check it directly.
+        if self._last_climate.get(
+            entity_id
+        ) == (hvac_mode, temperature) and _matches_live_state(
+            state, hvac_mode, temperature
+        ):
             return
 
         try:

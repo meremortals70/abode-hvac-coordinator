@@ -21,7 +21,7 @@ A constraint is never traded against price or comfort at runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, tzinfo
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any, Final
 
 #: Constraints this controller acts on. Anything else is passed through to the
@@ -289,6 +289,35 @@ class TariffSeries:
             if constraint not in interval.constraints:
                 cleared_at = max(interval.start, now)
                 return (cleared_at - now).total_seconds() / 3600.0
+        return None
+
+    def cheaper_interval_ahead(
+        self, now: datetime, current_per_kwh: float, horizon: timedelta
+    ) -> datetime | None:
+        """When the next strictly cheaper interval begins, within a horizon.
+
+        0.8.11, finding 12. Every mode has to evaluate the cheapest way to
+        deliver what the comfort band requires, and the ordinary case of
+        that is timing: is a lower price imminent, and can the room wait
+        for it. This answers the first half. An interval with no price at
+        all is skipped rather than treated as free — a missing figure is
+        not evidence of a cheaper window, on the same principle as every
+        other "cannot compute it" case in this project defaulting to the
+        safer, more conservative answer.
+
+        `None` if no cheaper interval starts within the horizon, including
+        when the series does not reach that far.
+        """
+        deadline = now + horizon
+        for interval in self._intervals:
+            if interval.start <= now:
+                continue
+            if interval.start > deadline:
+                break
+            if interval.per_kwh is None:
+                continue
+            if interval.per_kwh < current_per_kwh:
+                return interval.start
         return None
 
 

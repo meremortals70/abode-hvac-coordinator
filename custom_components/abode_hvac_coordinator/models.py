@@ -219,6 +219,12 @@ class RoomInputs:
     #: hold, e.g. the cheap overnight window where energy is cheap and the
     #: battery should arrive at 06:00 full. Architecture proposal v0.3, s7.
     coasting_permitted: bool = True
+    #: 0.8.11, finding 12. True when a strictly cheaper tariff interval
+    #: begins soon enough that the thermal model predicts the band holds
+    #: unaided until it starts — the same fail-safe-to-comfort principle as
+    #: `predicted_to_hold`: an unconverged model or a missing price means
+    #: this stays False, never True by default.
+    cheaper_window_imminent: bool = False
     #: True when the forecast says the room will need cooling later today, the
     #: precondition for banking thermal mass in a free window.
     forecast_demand_ahead: bool = False

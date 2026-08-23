@@ -116,8 +116,30 @@ is in the wrong place.
 Cost never narrows the band. The tariff decides *when* energy is banked ahead of
 need and *which* actuator delivers comfort. It never decides whether you get it.
 
-Precool is the only genuinely price-driven mode, and it only ever makes a room
-more comfortable.
+**Since 0.8.11, cost-minimisation is not confined to one mode.** Every mode and
+every operation evaluates the cheapest way to deliver whatever the comfort band
+currently requires, at the point the decision is made — precool banking thermal
+mass ahead of a load that is coming, and, new in 0.8.11, a room approaching the
+edge of its band deferring briefly for an imminent cheaper tariff interval when
+the thermal model can say the wait is safe. Neither ever narrows the band or
+delays a correction the model cannot vouch for: an unconverged model, a missing
+price, or a tariff window that forbids it all mean the room is corrected now,
+on the same fail-safe-to-comfort principle the rest of the architecture already
+uses. See [What is built](#8-what-is-built).
+
+### No manual-override concept
+
+This is an autonomous coordinator, not one that shares control with the wall.
+Every cycle re-asserts the coordinator's own computed decision from the
+climate entity's live reported state — never from memory of the last command
+sent. A change made at the wall, or by any other automation, is simply
+overridden on the next cycle, the same as any other stale command would be.
+
+**The fix for an outcome nobody wants is to change the room's comfort bands,**
+not to expect the hardware to hold a setting made outside this integration.
+Building a reconciliation loop that treats a wall change as intent would be
+building a second control surface into a system whose entire premise is that
+there is exactly one.
 
 ### One comfort definition per room
 
@@ -183,6 +205,19 @@ the compressor off for a power reason** — enforcing the constraint means
 throttling toward it, never abandoning the room. Where the budget cannot
 even afford holding at setpoint, the ceiling floors at "ask for nothing
 colder than the room already is" rather than becoming a stop.
+
+**Since 0.8.11, solar is checked first, as a direct offset — the battery
+only becomes a binding constraint at all where solar is insufficient.**
+Solar generation pays down the rest of the house's draw before anything is
+asked of the battery; whatever is left over after that goes straight to the
+room being throttled, free of both the battery's stored-energy limit and its
+rated discharge-rate limit. Only the shortfall — what solar cannot cover —
+draws against the battery at all. The credit is derated using the weather
+forecast's clear-sky fraction across the remaining hours of the constrained
+window, so a window that runs past sunset, or into cloud the forecast
+already expects, is not credited with the current moment's solar persisting
+for hours it will not; a house with no weather entity configured sees the
+instantaneous reading unchanged, exactly as before this finding.
 
 **Since 0.8.7 the actuation reaches the hardware; since 0.8.10 a grid sensor
 lets the controller measure rather than only project.** One signed power
@@ -346,9 +381,13 @@ than run the compressor.
 | The grid sensor, and derived battery power | Built, tested. New in 0.8.10. Optional; without it the power budget still runs on the energy figure alone |
 | The power budget and setpoint ceiling, replacing the boolean veto | Built, tested. New in 0.8.10 |
 | Per-room permission to extend the ceiling past the comfort band | Built, tested. New in 0.8.10 |
+| Cost-minimisation at every decision point (the room-price defer) | Built, tested. New in 0.8.11 — see below |
+| Solar checked first in the power budget, battery only on the shortfall | Built, tested. New in 0.8.11. Corrects a gap in the 0.8.10 rewrite, where solar was dropped from the calculation entirely — see below |
+| Re-asserting the commanded setpoint from live entity state | Built, tested. New in 0.8.11 — see below |
+| Grid sign zero-flow correction | Built, tested. New in 0.8.11 — see below |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 422 tests at 0.8.10, against 2025.1.4 rather than the 2026.8.x
+pure modules — 443 tests at 0.8.11, against 2025.1.4 rather than the 2026.8.x
 targeted, because the build sandbox is Python 3.12. Running it for the first
 time found two tests that had never passed. See
 [Known limitations](known-limitations.md).
@@ -521,6 +560,88 @@ it recorded a stop that had not happened.
 Neither could be fixed alone. The guard's wrong record was harmless only while
 nothing was ever actually stopped; the moment the stop paths became real it
 would have let a genuine stop through inside the minimum run time.
+
+### Cost-minimisation at every decision point
+
+**New in 0.8.11.** Precool was, until this build, the only mode that ever
+looked at price. A room approaching the edge of its band always ran the
+compressor immediately, even when the thermal model could say the band would
+hold unaided for a few more minutes and a strictly cheaper tariff interval
+was about to begin.
+
+`tariff.cheaper_interval_ahead` scans the forward interval series for the
+next interval with a lower price within a bounded horizon — the same one
+hour `COAST_HORIZON_HOURS` already trusts for "the band holds unaided".
+`coordinator._cheaper_window_imminent` combines that with the room's own
+`holds_through` projection: does the band survive, unaided, until the
+cheaper interval starts. Only when both are true does the mode become
+`COAST`, with a trace reason distinct from the unaided-hold case.
+
+This folds in the pool's own finding 19b — `Interval.per_kwh` was parsed and
+reached no decision — as a consequence rather than a separate mechanism: once
+any decision point evaluates price, the parsed figure has somewhere to go.
+
+**Fails toward comfort exactly like the unaided-hold check it extends.** An
+unconverged thermal model, a tariff series with no price on the relevant
+interval, or a window the tariff plan marks as not permitting coasting at
+all mean the room is corrected now — the same `coasting_permitted` flag that
+already gates the unaided-hold case gates this one too.
+
+### Solar checked first in the power budget
+
+**New in 0.8.11.** The 0.8.10 rewrite of the power budget dropped solar from
+the calculation entirely — a genuine gap in that build, not a design choice:
+the pre-0.8.10 boolean veto had checked solar sufficiency directly, and
+`_power_ceiling` never picked that check back up.
+
+`power.solar_offset_kw` splits current solar generation into what the rest
+of the house consumes and what is left over. The rest of the house's draw is
+paid down by solar first, which shrinks how much of the battery's discharge
+rate and stored energy that draw is still competing for; whatever solar
+remains after that goes straight to the room being throttled, free of both
+of the battery's own limits. The battery only becomes a binding constraint
+at all where solar is insufficient to cover the house.
+
+`coordinator._sustained_solar_kw` derates the instantaneous reading using
+the weather forecast's clear-sky fraction — the same figure the thermal
+model already uses for solar gain — across the remaining hours of the
+constrained window, taking the worst ratio rather than assuming the current
+moment's solar holds for a window that runs past sunset or into cloud the
+forecast already expects.
+
+### Re-asserting the commanded setpoint from live entity state
+
+**New in 0.8.11.** There is no manual-override concept in this design — see
+[Settled principles](#3-settled-principles) — but the dedupe cache that
+avoids re-sending an unchanged command compared only against its own memory
+of the last command sent, not against what the entity is currently
+reporting. A change made at the wall, or by any other automation, could
+therefore sit unreflected in the coordinator's memory for one or more
+cycles before something incidental caused a re-send.
+
+`actuator._matches_live_state` closes it: a command is skipped only when
+both the coordinator's own memory *and* the entity's live reported mode and
+setpoint already agree with what is about to be sent. A live divergence,
+from any cause, is corrected on the next cycle — the coordinator re-asserts
+its own computed decision, it does not attempt to detect or honour intent
+behind the divergence.
+
+### Grid sign zero-flow correction
+
+**New in 0.8.11.** `power.implied_sign` and the recurring
+`coordinator._check_grid_sign` both used to treat a raw grid reading of
+exactly zero as directional evidence — `grid_reading_w > 0` failing meant
+"exporting", regardless of how the zero arose. A `no_grid_import` window
+running on battery overnight, with no export and no import, reads exactly
+zero for the whole window: the single most common reading this feature
+sees, misread as a sustained contradiction every time.
+
+A reading within a small tolerance of zero (`power.NO_FLOW_BELOW_W`) is now
+treated as no evidence at all, not as ambiguous evidence — there is no
+direction to a flow that did not happen. The recurring check's disagreement
+counter also resets on an inconclusive reading exactly as it does on an
+agreeing one, so a night of correctly-inconclusive zero readings cannot
+leave the counter primed to trip on the next real reading.
 
 ---
 

@@ -9,6 +9,7 @@ import importlib
 import sys
 import types
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -207,6 +208,60 @@ class TestModePrecedence(unittest.TestCase):
         )
         self.assertIs(trace.mode, Mode.OCCUPIED)
         self.assertTrue(any("coast" in r for r in trace.rejected))
+
+    def test_a_cheaper_window_imminent_coasts_even_when_it_would_not_hold_forever(
+        self,
+    ):
+        """0.8.11, finding 12. `predicted_to_hold` is False (the model does
+        not trust the band to hold indefinitely unaided) but a cheaper
+        tariff window begins soon enough that the model has separately said
+        the band holds until then — the cheapest way to deliver the same
+        comfort outcome is to wait for it.
+        """
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=23.0,
+                relative_humidity=55.0,
+                presence=True,
+                predicted_to_hold=False,
+                cheaper_window_imminent=True,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertIs(trace.base_mode, Mode.OCCUPIED)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+
+    def test_a_window_that_forbids_coasting_also_forbids_the_price_defer(self):
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=23.0,
+                relative_humidity=55.0,
+                presence=True,
+                predicted_to_hold=False,
+                cheaper_window_imminent=True,
+                coasting_permitted=False,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.OCCUPIED)
+        self.assertTrue(any("coast" in r for r in trace.rejected))
+
+    def test_no_cheaper_window_and_no_unaided_hold_runs_now(self):
+        trace = evaluate_room(
+            room(),
+            RoomInputs(
+                now=NOW,
+                temperature_c=23.0,
+                relative_humidity=55.0,
+                presence=True,
+                predicted_to_hold=False,
+                cheaper_window_imminent=False,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.OCCUPIED)
 
     def test_precool_needs_both_the_window_and_demand_ahead(self):
         without = evaluate_room(
@@ -453,6 +508,72 @@ class TestTariffSeries(unittest.TestCase):
     def test_the_end_of_an_interval_belongs_to_the_next_one(self):
         self.assertEqual(self.series.interval_at(self._at(12)).rate, "peak")
         self.assertEqual(self.series.interval_at(self._at(11, 30)).rate, "off_peak")
+
+
+class TestCheaperIntervalAhead(unittest.TestCase):
+    """0.8.11, finding 12."""
+
+    def _series(self, prices: list[float]) -> TariffSeries:
+        """A run of consecutive 30-minute intervals starting at midnight,
+        one per given price."""
+        response = {
+            "intervals": [
+                {
+                    "start_time": f"2026-08-08T{h:02d}:{m:02d}:00+10:00",
+                    "end_time": f"2026-08-08T{eh:02d}:{em:02d}:00+10:00",
+                    "duration": 30,
+                    "per_kwh": price,
+                    "export_per_kwh": 0.05,
+                    "rate": "rate",
+                    "constraints": [],
+                    "coasting_permitted": True,
+                    "allowance_kwh": None,
+                    "day_pattern": "Every day",
+                    "forecast": False,
+                }
+                for index, price in enumerate(prices)
+                for h, m in [divmod(index * 30, 60)]
+                for eh, em in [divmod((index + 1) * 30, 60)]
+            ]
+        }
+        return TariffSeries.from_response(response, NOW, FIXTURE_TZ)
+
+    def _at(self, hour: int, minute: int = 0):
+        return datetime(
+            2026, 8, 8, hour, minute, tzinfo=timezone(timedelta(hours=10))
+        )
+
+    def test_a_cheaper_interval_within_the_horizon_is_found(self):
+        series = self._series([0.40, 0.40, 0.20, 0.20])
+        found = series.cheaper_interval_ahead(
+            self._at(0, 0), 0.40, timedelta(hours=1)
+        )
+        self.assertEqual(found, self._at(1, 0))
+
+    def test_no_cheaper_interval_returns_none(self):
+        series = self._series([0.40, 0.40, 0.40, 0.40])
+        found = series.cheaper_interval_ahead(
+            self._at(0, 0), 0.40, timedelta(hours=1)
+        )
+        self.assertIsNone(found)
+
+    def test_a_cheaper_interval_beyond_the_horizon_is_not_found(self):
+        series = self._series([0.40, 0.40, 0.40, 0.20])
+        found = series.cheaper_interval_ahead(
+            self._at(0, 0), 0.40, timedelta(minutes=30)
+        )
+        self.assertIsNone(found)
+
+    def test_a_missing_price_is_skipped_not_treated_as_free(self):
+        series = self._series([0.40, 0.40, 0.20, 0.20])
+        # Blank out the cheap interval's price directly on the built series.
+        intervals = list(series.intervals)
+        intervals[2] = replace(intervals[2], per_kwh=None)
+        patched = TariffSeries(tuple(intervals), NOW)
+        found = patched.cheaper_interval_ahead(
+            self._at(0, 0), 0.40, timedelta(hours=1, minutes=30)
+        )
+        self.assertEqual(found, self._at(1, 30))
 
 
 class TestSeriesCollapsesToPeriods(unittest.TestCase):
@@ -3710,6 +3831,28 @@ class TestGridSignConvention(unittest.TestCase):
         grid reading alone cannot resolve the convention."""
         self.assertIsNone(_power.implied_sign(500.0, 480.0, -20.0))
 
+    def test_a_reading_of_exactly_zero_offers_no_default(self):
+        """0.8.11. The house is on battery overnight, in a no_grid_import
+        window: house_load - solar is large (decisive by the old logic),
+        but the grid reading itself is exactly zero — no flow occurred, so
+        there is no sign to have read wrong. This is the single most common
+        reading this feature sees and must never be treated as evidence for
+        either convention."""
+        self.assertIsNone(_power.implied_sign(3120.0, 180.0, 0.0))
+
+    def test_a_reading_near_zero_also_offers_no_default(self):
+        """Float noise around zero is still no flow, not a tiny flow."""
+        self.assertIsNone(_power.implied_sign(3120.0, 180.0, 0.001))
+        self.assertIsNone(_power.implied_sign(3120.0, 180.0, -0.001))
+
+    def test_a_small_but_real_reading_is_still_evidence(self):
+        """Above the no-flow floor, even a modest reading counts — this is
+        not the same threshold as AMBIGUOUS_BELOW_W, which governs whether
+        house_load - solar is decisive, not whether the grid moved at all."""
+        self.assertEqual(
+            _power.implied_sign(3120.0, 180.0, 50.0), _power.GRID_SIGN_IMPORTING
+        )
+
 
 class TestAllowableDraw(unittest.TestCase):
     """0.8.10, finding 10."""
@@ -3748,3 +3891,32 @@ class TestCeilingBin(unittest.TestCase):
     def test_nothing_fits(self):
         draw = [0.2, 0.5, 0.9, 1.5]
         self.assertIsNone(_power.ceiling_bin(0.1, draw))
+
+
+class TestSolarOffset(unittest.TestCase):
+    """0.8.11, finding 18. Solar is a direct offset checked first; the
+    battery only binds on the shortfall."""
+
+    def test_solar_fully_covers_the_house_with_credit_left_over(self):
+        # 3 kW solar, 1 kW rest-of-house: 2 kW left over for this room,
+        # nothing left for the battery to cover.
+        net_house, credit = _power.solar_offset_kw(3.0, 1.0)
+        self.assertAlmostEqual(net_house, 0.0)
+        self.assertAlmostEqual(credit, 2.0)
+
+    def test_solar_partially_covers_the_house_with_no_credit(self):
+        # 1 kW solar, 3 kW rest-of-house: solar pays down 1 kW of it, 2 kW
+        # shortfall remains for the battery, nothing left over for the room.
+        net_house, credit = _power.solar_offset_kw(1.0, 3.0)
+        self.assertAlmostEqual(net_house, 2.0)
+        self.assertAlmostEqual(credit, 0.0)
+
+    def test_no_solar_is_the_pre_0_8_11_behaviour(self):
+        net_house, credit = _power.solar_offset_kw(0.0, 2.0)
+        self.assertAlmostEqual(net_house, 2.0)
+        self.assertAlmostEqual(credit, 0.0)
+
+    def test_solar_exactly_matches_the_house(self):
+        net_house, credit = _power.solar_offset_kw(2.0, 2.0)
+        self.assertAlmostEqual(net_house, 0.0)
+        self.assertAlmostEqual(credit, 0.0)
