@@ -167,17 +167,24 @@ class Coefficient:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], default: float) -> Coefficient:
-        """Restore from persistence, tolerating a partial or absent record."""
+        """Restore from persistence, tolerating a partial or absent record.
+
+        A stored `"nan"` or `"inf"` parses through `float()` without raising,
+        so a corrupted or hand-edited store file would otherwise load
+        silently and poison every prediction built on it. Treated the same as
+        a record that fails to parse at all: start fresh from `default`.
+        """
         if not isinstance(data, dict):
             return cls(value=default)
         try:
-            return cls(
-                value=float(data.get("value", default)),
-                variance=float(data.get("variance", INITIAL_VARIANCE)),
-                samples=int(data.get("samples", 0)),
-            )
+            value = float(data.get("value", default))
+            variance = float(data.get("variance", INITIAL_VARIANCE))
+            samples = int(data.get("samples", 0))
         except (TypeError, ValueError):
             return cls(value=default)
+        if not is_finite(value) or not is_finite(variance):
+            return cls(value=default)
+        return cls(value=value, variance=variance, samples=samples)
 
 
 @dataclass(frozen=True, slots=True)
