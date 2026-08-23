@@ -19,6 +19,9 @@ jobs:
       - name: Install lint/type tools
         run: pip install ruff==0.15.11 mypy==1.20.2
 
+      - name: Install Home Assistant, so mypy can resolve its types
+        run: pip install homeassistant==2026.8.3
+
       - name: ruff
         run: ruff check custom_components tests
 
