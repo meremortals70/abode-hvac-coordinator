@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Install lint/type tools
+        run: pip install ruff==0.15.11 mypy==1.20.2
+
+      - name: ruff
+        run: ruff check custom_components tests
+
+      - name: mypy --strict
+        run: mypy --strict --ignore-missing-imports custom_components/abode_hvac_coordinator/
+
+  pure-module-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Run pure-module tests (no Home Assistant required)
+        run: python3 -m unittest discover -s tests -p "test_core.py" -v
+
+  home-assistant-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Install Home Assistant test stack
+        run: |
+          pip install \
+            homeassistant==2026.8.3 \
+            pytest-homeassistant-custom-component==0.13.357 \
+            pytest pytest-asyncio
+
+      - name: Run full suite (test_core, test_attributes, test_config_flow, test_init)
+        run: python3 -m pytest tests/ -v
