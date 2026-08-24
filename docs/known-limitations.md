@@ -3,16 +3,20 @@
 Written plainly, because a limitation you discover yourself is worse than one
 you were told about.
 
-## Nothing has been proven about real compressor behaviour
+## Real compressor behaviour is proven by one live room, not by this codebase
 
-**Every build has been installed and run against a live Home Assistant
-instance, and loads and runs without crashing — that is confirmed, not just a
-test-harness claim.** What is not confirmed is the physical behaviour behind
-it: 447 tests pass and the integration loads and unloads cleanly, and none of
-that tells you a compressor, a blind or a fan actually did the right thing on
-real equipment.
+Every build runs continuously against a live air conditioner in Jason's own
+office, used as the test room. Faults found there and reported back are what
+has driven every real-world fix in this project's history. The 447 tests and
+the clean install/unload are what an automated pass can confirm on their
+own — they do not, by themselves, prove a compressor, blind or fan did the
+right thing on real equipment; that proof comes from the office room, not
+from the suite.
 
-Treat the first week as a test and read this page before relying on it.
+What the office room has not yet covered — a second climate zone, a
+different unit brand, months rather than weeks of runtime — is still
+unproven. Treat a build as validated only as far as it has actually run in
+that room.
 
 ## Actuation is unproven against a real unit
 
