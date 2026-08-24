@@ -19,9 +19,16 @@ import, not enforced beforehand from a projection.
 
 The ceiling itself normally lifts the moment a room actually needs
 correction (`demand` is not None) — the point where comfort, not cost, must
-decide. `allow_comfort_reduction` is the one room-level exception: with it
-set, the ceiling keeps applying even then, because the room's occupant has
-said they would rather run gently than run at whatever the compressor wants.
+decide. `power_management` is the one room-level exception, and it is a
+three-state setting, not a boolean: `off` (the default) never computes a
+ceiling for this room; `guidance` computes and reports the ceiling — it is
+on the trace and named in `reasons` — but never applies it, even once the
+room needs correction; `enforced` is the pre-0.8.12 behaviour, keeping the
+ceiling applying even then, because the room's occupant has said they would
+rather run gently than run at whatever the compressor wants. Whether
+`guidance` actually stops short of applying the ceiling is decided in
+`coordinator._regulate`, not here — this module only ever computes the
+ceiling and states its own state in `reasons`.
 """
 
 from __future__ import annotations

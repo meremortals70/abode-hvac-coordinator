@@ -38,7 +38,7 @@ async def async_get_config_entry_diagnostics(
                 "overhang_projection_m": room.overhang_projection_m,
                 "overhang_height_m": room.overhang_height_m,
                 "lockout_reason": room.lockout_reason,
-                "allow_comfort_reduction": room.allow_comfort_reduction,
+                "power_management": room.power_management,
                 "bands": {
                     str(mode): {"low": band.low, "high": band.high}
                     for mode, band in room.bands.items()

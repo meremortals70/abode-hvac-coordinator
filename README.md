@@ -5,10 +5,13 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.8.11 — alpha, not proven
-> The architecture is built and 443 tests pass. **Nothing since v0.5.3 has been
-> confirmed working on real hardware**, and two releases shipped with faults
-> that only appeared on first install. Treat your first week as a test and read
+> ### Status: v0.8.12 — beta, not proven
+> The architecture is built, 447 tests pass, and every build installs and runs
+> against a live Home Assistant instance without crashing. **What is not yet
+> confirmed is real compressor behaviour** — that a unit actually starts,
+> stops and holds setpoint the way the trace says it will — and two releases
+> shipped with faults that only appeared on first install. Treat your first
+> week as a test and read
 > [Known limitations](docs/known-limitations.md) before you rely on it.
 
 ---

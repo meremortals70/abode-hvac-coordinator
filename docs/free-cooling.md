@@ -80,6 +80,12 @@ It is published, not actuated. This controller owns the air conditioner and the
 covers. Windows are yours, or an automation you write against
 `free_cooling_advised`.
 
+If the room has media players configured under **Announce through**
+([Configuration](configuration.md)), the moment it becomes advised is also
+spoken there — once, not repeated every cycle the window stays open. Without
+any media players configured, it stays silent in the sensor's attributes,
+same as always.
+
 ## Will something sweat?
 
 Condensation forms wherever a surface sits below the dew point of the air

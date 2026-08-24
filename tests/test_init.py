@@ -38,6 +38,8 @@ from custom_components.abode_hvac_coordinator.const import (
     ISSUE_MISSING_COMFORT_INPUTS,
     ISSUE_POWER_SHORTFALL,
     ISSUE_SHARED_CLIMATE_ENTITY,
+    POWER_MANAGEMENT_ENFORCED,
+    POWER_MANAGEMENT_GUIDANCE,
     SERVICE_HEADING_HOME,
 )
 from custom_components.abode_hvac_coordinator.coordinator import _PowerContext
@@ -298,7 +300,7 @@ async def test_comfort_reduction_throttles_a_room_that_needs_correction(
     rather than either stopping the room or ignoring the budget entirely.
     """
     rooms = list(mock_config_entry.options[CONF_ROOMS])
-    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: True}
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED}
     mock_config_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
         mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}
@@ -333,6 +335,60 @@ async def test_comfort_reduction_throttles_a_room_that_needs_correction(
     assert state.attributes["power_ceiling_c"] is not None
 
 
+async def test_guidance_reports_the_ceiling_without_ever_throttling(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.12. Guidance mode: the same shortfall is reported — a ceiling and
+    bin are on the trace, and the reasons say what would happen — but the
+    commanded setpoint is left exactly where comfort alone would put it, and
+    `comfort_reduction_active` never latches. `POWER_MANAGEMENT_ENFORCED` is
+    the only state that clamps; `POWER_MANAGEMENT_GUIDANCE` must not.
+    """
+    rooms = list(mock_config_entry.options[CONF_ROOMS])
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_GUIDANCE}
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}
+    )
+    await _setup_with_power(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+        sensor__battery_soc="20.0",
+        sensor__solar_power="0",
+        sensor__house_load="500",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    coordinator.tariff = _no_grid_import_series(dt_util.utcnow())
+
+    model = coordinator.model_for("test_room")
+    model.k_sensible = Coefficient(value=2.0, variance=0.01, samples=40)
+    model.k_loss = Coefficient(value=0.15, variance=0.01, samples=40)
+    model.k_solar = Coefficient(value=1.0, variance=0.01, samples=40)
+    coordinator._last_target["test_room"] = 24.0
+
+    await _let_occupancy_settle(hass, coordinator)
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "compressor"
+    # Reported, exactly as under enforced —
+    assert state.attributes["power_ceiling_c"] is not None
+    assert any(
+        "guidance only, not enforced" in reason
+        for reason in state.attributes["reasons"]
+    )
+    # — but never latched or applied. No "power budget: commanded held at..."
+    # reason means the clamp in `_regulate` never fired.
+    assert state.attributes["comfort_reduction_active"] is False
+    assert not any(
+        "commanded held at" in reason for reason in state.attributes["reasons"]
+    )
+
+
 async def test_solar_widens_the_ceiling_beyond_what_the_battery_alone_affords(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
@@ -342,7 +398,7 @@ async def test_solar_widens_the_ceiling_beyond_what_the_battery_alone_affords(
     that alone would have floored the ceiling at zero.
     """
     rooms = list(mock_config_entry.options[CONF_ROOMS])
-    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: True}
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED}
     mock_config_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
         mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}

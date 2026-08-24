@@ -103,6 +103,9 @@ from .const import (
     ISSUE_TARIFF_UNAVAILABLE,
     ISSUE_UNRECOGNISED_CONSTRAINT,
     LOGGER,
+    POWER_MANAGEMENT_ENFORCED,
+    POWER_MANAGEMENT_GUIDANCE,
+    POWER_MANAGEMENT_OFF,
     PRECOOL_DEMAND_MARGIN_C,
     STARTUP_FETCH_ATTEMPTS,
     STARTUP_FETCH_DELAY,
@@ -122,6 +125,7 @@ from .forecast import (
     RoomForecastInput,
     build_forecast,
 )
+from .forms import power_management_from_raw
 from .grace import Announcement, GraceSettings, GraceState, evaluate_grace
 from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index
 from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
@@ -416,6 +420,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._grace: dict[str, GraceState] = {}
         #: Why each room is considered occupied or not, for the trace.
         self._grace_reason: dict[str, str] = {}
+        #: Whether free cooling was advised last cycle, per room. Announced
+        #: only on the rising edge — the moment it becomes true — not every
+        #: cycle it stays true, the same principle the grace warnings use.
+        self._free_cooling_advised: dict[str, bool] = {}
         #: Announcements raised this evaluation, dispatched after it.
         self._pending_announcements: list[tuple[RoomConfig, Announcement]] = []
         #: Entities currently logged as unavailable, so each transition is
@@ -913,6 +921,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             capabilities = self._capabilities(room)
             self._learn(room, inputs, now)
             trace = evaluate_room(room, inputs)
+            self._announce_free_cooling(room, trace)
             trace.model = self.model_for(room.room_id).diagnostics()
             if trace.target_dry_bulb_c is not None:
                 self._last_target[room.room_id] = trace.target_dry_bulb_c
@@ -964,6 +973,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         which is not the room. This closes the outer loop around it, and it is
         the only place in the project allowed to command a temperature other
         than the one the comfort index solved for.
+
+        The power ceiling only actually clamps `commanded_dry_bulb_c` — and
+        only counts as binding for anti-windup — when the room's
+        `power_management` is `POWER_MANAGEMENT_ENFORCED`. Under
+        `POWER_MANAGEMENT_GUIDANCE`, `_power_ceiling` still populates
+        `trace.power_ceiling_c`/`power_bin`/`power_budget_kw` and the trace
+        reasons still report what the ceiling would be, but neither this
+        method's clamp nor its anti-windup gate ever fire against it: the
+        commanded setpoint is left exactly where comfort alone would put it.
         """
         state = self._regulators.setdefault(room.room_id, RegulatorState())
 
@@ -992,7 +1010,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             else round(trace.target_dry_bulb_c + state.trim_c, 1)
         )
         if (
-            trace.power_ceiling_c is not None
+            room.power_management == POWER_MANAGEMENT_ENFORCED
+            and trace.power_ceiling_c is not None
             and inputs.temperature_c is not None
             and direction is not None
             and uncapped is not None
@@ -1027,7 +1046,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         commanded = commanded_setpoint(state, trace.target_dry_bulb_c)
 
         if (
-            trace.power_ceiling_c is not None
+            room.power_management == POWER_MANAGEMENT_ENFORCED
+            and trace.power_ceiling_c is not None
             and commanded is not None
             and inputs.temperature_c is not None
             and direction is not None
@@ -1370,6 +1390,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         if drift is None:
             return outdoor > indoor + PRECOOL_DEMAND_MARGIN_C
         return drift > 0
+
+    def _announce_free_cooling(self, room: RoomConfig, trace: DecisionTrace) -> None:
+        """Speak the room's own free-cooling advice, once, on the rising edge.
+
+        `free_cooling_advised` is a level, recomputed fresh every cycle
+        (`modes.py`), not an event — so raising it every time it reads True
+        would announce it every 30 seconds for as long as the window stays
+        open. Only the transition from not-advised to advised is queued.
+        """
+        was_advised = self._free_cooling_advised.get(room.room_id, False)
+        self._free_cooling_advised[room.room_id] = trace.free_cooling_advised
+        if trace.free_cooling_advised and not was_advised:
+            self._pending_announcements.append((room, Announcement.FREE_COOLING))
 
     def _graced_presence(self, room: RoomConfig, now: datetime) -> bool | None:
         """Presence after the grace periods, not the raw sensor.
@@ -1912,6 +1945,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self.models.pop(room_id, None)
                 self._grace.pop(room_id, None)
                 self._grace_reason.pop(room_id, None)
+                self._free_cooling_advised.pop(room_id, None)
                 self._regulators.pop(room_id, None)
                 self._previous_mode.pop(room_id, None)
                 self._mode_changed_at.pop(room_id, None)
@@ -2276,29 +2310,35 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """The setpoint ceiling a tight power budget places on this room.
 
         0.8.10, findings 10 and 15. Replaces the pre-0.8.10 boolean veto.
+        Extended to three states in 0.8.12.
 
-        **`allow_comfort_reduction` is the single gate for the whole
-        mechanism, not just for the above-band case.** Off (the default),
-        power management does not touch this room at all — comfort wins
+        **`power_management` is the single gate for the whole mechanism, not
+        just for the above-band case.** "off" (the default): power
+        management does not touch this room at all — comfort wins
         unconditionally, and the room holds its band regardless of the
-        constraint, exactly as if power management were not configured. On,
-        the constraint is enforced for this room: when the band cannot be
-        held within it, the room is kept as close to the band as the budget
-        allows, and the ceiling applies whether the room is already inside
-        its band or calling for correction. **This never stops the
-        compressor either way** — enforcing the constraint means throttling
-        toward it, never abandoning the room.
+        constraint, exactly as if power management were not configured.
+        "guidance": everything below this line still runs — the ceiling is
+        computed, `trace.power_ceiling_c`/`power_bin`/`power_budget_kw` are
+        still set, so the room's own sensor shows exactly what the budget
+        would do — but `_regulate` is told not to actually clamp the
+        commanded setpoint against it. "enforced": the constraint is
+        enforced for this room: when the band cannot be held within it, the
+        room is kept as close to the band as the budget allows, and the
+        ceiling applies whether the room is already inside its band or
+        calling for correction. **This never stops the compressor, under
+        "enforced" or "guidance" alike** — enforcing the constraint means
+        throttling toward it, never abandoning the room.
 
         This was corrected after being built the other way around: the
         first version applied a gentle within-band ceiling regardless of the
-        checkbox, treating it as harmless because comfort was never at risk.
+        setting, treating it as harmless because comfort was never at risk.
         That was Claude's own invention, not what was asked for. The
-        checkbox is the user's choice between comfort and power management
+        setting is the user's choice between comfort and power management
         being the more important thing for this room, full stop — not a
         magnitude knob on top of an always-on baseline.
         """
-        if not room.allow_comfort_reduction:
-            # Power management is not enforced for this room. Comfort wins
+        if room.power_management == POWER_MANAGEMENT_OFF:
+            # Power management does not touch this room. Comfort wins
             # unconditionally; nothing below this line applies.
             return
         if trace.actuator is ActuatorStep.OFF:
@@ -2370,10 +2410,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         trace.power_budget_kw = round(allowance_kw, 3)
         # Whether the room is actually being held back by this right now —
-        # not just whether the checkbox is on, which the room config already
-        # shows. True only while the room needs correction and is being
-        # throttled toward it rather than held there in full.
-        trace.comfort_reduction_active = trace.demand is not None
+        # not just whether the setting is enforced, which the room config
+        # already shows. True only when enforced, the room needs correction,
+        # and it is being throttled toward the ceiling rather than held
+        # there in full. "guidance" never actually holds the room back, so
+        # it is never active, no matter what the ceiling reports.
+        trace.comfort_reduction_active = (
+            room.power_management == POWER_MANAGEMENT_ENFORCED
+            and trace.demand is not None
+        )
         trace.grid_importing_now = (
             None if context.grid_import_w is None else context.grid_import_w > 0
         )
@@ -2387,6 +2432,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             trace.reasons.append(
                 "power budget: even holding at setpoint exceeds the "
                 f"{allowance_kw:.2f} kW allowance; ceiling held at 0.0 C"
+                + (
+                    " (guidance only, not enforced)"
+                    if room.power_management == POWER_MANAGEMENT_GUIDANCE
+                    else ""
+                )
             )
             return
 
@@ -2397,7 +2447,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             f"{BIN_NAMES[bin_index]} bin, ceiling "
             f"{trace.power_ceiling_c:.1f} C approach"
             + (
-                ", comfort reduction in effect"
+                " (guidance only, not enforced)"
+                if room.power_management == POWER_MANAGEMENT_GUIDANCE
+                else ", comfort reduction in effect"
                 if trace.demand is not None
                 else ""
             )
@@ -2675,12 +2727,19 @@ def _room_from_raw(
         cover_entity_ids=tuple(raw.get(CONF_COVER_ENTITIES, []) or []),
         allow_cover_control=bool(raw.get(CONF_ALLOW_COVER_CONTROL, True)),
         lockout_reason=raw.get(CONF_LOCKOUT_REASON),
-        allow_comfort_reduction=bool(raw.get(CONF_ALLOW_COMFORT_REDUCTION, False)),
+        power_management=power_management_from_raw(
+            raw.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
+        ),
     )
 
 
 def _announcement_text(room: RoomConfig, announcement: Announcement) -> str:
     """What to say. Plain, and it names the room so it is unambiguous."""
+    if announcement is Announcement.FREE_COOLING:
+        return (
+            f"Opening the windows would help the {room.name} right now — it's "
+            "cooler and drier outside than in."
+        )
     minutes = int(room.grace.vacant_after.total_seconds() // 60)
     if announcement is Announcement.FIRST_WARNING:
         return (

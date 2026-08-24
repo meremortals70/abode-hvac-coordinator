@@ -41,6 +41,9 @@ from .const import (
     DEFAULT_LOCKOUT_REASONS,
     NOT_LOCKED_OUT,
     OWN_OUTDOOR_UNIT,
+    POWER_MANAGEMENT_ENFORCED,
+    POWER_MANAGEMENT_GUIDANCE,
+    POWER_MANAGEMENT_OFF,
 )
 from .grace import (
     DEFAULT_OCCUPIED_AFTER,
@@ -52,6 +55,27 @@ from .models import Mode
 #: Modes that carry a band of their own. Unoccupied is off, precondition uses
 #: the occupied band, coast inherits, lockout never actuates.
 BAND_MODES = (Mode.OCCUPIED, Mode.SLEEP, Mode.PRECOOL)
+
+
+def power_management_from_raw(value: Any) -> str:
+    """Coerce a stored power-management value, old or new, to one of the
+    three current states.
+
+    Pre-0.8.12 installs stored a plain bool: True meant the ceiling was
+    enforced, False meant power management did not touch the room at all.
+    Those map straight onto the two states that existed then. Anything else
+    unrecognised — a stale value, a typo written by hand — falls back to
+    "off" rather than guessing at enforcement.
+    """
+    if isinstance(value, bool):
+        return POWER_MANAGEMENT_ENFORCED if value else POWER_MANAGEMENT_OFF
+    if isinstance(value, str) and value in (
+        POWER_MANAGEMENT_OFF,
+        POWER_MANAGEMENT_GUIDANCE,
+        POWER_MANAGEMENT_ENFORCED,
+    ):
+        return value
+    return POWER_MANAGEMENT_OFF
 
 
 def slug(name: str) -> str:
@@ -91,8 +115,8 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_ANNOUNCE: bool(user_input.get(CONF_ANNOUNCE, False)),
         CONF_ANNOUNCE_TARGETS: user_input.get(CONF_ANNOUNCE_TARGETS, []),
         CONF_LOCKOUT_REASON: _lockout_reason(user_input.get(CONF_LOCKOUT_REASON)),
-        CONF_ALLOW_COMFORT_REDUCTION: bool(
-            user_input.get(CONF_ALLOW_COMFORT_REDUCTION, False)
+        CONF_ALLOW_COMFORT_REDUCTION: power_management_from_raw(
+            user_input.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
         ),
     }
 

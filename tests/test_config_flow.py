@@ -31,6 +31,8 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_TARIFF_ENTRY_ID,
     CONF_TEMPERATURE_ENTITY,
     DOMAIN,
+    POWER_MANAGEMENT_ENFORCED,
+    POWER_MANAGEMENT_OFF,
     STARTUP_FETCH_DELAY,
 )
 from custom_components.abode_hvac_coordinator.power import GRID_SIGN_EXPORTING
@@ -488,13 +490,13 @@ async def test_the_bands_step_offers_the_comfort_reduction_checkbox(
         for key in result["data_schema"].schema
         if str(key) == CONF_ALLOW_COMFORT_REDUCTION
     )
-    assert default_field.default() is False
+    assert default_field.default() == POWER_MANAGEMENT_OFF
 
 
 async def test_permitting_comfort_reduction_is_stored_on_the_room(
     hass: HomeAssistant, mock_setup_entry: None
 ) -> None:
-    """Ticking it on for one room reaches the stored RoomConfig."""
+    """Setting it to enforced for one room reaches the stored RoomConfig."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
@@ -512,11 +514,14 @@ async def test_permitting_comfort_reduction_is_stored_on_the_room(
         {
             "occupied_low": 24.0,
             "occupied_high": 27.0,
-            CONF_ALLOW_COMFORT_REDUCTION: True,
+            CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED,
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION] is True
+    assert (
+        result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION]
+        == POWER_MANAGEMENT_ENFORCED
+    )
 
 
 async def test_comfort_reduction_defaults_off_when_not_submitted(
@@ -538,7 +543,10 @@ async def test_comfort_reduction_defaults_off_when_not_submitted(
         result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION] is False
+    assert (
+        result["data"][CONF_ROOMS][0][CONF_ALLOW_COMFORT_REDUCTION]
+        == POWER_MANAGEMENT_OFF
+    )
 
 
 async def test_the_power_step_stores_all_five_fields(

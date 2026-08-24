@@ -136,13 +136,17 @@ class RoomConfig:
     #: compressor. That covers two rooms on one outdoor unit and two heads in
     #: one room with the same rule, and needs no objects to keep in step.
     head_groups: Mapping[str, str] = field(default_factory=dict)
-    #: 0.8.10, finding 15. Off by default. With it on, the power budget's
-    #: setpoint ceiling keeps applying even once the room needs correction,
-    #: rather than lifting there — the room runs gently rather than at full
-    #: output, and never stops. A yes/no the user answers, not a magnitude:
-    #: the limit itself is whatever the remaining energy can buy, which the
-    #: controller already computes.
-    allow_comfort_reduction: bool = False
+    #: 0.8.10, finding 15; extended to three states in 0.8.12. One of
+    #: `const.POWER_MANAGEMENT_OFF` (default), `_GUIDANCE` or `_ENFORCED`.
+    #: "off": the power budget does not touch this room. "guidance": the
+    #: setpoint ceiling is computed and reported exactly as under
+    #: "enforced", but never actually caps the commanded setpoint. "enforced":
+    #: the ceiling keeps applying even once the room needs correction, rather
+    #: than lifting there — the room runs gently rather than at full output,
+    #: and never stops. Never a magnitude the user answers: the limit itself
+    #: is whatever the remaining energy can buy, which the controller already
+    #: computes.
+    power_management: str = "off"
 
     def group_of(self, entity_id: str) -> str:
         """Which compressor a head runs on.
@@ -357,9 +361,11 @@ class DecisionTrace:
     #: Which approach bin the ceiling came from — "at_setpoint", "close",
     #: "working" or "pulldown" — or None with no ceiling in force.
     power_bin: str | None = None
-    #: Whether finding 15's checkbox is why the ceiling is applying above the
-    #: room's own comfort band right now, distinct from a room merely reading
-    #: a degree high while still inside it.
+    #: Whether `power_management == "enforced"` is why the ceiling is
+    #: applying above the room's own comfort band right now, distinct from a
+    #: room merely reading a degree high while still inside it. Always False
+    #: under "off" and "guidance" — guidance never applies the ceiling, only
+    #: reports it.
     comfort_reduction_active: bool = False
     #: Measured, not projected — None when no grid sensor is configured.
     #: True means the house is drawing from the grid right now.

@@ -33,7 +33,7 @@
       },
       "bands": {
         "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nOff by default. On, if the power budget cannot fully hold this room during a no-import window, it keeps the room as comfortable as the remaining energy allows rather than running at full output — it never stops the room either way.",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nPower management is off by default. Guidance computes what the power budget would do during a no-import window and reports it, without ever changing what the room is commanded to. Enforced actually holds the room to that ceiling — as comfortable as the remaining energy allows rather than full output — and, either way, it never stops the room.",
         "data": {
           "occupied_low": "Occupied — lower bound",
           "occupied_high": "Occupied — upper bound",
@@ -41,7 +41,7 @@
           "sleep_high": "Sleep — upper bound (optional)",
           "precool_low": "Precool — lower bound (optional)",
           "precool_high": "Precool — upper bound (optional)",
-          "allow_comfort_reduction": "Allow power management to reduce comfort in this room"
+          "allow_comfort_reduction": "Power management"
         }
       },
       "room_outdoor": {
@@ -91,7 +91,7 @@
       },
       "bands": {
         "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nOff by default. On, if the power budget cannot fully hold this room during a no-import window, it keeps the room as comfortable as the remaining energy allows rather than running at full output — it never stops the room either way.",
+        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nPower management is off by default. Guidance computes what the power budget would do during a no-import window and reports it, without ever changing what the room is commanded to. Enforced actually holds the room to that ceiling — as comfortable as the remaining energy allows rather than full output — and, either way, it never stops the room.",
         "data": {
           "occupied_low": "Occupied — lower bound",
           "occupied_high": "Occupied — upper bound",
@@ -99,7 +99,7 @@
           "sleep_high": "Sleep — upper bound (optional)",
           "precool_low": "Precool — lower bound (optional)",
           "precool_high": "Precool — upper bound (optional)",
-          "allow_comfort_reduction": "Allow power management to reduce comfort in this room"
+          "allow_comfort_reduction": "Power management"
         }
       },
       "init": {
@@ -168,7 +168,7 @@
       },
       "power": {
         "title": "Power-aware operation",
-        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's occupant has permitted comfort reduction (set per room, on the room's comfort bands step). It never stops the compressor for this.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\n{power}",
+        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's power management is set to guidance or enforced (set per room, on the room's comfort bands step). Guidance reports what the ceiling would be without applying it; enforced applies it. It never stops the compressor for this.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\n{power}",
         "data": {
           "battery_soc_entity_id": "Battery charge sensor (percentage)",
           "battery_capacity_kwh": "Battery usable capacity (kWh)",
@@ -344,6 +344,13 @@
       "options": {
         "importing": "Positive means importing",
         "exporting": "Positive means exporting"
+      }
+    },
+    "power_management": {
+      "options": {
+        "off": "Off — ignore the power budget",
+        "guidance": "Guidance — report what it would do, never apply it",
+        "enforced": "Enforced — hold the room to the ceiling"
       }
     }
   }

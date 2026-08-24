@@ -98,12 +98,23 @@ CONF_GRID_ENTITY: Final = "grid_power_entity_id"
 #: One of `power.GRID_SIGN_IMPORTING` / `power.GRID_SIGN_EXPORTING`.
 CONF_GRID_SIGN: Final = "grid_sign"
 
-#: Per room. 0.8.10, finding 15. Off by default: the power budget's setpoint
-#: ceiling (finding 10) never applies once the room actually needs
-#: correction — comfort decides there, not cost. On, the ceiling keeps
-#: applying above the band too, and the room runs at the largest output the
-#: remaining energy allows rather than being abandoned.
+#: Per room. 0.8.10, finding 15; extended to three states in 0.8.12. Stored
+#: under its original key for back-compatibility with existing installs,
+#: whose boolean True/False migrates to "enforced"/"off" on read.
 CONF_ALLOW_COMFORT_REDUCTION: Final = "allow_comfort_reduction"
+
+#: Power management does not touch this room at all. Comfort wins
+#: unconditionally, exactly as if power management were not configured.
+POWER_MANAGEMENT_OFF: Final = "off"
+#: The setpoint ceiling is computed and reported — trace, sensor attributes —
+#: exactly as under "enforced", but never actually caps the commanded
+#: setpoint. For an occupant who wants visibility into the budget without
+#: conceding comfort to it.
+POWER_MANAGEMENT_GUIDANCE: Final = "guidance"
+#: The setpoint ceiling keeps applying even once the room needs correction,
+#: rather than lifting there — the room runs gently rather than at full
+#: output, and never stops.
+POWER_MANAGEMENT_ENFORCED: Final = "enforced"
 
 # --- tariff, read from Abode Power Tariffs ------------------------------
 
@@ -241,8 +252,9 @@ ISSUE_GRID_REQUIRED: Final = "no_grid_import_without_grid_sensor"
 #: answer, it does not silently overrule one.
 ISSUE_GRID_SIGN_CONTRADICTED: Final = "grid_sign_contradicted"
 #: A `no_grid_import` window closed having measured real grid import against
-#: it. The number itself says whether it is the checkbox doing its job
-#: (comfort was held at a cost) or the constraint being breached outright
-#: (comfort was never traded and the house imported anyway). 0.8.10,
-#: findings 15 and 16.
+#: it. The number itself says whether it is `power_management=enforced`
+#: doing its job (comfort was held at a cost) or the constraint being
+#: breached outright (comfort was never traded and the house imported
+#: anyway — true under `off` and `guidance` alike, since neither ever holds
+#: comfort down). 0.8.10, findings 15 and 16.
 ISSUE_POWER_SHORTFALL: Final = "power_shortfall"

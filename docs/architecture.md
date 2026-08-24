@@ -192,19 +192,24 @@ inside the same regulation step that trims the commanded setpoint for every
 other reason — not as an override layered on afterward.
 
 **The boolean veto that stood from 0.8.5 to 0.8.9 is retired, not narrowed —
-and replaced by a checkbox the room's occupant controls, not a mechanism the
-controller applies on its own judgement.** `allow_comfort_reduction`, off by
-default, per room. Off, power management does not touch the room at all:
-comfort wins unconditionally and the room holds its band regardless of the
-constraint, exactly as if the feature were not configured. On, the
-constraint is enforced for that room — the ceiling applies whether the room
-is already inside its band or calling for correction, holding it as close to
-the band as the remaining energy allows rather than running it flat out or
-refusing it. **No state of this feature, in any configuration, ever commands
-the compressor off for a power reason** — enforcing the constraint means
-throttling toward it, never abandoning the room. Where the budget cannot
-even afford holding at setpoint, the ceiling floors at "ask for nothing
-colder than the room already is" rather than becoming a stop.
+and replaced by a per-room setting the occupant controls, not a mechanism the
+controller applies on its own judgement.** `allow_comfort_reduction` (its
+stored key is unchanged for back-compatibility) is a three-state setting,
+`off` by default: `off`, `guidance` or `enforced`. Off, power management does
+not touch the room at all: comfort wins unconditionally and the room holds
+its band regardless of the constraint, exactly as if the feature were not
+configured. Guidance computes the same ceiling as enforced would and reports
+it — it is on the trace and named in the reasons — but never applies it: the
+commanded setpoint is left exactly where comfort alone would put it, so the
+occupant can see what the budget would do before ever living with it.
+Enforced applies the constraint for that room — the ceiling holds whether
+the room is already inside its band or calling for correction, holding it as
+close to the band as the remaining energy allows rather than running it flat
+out or refusing it. **No state of this feature, in any configuration, ever
+commands the compressor off for a power reason** — enforcing the constraint
+means throttling toward it, never abandoning the room. Where the budget
+cannot even afford holding at setpoint, the ceiling floors at "ask for
+nothing colder than the room already is" rather than becoming a stop.
 
 **Since 0.8.11, solar is checked first, as a direct offset — the battery
 only becomes a binding constraint at all where solar is insufficient.**
@@ -412,16 +417,21 @@ room's compressor group can afford, and that bin's approach becomes a
 ceiling on how far below (heating: above) the room's own reading the
 commanded setpoint may go.
 
-**The ceiling never stops the compressor, and the checkbox is a single,
-unconditional gate on the whole mechanism.** `allow_comfort_reduction`, off
-by default, per room. Off, power management does not touch the room at
-all — comfort wins and the band is held regardless of the constraint, even
-while the room sits comfortably inside it. On, the constraint is enforced:
-the ceiling applies whether the room is inside its band or calling for
-correction, holding it as close to the band as the remaining energy allows —
-running at the largest output the budget affords, spread across the hours
-until the constraint clears, degrading gradually as the battery depletes
-rather than either running flat out or being abandoned. Where even holding
+**The ceiling never stops the compressor, and the per-room setting is a
+three-state gate on the whole mechanism, not a single on/off.**
+`allow_comfort_reduction` (stored key unchanged for back-compatibility) is
+`off` by default, per room; the other two states are `guidance` and
+`enforced`. Off, power management does not touch the room at all — comfort
+wins and the band is held regardless of the constraint, even while the room
+sits comfortably inside it. Guidance computes and reports the ceiling — the
+trace shows it and the reasons name it — without ever applying it, so a room
+can be watched under the budget before it is throttled by it. Enforced
+applies the constraint: the ceiling holds whether the room is inside its
+band or calling for correction, holding it as close to the band as the
+remaining energy allows — running at the largest output the budget
+affords, spread across the hours until the constraint clears, degrading
+gradually as the battery depletes rather than either running flat out or
+being abandoned. Where even holding
 at setpoint cannot be afforded, the ceiling floors at zero further
 correction — never at an actuator state that turns the unit off.
 
@@ -449,7 +459,7 @@ alone, and no breach can be measured.
 A `no_grid_import` window's actual grid import is integrated across the
 window and, where it exceeds a small noise floor, reported in a repair issue
 naming the kWh — a measured figure, not a reconstruction, and the same
-mechanism whether or not any room's comfort-reduction checkbox is set.
+mechanism regardless of any room's `power_management` setting.
 
 ### A room has heads; heads sit on outdoor units
 

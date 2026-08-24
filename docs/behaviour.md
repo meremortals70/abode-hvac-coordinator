@@ -106,6 +106,12 @@ immediately before it shuts off.
 Returning at any point during that cancels the shutdown and the warning. A
 later absence warns again rather than shutting off silently.
 
+The same media players are also used for one more thing, independent of the
+shutdown toggle: the moment [free cooling](free-cooling.md) becomes advised
+for a room, it's spoken once — not repeated every cycle while the window
+stays open. A room with no media players configured gets neither
+announcement; the shutdown toggle only ever controls the shutdown warnings.
+
 ### Why this is in the integration rather than an automation
 
 Because the compressor decision and the occupancy decision are the same

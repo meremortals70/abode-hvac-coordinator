@@ -44,7 +44,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Wait before stopping | Seeded | 10 minutes. The answering-the-door allowance |
 | Warn before shutting down | Seeded | 3 minutes between the two announcements |
 | Announce before shutting down | No | Off. A house should not start talking uninvited |
-| Announce through | No | Media players. Without any, nothing is announced |
+| Announce through | No | Media players. Without any, neither the shutdown warnings nor the free-cooling advisory is announced. With it set, free cooling is announced regardless of the shutdown toggle above |
 | Lockout | No | Room actuates normally |
 
 The room id is derived from the room name. Adding a room whose name produces an

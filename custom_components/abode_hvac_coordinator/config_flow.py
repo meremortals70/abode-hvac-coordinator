@@ -69,6 +69,9 @@ from .const import (
     DOMAIN,
     NOT_LOCKED_OUT,
     OWN_OUTDOOR_UNIT,
+    POWER_MANAGEMENT_ENFORCED,
+    POWER_MANAGEMENT_GUIDANCE,
+    POWER_MANAGEMENT_OFF,
     TARIFF_DOMAIN,
 )
 from .forms import (
@@ -87,6 +90,7 @@ from .forms import (
     head_groups_from_input,
     known_head_groups,
     known_lockout_reasons,
+    power_management_from_raw,
     room_from_input,
 )
 from .power import GRID_SIGN_EXPORTING, GRID_SIGN_IMPORTING, implied_sign
@@ -289,12 +293,22 @@ BANDS_SCHEMA = vol.Schema(
             for mode in BAND_MODES
             for bound in (CONF_BAND_LOW, CONF_BAND_HIGH)
         },
-        #: 0.8.10, finding 15. A yes/no, not a magnitude — the limit itself
-        #: is whatever the power budget computes, not a number the user
-        #: would be guessing at.
+        #: 0.8.10, finding 15; extended to three states in 0.8.12. Never a
+        #: magnitude — the limit itself is whatever the power budget
+        #: computes, not a number the user would be guessing at.
         vol.Optional(
-            CONF_ALLOW_COMFORT_REDUCTION, default=False
-        ): selector.BooleanSelector(),
+            CONF_ALLOW_COMFORT_REDUCTION, default=POWER_MANAGEMENT_OFF
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    POWER_MANAGEMENT_OFF,
+                    POWER_MANAGEMENT_GUIDANCE,
+                    POWER_MANAGEMENT_ENFORCED,
+                ],
+                translation_key="power_management",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        ),
     }
 )
 
@@ -413,8 +427,8 @@ class _RoomSteps:
                 errors["base"] = "band_inverted"
             else:
                 self._room[CONF_BANDS] = bands
-                self._room[CONF_ALLOW_COMFORT_REDUCTION] = bool(
-                    user_input.get(CONF_ALLOW_COMFORT_REDUCTION, False)
+                self._room[CONF_ALLOW_COMFORT_REDUCTION] = power_management_from_raw(
+                    user_input.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
                 )
                 return self._save_room()
 
@@ -1004,8 +1018,8 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         suggested: dict[str, Any] = (
             bands_as_suggestions(bands) if bands else default_band_suggestions()
         )
-        suggested[CONF_ALLOW_COMFORT_REDUCTION] = existing.get(
-            CONF_ALLOW_COMFORT_REDUCTION, False
+        suggested[CONF_ALLOW_COMFORT_REDUCTION] = power_management_from_raw(
+            existing.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
         )
         return suggested
 

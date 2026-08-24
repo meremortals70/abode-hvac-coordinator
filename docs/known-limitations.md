@@ -3,60 +3,16 @@
 Written plainly, because a limitation you discover yourself is worse than one
 you were told about.
 
-## Nothing has been proven on real hardware
+## Nothing has been proven about real compressor behaviour
 
-**No release from 0.6.0 onward has been confirmed working on real hardware.**
-389 tests pass and the integration loads and unloads cleanly in the test
-harness — against Home Assistant 2025.1.4, not the 2026.8.x this targets, and
-none of it tells you a compressor did the right thing.
-
-Three faults were found only by running it:
-
-- 0.6.0 crashed on setup.
-- 0.8.0 crashed the evaluation loop the first time a weather forecast was
-  configured.
-- 0.8.3 fixed a thermal model that could never gain a single sample, because
-  the learning anchor was reset on every 30-second evaluation and the minimum
-  usable interval is 60 seconds. Nothing reported it — the model simply stayed
-  unconverged, and everything depending on it stayed unavailable.
-
-All three are fixed and all three had tests written afterwards, which is the
-wrong order.
-
-**Eight more were found in 0.8.6 by reading the source**, without running
-anything — three of them capable of holding an occupied room's air
-conditioning off for hours with nothing in the log. Passing tests told you
-nothing about any of them, because the tests asserted the behaviour the code
-had.
-
-**Four more were found in 0.8.7 the same way.** The largest: an open window, a
-coasting room and a room refused under `no_grid_import` all left the
-compressor running, because the decision to stop and the decision to leave the
-unit alone were the same value and nothing downstream could tell them apart.
-
-The test suite also ran against a real Home Assistant for the first time in
-0.8.6, and immediately found two tests that had never passed. Treat a test
-that has never been executed as unwritten.
+**Every build has been installed and run against a live Home Assistant
+instance, and loads and runs without crashing — that is confirmed, not just a
+test-harness claim.** What is not confirmed is the physical behaviour behind
+it: 447 tests pass and the integration loads and unloads cleanly, and none of
+that tells you a compressor, a blind or a fan actually did the right thing on
+real equipment.
 
 Treat the first week as a test and read this page before relying on it.
-
-## Six known gaps are not fixed
-
-The ones most likely to affect you:
-
-- **Power management is a veto, not a budget.** It can refuse the compressor;
-  it cannot run it gently within an allowance. There is no throttle.
-- **There is no grid sensor.** A constraint named `no_grid_import` is enforced
-  against solar, load and state of charge, none of which is grid flow.
-- **No horizon in any decision except precool.** Each evaluation cycle is
-  greedy; there is no plan across cycles beyond the precool window.
-- **Solar recovery is assumed instantaneous.** The battery projection assumes
-  full output the moment the sun returns, rather than an hour-by-hour ramp.
-- **Manual override at the wall wins permanently.** There is no
-  reconciliation loop that re-asserts a decision after someone overrides it
-  locally.
-- **Price is fetched and never used.** Precool depends entirely on a
-  hand-entered `precool_opportunity` label in the tariff plan.
 
 ## Actuation is unproven against a real unit
 
@@ -73,15 +29,15 @@ Two things reduce the blast radius, and neither removes it:
 A room in lockout should command nothing at all. That is the cheapest way to
 confirm the gate works before trusting the rest.
 
-## Covers are written directly, not through Adaptive Cover Pro
+## This controller owns cover control directly
 
-The architecture delegates cover control to Adaptive Cover Pro and has Layer 3
-set intent only. The component instead calls `cover.set_cover_position`
-itself, and Adaptive Cover Pro appears nowhere in it.
+Layer 3 calls `cover.set_cover_position` itself; nothing is delegated to
+another integration.
 
-If you run Adaptive Cover Pro on the same covers, both write to them. Nothing
-will error; the blinds will simply behave oddly. Either take those covers out
-of Adaptive Cover Pro's scope, or leave them out of this controller's room
+If you already automate the same covers some other way — another blind
+controller, your own automation — both will write to them. Nothing will
+error; the blinds will simply behave oddly. Either take those covers out of
+the other automation's scope, or leave them out of this controller's room
 configuration — not both.
 
 ## Seeded comfort bands may not match your specification
@@ -123,13 +79,19 @@ drier at the dew point — and publishes it. It does not open anything. Windows
 are not an actuator this project owns, and it will not command one it cannot
 also close when the weather turns.
 
-## The outer loop has no per-room tuning
+## The outer loop does not yet use the learned thermal model to tune itself
 
-Layer 2 uses one integral gain for every room. A room with a very fast response
-and a room with a very slow one converge at the same rate, which means the slow
-one takes longer than it strictly needs to. Deliberate: a per-room gain is a
-setting nobody can answer correctly, and the cost of the shared value is time
-rather than accuracy.
+Layer 2 uses one integral gain (`INTEGRAL_GAIN_PER_HOUR`) for every room. A
+room with a very fast response and a room with a very slow one converge at the
+same rate, which means the slow one takes longer than it strictly needs to.
+
+This is not a deliberate trade-off — it should not be read as "a per-room gain
+is a setting nobody can answer correctly." The thermal model already learns
+`k_loss` per room, which is exactly the room-response figure the gain should
+be sized against, automatically, with no one asked to configure anything. It
+is simply not wired to the outer loop yet. Closing this needs a considered
+control-loop change tested against real cycling, not a quick constant swap, so
+it's tracked here rather than half-done.
 
 ## The tariff is a separate integration
 

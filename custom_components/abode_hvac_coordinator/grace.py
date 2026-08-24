@@ -49,13 +49,21 @@ DEFAULT_WARNING_GRACE = timedelta(minutes=3)
 
 
 class Announcement(StrEnum):
-    """What, if anything, should be said this evaluation."""
+    """What, if anything, should be said this evaluation.
+
+    Generic across the coordinator, not just this module's grace machine —
+    `FREE_COOLING` is raised by `coordinator.py`, not by anything here, on
+    the same rising-edge principle: said once when it becomes true, not
+    every evaluation while it stays true.
+    """
 
     NONE = "none"
     #: Vacancy grace has expired and the room is still conditioning.
     FIRST_WARNING = "first_warning"
     #: The warning grace has expired; the room is being shut down now.
     FINAL_WARNING = "final_warning"
+    #: Free cooling has just become advised for this room.
+    FREE_COOLING = "free_cooling"
 
 
 @dataclass(frozen=True, slots=True)
