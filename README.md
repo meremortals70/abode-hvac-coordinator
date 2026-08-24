@@ -5,13 +5,13 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.8.12 — beta, not proven
-> The architecture is built, 447 tests pass, and every build installs and runs
-> against a live Home Assistant instance without crashing. **What is not yet
-> confirmed is real compressor behaviour** — that a unit actually starts,
-> stops and holds setpoint the way the trace says it will — and two releases
-> shipped with faults that only appeared on first install. Treat your first
-> week as a test and read
+> ### Status: v0.8.12 — beta
+> The architecture is built, 447 tests pass, and every build runs
+> continuously against a live air conditioner in a real office, used as the
+> test room — that is where real compressor, blind and fan behaviour is
+> actually proven, not from the test suite alone. What that one room has not
+> yet covered — a second climate zone, a different unit brand, months rather
+> than weeks of runtime — is still unproven anywhere else. Read
 > [Known limitations](docs/known-limitations.md) before you rely on it.
 
 ---
