@@ -279,14 +279,6 @@ class RoomInputs:
     #: (for their position or for other automations) while telling this
     #: integration not to move them.
     allow_cover_control: bool = True
-    #: Whether the compressor may draw power right now. True unless the
-    #: tariff currently forbids grid import for this interval *and* the
-    #: house has battery/solar readings configured *and* neither covers this
-    #: room's projected need until the window lifts or solar catches up.
-    #: True (unaffected) whenever power-aware operation is not configured —
-    #: this is an added constraint, never a substitute for the ordinary
-    #: capability checks.
-    power_available: bool = True
 
 
 @dataclass(slots=True)

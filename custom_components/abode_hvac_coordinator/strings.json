@@ -324,7 +324,7 @@
     },
     "power_shortfall": {
       "title": "A no-import window imported {kwh} kWh from the grid",
-      "description": "The window closed having measured {kwh} kWh of grid import against it. With comfort reduction off for the affected room, this is the constraint being breached outright — comfort was held and the house imported anyway. With it on, this is the cost of holding comfort as closely as the battery allowed. Either way, the figure is measured, not projected: worth checking the reserve margin, the battery size, or the tariff rule against it."
+      "description": "The window closed having measured {kwh} kWh of grid import against it. Rooms with power management set to off or guidance hold their comfort band regardless of the constraint, so any import they cause is expected. Rooms set to enforced run as gently as the battery allows but never stop, so import can still happen when the battery runs short. The figure is measured, not projected: check the reserve margin, the battery size, the tariff rule, and which rooms are set to enforced. This clears when a later no-import window closes without importing."
     }
   },
   "selector": {

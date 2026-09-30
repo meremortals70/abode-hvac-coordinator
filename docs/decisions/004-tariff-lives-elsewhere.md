@@ -32,7 +32,7 @@ and a failed or stale fetch raises a repair issue rather than blocking.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
-- `coordinator.py:573` - `_async_refresh_tariff` - the single read path
+- `coordinator.py:576` - `_async_refresh_tariff` - the single read path
 - `tariff.py:166` - `TariffSeries` - the forward series, parsed not stored

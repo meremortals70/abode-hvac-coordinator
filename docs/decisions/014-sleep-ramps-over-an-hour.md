@@ -30,7 +30,7 @@ For the first hour after the change, the band in force is neither band.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `scheduling.py:45` - `SLEEP_RAMP` - one hour
 - `scheduling.py:126` - `ramped_band` - the interpolation

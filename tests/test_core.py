@@ -1261,76 +1261,6 @@ class TestCoverControlOverride(unittest.TestCase):
         self.assertFalse(any("control disabled" in r for r in trace.rejected))
 
 
-class TestPowerAvailability(unittest.TestCase):
-    """The inline power-aware compressor gate inside select_actuator itself.
-
-    `power_available` arrives on RoomInputs already resolved by the
-    coordinator — these tests exercise only what select_actuator does with
-    it, not how the coordinator computes it.
-    """
-
-    def _hot(self, **overrides):
-        inputs = {
-            "now": NOW,
-            "temperature_c": 33.0,
-            "relative_humidity": 80.0,
-            "presence": True,
-            # Isolates the compressor step: without this, the latent load at
-            # 80% RH routes to dry mode before the power gate is reached.
-            "can_dry": False,
-        }
-        inputs.update(overrides)
-        return evaluate_room(room(), RoomInputs(**inputs))
-
-    def _cold(self, **overrides):
-        inputs = {
-            "now": NOW,
-            "temperature_c": 14.0,
-            "relative_humidity": 50.0,
-            "presence": True,
-        }
-        inputs.update(overrides)
-        return evaluate_room(room(), RoomInputs(**inputs))
-
-    def test_power_unavailable_blocks_cooling(self):
-        trace = self._hot(power_available=False)
-        self.assertEqual(trace.demand, "cool")
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
-        self.assertTrue(
-            any("no grid import permitted" in r for r in trace.rejected)
-        )
-
-    def test_power_unavailable_blocks_heating(self):
-        trace = self._cold(power_available=False)
-        self.assertEqual(trace.demand, "heat")
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
-        self.assertTrue(
-            any("no grid import permitted" in r for r in trace.rejected)
-        )
-
-    def test_default_is_available_and_unchanged(self):
-        """No power management configured behaves as before this field existed."""
-        trace = self._hot()
-        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
-
-    def test_power_unavailable_does_not_block_covers_or_fan(self):
-        """The gate sits at the compressor step, not earlier in the ladder."""
-        trace = evaluate_room(
-            room(),
-            RoomInputs(
-                now=NOW,
-                temperature_c=33.0,
-                relative_humidity=35.0,
-                presence=True,
-                has_covers=True,
-                direct_sun=True,
-                cover_position=100.0,
-                power_available=False,
-            ),
-        )
-        self.assertIs(trace.actuator, ActuatorStep.COVERS)
-
-
 _hci = importlib.import_module("hvac_core.hci")
 _thermal = importlib.import_module("hvac_core.thermal")
 _forecast = importlib.import_module("hvac_core.forecast")
@@ -3665,24 +3595,6 @@ class TestStoppingTheCompressor(unittest.TestCase):
                 relative_humidity=70.0,
                 presence=True,
                 opening_open=True,
-            ),
-        )
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
-
-    def test_the_power_refusal_reaches_the_hardware(self):
-        """It is the only mechanism holding `no_grid_import`.
-
-        Until 0.8.7 the refusal reached the trace and stopped there, so a
-        room already running kept running through the whole window.
-        """
-        trace = evaluate_room(
-            room(),
-            RoomInputs(
-                now=NOW,
-                temperature_c=32.0,
-                relative_humidity=60.0,
-                presence=True,
-                power_available=False,
             ),
         )
         self.assertIs(trace.actuator, ActuatorStep.OFF)

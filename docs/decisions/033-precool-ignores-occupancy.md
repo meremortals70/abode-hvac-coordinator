@@ -36,10 +36,10 @@ chosen because energy is free, so the power ceiling does not ration it
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms** to this record.
+Checked against: 0.8.13. **Conforms** to this record.
 
 - `modes.py:88-99` - `precool_opportunity` - not gated on occupancy
 - `weather.py:42` - `DEMAND_LOOKAHEAD` - ten hours
 - `weather.py:293` - `demand_ahead` - forecast load
-- `coordinator.py:1391` - `PRECOOL_DEMAND_MARGIN_C` - fallback without a forecast
-- `coordinator.py:2001` - `CONSTRAINT_PRECOOL_OPPORTUNITY` - the tariff declares the window
+- `coordinator.py:1394` - `PRECOOL_DEMAND_MARGIN_C` - fallback without a forecast
+- `coordinator.py:2004` - `CONSTRAINT_PRECOOL_OPPORTUNITY` - the tariff declares the window

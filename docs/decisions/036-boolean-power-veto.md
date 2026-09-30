@@ -32,9 +32,8 @@ hardware (finding 20).
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Partly retired.** The refusal branches are still in `select_actuator`,
-guarded by a field nothing sets, so they can never run.
+Checked against: 0.8.13. **Superseded; no remnant.** The dead refusal
+branches and the `power_available` field were removed in 0.8.13.
 
-- `models.py:289` - `power_available` - defaults True, never set
-- `modes.py:473-478` - `power_available` - dead branch, heating
-- `modes.py:515-520` - `power_available` - dead branch, cooling
+- `modes.py:473` - `compressor: heating` - heating reaches the compressor with no power check
+- `modes.py:509` - `compressor: cooling` - cooling likewise

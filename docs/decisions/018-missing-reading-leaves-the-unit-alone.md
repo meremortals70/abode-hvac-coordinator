@@ -32,6 +32,6 @@ naming the entity is how the fault gets noticed.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `modes.py:394-419` - `ActuatorStep.NONE` - missing reading or band, named in the trace

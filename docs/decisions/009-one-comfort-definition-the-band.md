@@ -33,7 +33,7 @@ converted from ASHRAE 55, and the form explains the scale.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `const.py:214` - `DEFAULT_BANDS` - seeded bands, from ASHRAE 55
 - `modes.py:132` - `band_in_force` - one band per mode

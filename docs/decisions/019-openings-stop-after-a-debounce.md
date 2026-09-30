@@ -30,7 +30,7 @@ For two minutes after an opening, the room holds its current state.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `modes.py:176` - `OPENING_STOP_DEBOUNCE` - two minutes
 - `modes.py:356-375` - `opening_open` - hold, then off

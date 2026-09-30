@@ -33,7 +33,7 @@ room in the options flow (DR-021). There is no switch entity for it.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `actuator.py:124` - `_matches_live_state` - the live comparison
 - `actuator.py:314-319` - `_matches_live_state` - skip only when memory and live state agree

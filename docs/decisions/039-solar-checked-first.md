@@ -32,7 +32,7 @@ Without a weather entity, the instantaneous reading is used unchanged.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.13. **Conforms.**
 
 - `power.py:135` - `solar_offset_kw` - the split
-- `coordinator.py:2267` - `_sustained_solar_kw` - the derating
+- `coordinator.py:2296` - `_sustained_solar_kw` - the derating

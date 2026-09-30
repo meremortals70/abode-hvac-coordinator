@@ -244,11 +244,11 @@ class _DrawCandidate:
 
 @dataclass(frozen=True, slots=True)
 class _PowerContext:
-    """The shared readings the power-aware compressor check runs against.
+    """The shared readings the power budget runs against.
 
     Read once per evaluation cycle. `engaged` is False whenever any of the
     five house-level fields is missing — the feature is opt-in, and with any
-    one of them absent every room's `power_available` is simply True.
+    one of them absent no room is throttled.
     """
 
     engaged: bool
@@ -340,7 +340,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.trajectory: WeatherTrajectory | None = None
         #: Power-aware operation. All five optional and read the same way as
         #: every other house-level feed; the decision only engages once every
-        #: one of them is set — see power_available() below.
+        #: one of them is set — see `_compute_power_context`.
         self.battery_soc_entity_id: str | None = config_entry.options.get(
             CONF_BATTERY_SOC_ENTITY, config_entry.data.get(CONF_BATTERY_SOC_ENTITY)
         )
@@ -389,6 +389,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: time as the key, and the kWh of import integrated into it so far.
         self._breach_window_start: datetime | None = None
         self._breach_kwh = 0.0
+        #: When grid import was last sampled inside the window, so each
+        #: sample is weighted by the time it actually covers.
+        self._breach_sampled_at: datetime | None = None
         self._last_breach_reported_kwh: float | None = None
         #: Why each room is or is not precooling, for the trace.
         self._demand_reason: dict[str, str] = {}
@@ -2126,14 +2129,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _compute_power_context(self, now: datetime) -> _PowerContext:
         """Read the house-level power inputs once per evaluation cycle.
 
-        Every room's `power_available` check runs against this same snapshot
+        Every room's power budget runs against this same snapshot
         rather than each re-reading the entities itself — the room assesses
         its own need, but against readings that do not change mid-cycle
         depending on evaluation order.
 
         `engaged` is False whenever any of the five fields is unconfigured.
-        Power management is opt-in: with any one of them absent, every room's
-        `power_available` is simply True and nothing about this feature runs.
+        Power management is opt-in: with any one of them absent, no room is
+        throttled and nothing about this feature runs.
         """
         if (
             self.battery_soc_entity_id is None
@@ -2188,6 +2191,16 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         0.8.10, finding 11. Runs once per evaluation regardless of whether
         any room is under a power constraint this cycle — the breach record
         is a house-level fact, not a per-room question.
+
+        0.8.13, DR-043. The window is the unbroken run of intervals carrying
+        the constraint, not one tariff interval: the series arrives in
+        30-minute slices, and keying on each slice's start closed and
+        re-judged the window every half hour. Each sample is weighted by the
+        time since the previous one, not by a fixed evaluation period:
+        evaluations also run on every watched state change, so a fixed period
+        counted the same half-minute several times over. A gap longer than
+        one evaluation period is credited as one period — the reading says
+        nothing about a stretch in which nothing was evaluated.
         """
         self._check_grid_sign(context)
 
@@ -2196,14 +2209,21 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._close_breach_window(reported=self._breach_kwh > 0.0)
             return
 
-        if self._breach_window_start != interval.start:
-            self._close_breach_window(reported=self._breach_kwh > 0.0)
+        if self._breach_window_start is None:
             self._breach_window_start = interval.start
             self._breach_kwh = 0.0
+            self._breach_sampled_at = now
+            return
 
+        previous = self._breach_sampled_at
+        self._breach_sampled_at = now
+        if previous is None or now <= previous:
+            return
+        elapsed = min(now - previous, EVALUATION_INTERVAL)
         if context.grid_import_w is not None and context.grid_import_w > 0:
-            elapsed_hours = EVALUATION_INTERVAL.total_seconds() / 3600.0
-            self._breach_kwh += context.grid_import_w * elapsed_hours / 1000.0
+            self._breach_kwh += (
+                context.grid_import_w * elapsed.total_seconds() / 3600.0 / 1000.0
+            )
 
     def _check_grid_sign(self, context: _PowerContext) -> None:
         """Compare the stored sign convention against live evidence.
@@ -2247,7 +2267,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         0.8.10, findings 15/16. A trivial amount of import — a kettle
         overlapping the boundary by one cycle — is not a shortfall worth a
         repair issue, so anything under 0.05 kWh is treated as noise.
+
+        0.8.13, DR-043. A window that closes clean clears an issue left by an
+        earlier one, so the issue always describes the most recent window.
+        Called every evaluation outside a window as well; only a window that
+        was actually open can clear anything.
         """
+        window_was_open = self._breach_window_start is not None
         if reported and self._breach_kwh >= 0.05:
             self._last_breach_reported_kwh = round(self._breach_kwh, 2)
             ir.async_create_issue(
@@ -2261,8 +2287,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     "kwh": f"{self._last_breach_reported_kwh:.2f}"
                 },
             )
+        elif window_was_open:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_POWER_SHORTFALL)
         self._breach_window_start = None
         self._breach_kwh = 0.0
+        self._breach_sampled_at = None
 
     def _sustained_solar_kw(
         self, now: datetime, hours_until_clear: float, current_solar_kw: float
@@ -2345,6 +2374,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # Lockout, unoccupied, coasting, or already stopped for another
             # reason. Nothing running to throttle, and nothing to hold a
             # ceiling against.
+            return
+        if trace.mode is Mode.PRECOOL:
+            # 0.8.13, DR-037. Precool runs in a window chosen because energy
+            # is free, and drives to the bottom of its band, not the middle.
+            # Rationing it would throttle the one mode that exists to spend
+            # free energy ahead of a load.
+            trace.reasons.append("power budget: precool is not rationed")
             return
         context = self._power_context
         if context is None or not context.engaged:

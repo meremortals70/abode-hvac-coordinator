@@ -470,12 +470,6 @@ def select_actuator(
         if not inputs.can_heat:
             trace.rejected.append("compressor: this unit cannot heat")
             return ActuatorStep.OFF
-        if not inputs.power_available:
-            trace.rejected.append(
-                "compressor: no grid import permitted, and battery/solar "
-                "cannot cover this room's projected need"
-            )
-            return ActuatorStep.OFF
         trace.reasons.append("compressor: heating")
         return ActuatorStep.COMPRESSOR
 
@@ -511,14 +505,6 @@ def select_actuator(
     # --- 4. Compressor. Everything cheaper has been ruled out above.
     if not inputs.can_cool:
         trace.rejected.append("compressor: this unit cannot cool")
-        return ActuatorStep.OFF
-    if not inputs.power_available:
-        # OFF. The refusal is the only mechanism holding `no_grid_import`, and
-        # until 0.8.7 it reached the trace and never reached the hardware.
-        trace.rejected.append(
-            "compressor: no grid import permitted, and battery/solar "
-            "cannot cover this room's projected need"
-        )
         return ActuatorStep.OFF
     trace.reasons.append("compressor: cooling")
     return ActuatorStep.COMPRESSOR

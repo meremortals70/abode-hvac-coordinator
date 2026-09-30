@@ -47,6 +47,11 @@ from custom_components.abode_hvac_coordinator.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.abode_hvac_coordinator.forecast import ASSUMED_UNIT_KW
+from custom_components.abode_hvac_coordinator.models import (
+    ActuatorStep,
+    DecisionTrace,
+    Mode,
+)
 from custom_components.abode_hvac_coordinator.power import GRID_SIGN_IMPORTING
 from custom_components.abode_hvac_coordinator.tariff import TariffSeries
 from custom_components.abode_hvac_coordinator.thermal import Coefficient
@@ -387,6 +392,58 @@ async def test_guidance_reports_the_ceiling_without_ever_throttling(
     assert not any(
         "commanded held at" in reason for reason in state.attributes["reasons"]
     )
+
+
+async def test_precool_is_never_rationed_even_when_enforced(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.13, DR-037. The same enforced shortfall that caps an occupied room
+    leaves a precooling room alone: precool runs in a window chosen because
+    energy is free, and drives to the bottom of its band.
+    """
+    rooms = list(mock_config_entry.options[CONF_ROOMS])
+    rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED}
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry, options={**mock_config_entry.options, CONF_ROOMS: rooms}
+    )
+    await _setup_with_power(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="30.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+        sensor__battery_soc="20.0",
+        sensor__solar_power="0",
+        sensor__house_load="500",
+    )
+
+    coordinator = mock_config_entry.runtime_data
+    now = dt_util.utcnow()
+    coordinator.tariff = _no_grid_import_series(now)
+    coordinator._power_context = coordinator._compute_power_context(now)
+    room = coordinator.rooms["test_room"]
+    inputs = coordinator._inputs_for(room, now)
+    capabilities = coordinator._capabilities(room)
+
+    def _ceiling_for(mode: Mode) -> DecisionTrace:
+        trace = DecisionTrace(
+            room_id="test_room",
+            at=now,
+            mode=mode,
+            actuator=ActuatorStep.COMPRESSOR,
+            demand="cool",
+        )
+        coordinator._power_ceiling(room, inputs, trace, now, capabilities)
+        return trace
+
+    # Control: the same budget does cap an occupied room.
+    assert _ceiling_for(Mode.OCCUPIED).power_ceiling_c is not None
+
+    precool = _ceiling_for(Mode.PRECOOL)
+    assert precool.power_ceiling_c is None
+    assert precool.comfort_reduction_active is False
+    assert "power budget: precool is not rationed" in precool.reasons
 
 
 async def test_solar_widens_the_ceiling_beyond_what_the_battery_alone_affords(
@@ -730,9 +787,10 @@ async def test_measured_import_across_a_window_raises_the_shortfall_issue(
     coordinator.tariff = _no_grid_import_series(now)
 
     importing_context = _PowerContext(engaged=True, grid_import_w=2000.0)
-    # 2 kW for 30 s, six times: 6 * 2000 * (30/3600) / 1000 = 0.1 kWh.
-    for _ in range(6):
-        coordinator._track_grid(now, importing_context)
+    # The first sample anchors the window; each later one covers the 30 s
+    # since the one before. 2 kW for six 30 s steps: 0.1 kWh.
+    for step in range(7):
+        coordinator._track_grid(now + timedelta(seconds=30 * step), importing_context)
 
     # The window clears: the next reading carries no constraint.
     coordinator.tariff = TariffSeries.from_response(
@@ -758,6 +816,155 @@ async def test_measured_import_across_a_window_raises_the_shortfall_issue(
     issue = issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL)
     assert issue is not None
     assert issue.translation_placeholders["kwh"] == "0.10"
+
+
+def _sliced_no_grid_import_series(now, *, slices: int) -> TariffSeries:
+    """A no-import window delivered as 30-minute intervals, then a clear one.
+
+    This is the shape the tariff service actually returns: the series is
+    requested at 30-minute resolution, so a ten-hour window is twenty
+    intervals, each with its own start.
+    """
+    intervals = [
+        {
+            "start_time": (now + timedelta(minutes=30 * i)).isoformat(),
+            "end_time": (now + timedelta(minutes=30 * (i + 1))).isoformat(),
+            "rate": "peak",
+            "per_kwh": 0.50,
+            "export_per_kwh": 0.05,
+            "constraints": ["no_grid_import"],
+        }
+        for i in range(slices)
+    ]
+    intervals.append(
+        {
+            "start_time": (now + timedelta(minutes=30 * slices)).isoformat(),
+            "end_time": (now + timedelta(minutes=30 * slices + 360)).isoformat(),
+            "rate": "off_peak",
+            "per_kwh": 0.20,
+            "export_per_kwh": 0.05,
+            "constraints": [],
+        }
+    )
+    return TariffSeries.from_response({"intervals": intervals}, now)
+
+
+async def _setup_with_grid(hass, mock_config_entry):
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_IMPORTING,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    return mock_config_entry.runtime_data
+
+
+async def test_extra_evaluations_do_not_count_the_same_time_twice(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.13, DR-043. Evaluations also run on every watched state change,
+    so several can land inside one 30 s period. Each sample is weighted by
+    the time since the previous one, so the total is the same however many
+    evaluations there were.
+    """
+    coordinator = await _setup_with_grid(hass, mock_config_entry)
+    now = dt_util.utcnow()
+    coordinator.tariff = _no_grid_import_series(now)
+    importing = _PowerContext(engaged=True, grid_import_w=2000.0)
+
+    coordinator._track_grid(now, importing)
+    # Ten evaluations spread across one 30 s period.
+    for step in range(1, 11):
+        coordinator._track_grid(now + timedelta(seconds=3 * step), importing)
+
+    # 2 kW for 30 s.
+    assert coordinator._breach_kwh == pytest.approx(2000 * 30 / 3600 / 1000)
+
+
+async def test_a_gap_in_evaluation_is_credited_as_one_period(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.13, DR-043. A reading says nothing about a stretch in which
+    nothing was evaluated, so a long gap is not multiplied out.
+    """
+    coordinator = await _setup_with_grid(hass, mock_config_entry)
+    now = dt_util.utcnow()
+    coordinator.tariff = _no_grid_import_series(now)
+    importing = _PowerContext(engaged=True, grid_import_w=2000.0)
+
+    coordinator._track_grid(now, importing)
+    coordinator._track_grid(now + timedelta(minutes=20), importing)
+
+    assert coordinator._breach_kwh == pytest.approx(2000 * 30 / 3600 / 1000)
+
+
+async def test_a_window_in_30_minute_slices_is_measured_as_one_window(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.13, DR-043. The breach window used to be keyed on each interval's
+    start, so a window delivered in 30-minute slices was closed and judged
+    every half hour, and the issue reported only the last slice.
+    """
+    coordinator = await _setup_with_grid(hass, mock_config_entry)
+    now = dt_util.utcnow()
+    coordinator.tariff = _sliced_no_grid_import_series(now, slices=2)
+    # 70 W for an hour: about 0.035 kWh per slice, under the 0.05 floor,
+    # and about 0.07 kWh across the whole window, over it.
+    importing = _PowerContext(engaged=True, grid_import_w=70.0)
+
+    for step in range(120):
+        coordinator._track_grid(now + timedelta(seconds=30 * step), importing)
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL) is None
+
+    coordinator._track_grid(
+        now + timedelta(minutes=61), _PowerContext(engaged=True, grid_import_w=0.0)
+    )
+    issue = issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL)
+    assert issue is not None
+    assert issue.translation_placeholders["kwh"] == "0.07"
+
+
+async def test_a_clean_window_clears_an_earlier_shortfall(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.8.13, DR-043. The issue describes the most recent window. Once a
+    later window closes without importing, the earlier warning is cleared.
+    """
+    coordinator = await _setup_with_grid(hass, mock_config_entry)
+    issues = ir.async_get(hass)
+    now = dt_util.utcnow()
+
+    coordinator.tariff = _sliced_no_grid_import_series(now, slices=2)
+    importing = _PowerContext(engaged=True, grid_import_w=2000.0)
+    for step in range(121):
+        coordinator._track_grid(now + timedelta(seconds=30 * step), importing)
+    coordinator._track_grid(
+        now + timedelta(minutes=61), _PowerContext(engaged=True, grid_import_w=0.0)
+    )
+    assert issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL) is not None
+
+    # Outside any window, nothing is cleared.
+    coordinator._track_grid(
+        now + timedelta(minutes=62), _PowerContext(engaged=True, grid_import_w=0.0)
+    )
+    assert issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL) is not None
+
+    # The next day's window closes clean.
+    later = now + timedelta(days=1)
+    coordinator.tariff = _sliced_no_grid_import_series(later, slices=2)
+    quiet = _PowerContext(engaged=True, grid_import_w=0.0)
+    for step in range(121):
+        coordinator._track_grid(later + timedelta(seconds=30 * step), quiet)
+    coordinator._track_grid(later + timedelta(minutes=61), quiet)
+
+    assert issues.async_get_issue(DOMAIN, ISSUE_POWER_SHORTFALL) is None
 
 
 async def test_import_outside_a_no_grid_import_window_is_not_counted(

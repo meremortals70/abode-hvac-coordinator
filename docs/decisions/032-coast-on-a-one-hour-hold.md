@@ -36,10 +36,10 @@ under investigation against this record.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms** to this record.
+Checked against: 0.8.13. **Conforms** to this record.
 
 - `const.py:26` - `COAST_HORIZON_HOURS` - one hour
 - `modes.py:101-103` - `Mode.COAST` - entered when the band holds and the window permits
 - `modes.py:377-382` - `Mode.COAST` - coast is off
-- `coordinator.py:1265` - `_predicted_to_hold` - the projection
+- `coordinator.py:1268` - `_predicted_to_hold` - the projection
 - `thermal.py:383` - `holds_through` - straight-line drift over the horizon
