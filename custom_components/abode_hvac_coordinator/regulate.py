@@ -41,8 +41,11 @@ the same actuator, which is the failure this project refuses everywhere else.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+
+from .models import ActuatorStep
 
 #: How far the outer loop may move the commanded setpoint away from the solved
 #: target, in either direction. Beyond this the fault is not calibration — the
@@ -240,3 +243,67 @@ def commanded_setpoint(
     if target_c is None:
         return None
     return round(target_c + state.trim_c, 1)
+
+
+def wants_running(
+    step: ActuatorStep, *, previous_want: bool | None, running_now: bool
+) -> bool:
+    """Whether a step asks for the compressor to be running.
+
+    DRY counts: dry mode energises the compressor. NONE is not a stop. It
+    means the unit keeps what it was last given, so the room asks for whatever
+    it asked for last cycle (or what is running now, if it never asked).
+    """
+    if step is ActuatorStep.NONE:
+        return running_now if previous_want is None else previous_want
+    return step in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
+
+
+@dataclass(frozen=True, slots=True)
+class CycleVerdict:
+    """What the short-cycle guard decided for one room this cycle."""
+
+    #: The reason for the trace, when any outdoor unit refused a transition.
+    refusal: str | None
+    #: A stop was refused: the compressor is to be held on.
+    holding: bool
+    #: Each outdoor unit and whether it is to be recorded as running. Units
+    #: that refused are absent: nothing changed there.
+    record: tuple[tuple[str, bool], ...]
+
+
+def arbitrate_cycling(
+    compressors: Mapping[str, CompressorState],
+    *,
+    wants: bool,
+    neighbours_want: Mapping[str, bool],
+    now: datetime,
+    forced: bool = False,
+) -> CycleVerdict:
+    """Refuse a compressor transition inside its minimum on or off time.
+
+    DR-002, DR-016. Moved here from the coordinator in 0.8.14 with the logic
+    unchanged. `compressors` holds the state of each outdoor unit this room's
+    heads are on. `neighbours_want[group]` is whether any other room on that
+    unit wants it running: a room reaching its band does not stop a
+    compressor its neighbour still calls on.
+
+    `forced` is the user's off switch. The guard protects the compressor from
+    this coordinator, not from the person who owns it, so a forced stop is
+    never refused, and is still recorded so the picture stays true. DR-047.
+    """
+    refusal: str | None = None
+    holding = False
+    record: list[tuple[str, bool]] = []
+    for group, compressor in compressors.items():
+        wanted_by_group = wants or neighbours_want.get(group, False)
+        permitted, reason = permit_transition(
+            compressor, want_running=wanted_by_group, now=now
+        )
+        if not permitted and reason is not None and not forced:
+            refusal = reason
+            holding = holding or compressor.running
+            continue
+        record.append((group, wanted_by_group))
+    return CycleVerdict(refusal=refusal, holding=holding, record=tuple(record))
+

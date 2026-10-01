@@ -336,3 +336,23 @@ def _window(first: Interval, last: Interval, local_tz: tzinfo) -> TariffWindow:
         constraints=first.constraints,
         coasting_permitted=first.coasting_permitted,
     )
+
+
+def hours_until_cheaper_interval(
+    series: TariffSeries, now: datetime, horizon: timedelta
+) -> float | None:
+    """Hours until a strictly cheaper interval begins, within a horizon.
+
+    DR-002, DR-035. The tariff half of "is a cheaper window imminent": the
+    coordinator asks the room's thermal model whether the band holds until
+    then. None when the interval in force carries no price, when nothing
+    cheaper begins within the horizon, or when the series does not reach it.
+    """
+    current = series.interval_at(now)
+    if current is None or current.per_kwh is None:
+        return None
+    cheaper_at = series.cheaper_interval_ahead(now, current.per_kwh, horizon)
+    if cheaper_at is None:
+        return None
+    return (cheaper_at - now).total_seconds() / 3600.0
+

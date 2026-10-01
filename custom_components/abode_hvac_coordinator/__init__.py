@@ -36,7 +36,7 @@ from .const import (
 from .coordinator import HvacCoordinator
 from .store import ModelStore
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.SWITCH]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 

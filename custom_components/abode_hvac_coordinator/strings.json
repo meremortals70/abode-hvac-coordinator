@@ -256,6 +256,11 @@
       "forecast_peak": {
         "name": "Forecast peak"
       }
+    },
+    "switch": {
+      "automatic_control": {
+        "name": "Automatic control"
+      }
     }
   },
   "services": {

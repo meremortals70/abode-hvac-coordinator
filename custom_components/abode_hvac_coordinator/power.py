@@ -151,3 +151,85 @@ def solar_offset_kw(
     other_house_draw_kw_net = max(other_house_draw_kw - solar_kw, 0.0)
     solar_credit_kw = max(solar_kw - other_house_draw_kw, 0.0)
     return other_house_draw_kw_net, solar_credit_kw
+
+
+def battery_available_kwh(
+    soc_percent: float, capacity_kwh: float, reserve_margin_kwh: float
+) -> float:
+    """Energy the battery may give up before it reaches the reserve."""
+    return (soc_percent / 100.0) * capacity_kwh - reserve_margin_kwh
+
+
+def budget_allowance_kw(
+    *,
+    available_kwh: float,
+    hours_until_clear: float,
+    max_discharge_kw: float | None,
+    house_load_w: float | None,
+    own_draw_kw: float,
+    sustained_solar_kw: float,
+) -> float:
+    """The average kW one room may draw without importing from the grid.
+
+    DR-002, DR-037, DR-039. Moved here from the coordinator in 0.8.14 with the
+    arithmetic unchanged. The rest of the house is the measured load less
+    this room's own draw, never negative. Solar pays that down first; what
+    solar leaves over goes straight to the room, outside the battery's energy
+    and discharge limits. The battery then covers what remains, as the lesser
+    of its energy spread over the hours left and its discharge rate less what
+    the rest of the house still needs.
+    """
+    other_house_draw_kw = 0.0
+    if house_load_w is not None:
+        other_house_draw_kw = max(house_load_w / 1000.0 - own_draw_kw, 0.0)
+    other_house_draw_kw, solar_credit_kw = solar_offset_kw(
+        sustained_solar_kw, other_house_draw_kw
+    )
+    return solar_credit_kw + allowable_draw_kw(
+        available_kwh,
+        hours_until_clear,
+        max_discharge_kw,
+        other_house_draw_kw,
+    )
+
+
+def setpoint_direction(
+    target_c: float | None, room_c: float | None
+) -> str | None:
+    """Which way a unit is being asked to work: "cool", "heat" or None.
+
+    From the solved target against the room's reading, not from the room's
+    demand. The ceiling's main case is a room already inside its band, where
+    there is no demand and the target still says which way to work. Within
+    0.01 C of the target there is no direction.
+    """
+    if target_c is None or room_c is None:
+        return None
+    gap = target_c - room_c
+    if gap < -0.01:
+        return "cool"
+    if gap > 0.01:
+        return "heat"
+    return None
+
+
+def held_setpoint(
+    commanded_c: float, room_c: float, direction: str, ceiling_c: float
+) -> float:
+    """The commanded setpoint after the power ceiling has had its say.
+
+    The ceiling is how far from the room's own reading the setpoint may be
+    asked to go. Cooling may not be set colder than `room - ceiling`; heating
+    may not be set warmer than `room + ceiling`. A ceiling of 0.0 holds the
+    setpoint at the room's own reading, which the unit reaches at once.
+    """
+    if direction == "cool":
+        return max(commanded_c, round(room_c - ceiling_c, 1))
+    return min(commanded_c, round(room_c + ceiling_c, 1))
+
+
+def ceiling_is_binding(
+    uncapped_c: float, room_c: float, direction: str, ceiling_c: float
+) -> bool:
+    """Whether the ceiling would move this setpoint."""
+    return held_setpoint(uncapped_c, room_c, direction, ceiling_c) != uncapped_c

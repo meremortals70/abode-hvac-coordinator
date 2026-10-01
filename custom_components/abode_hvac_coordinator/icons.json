@@ -58,6 +58,14 @@
       "forecast_peak": {
         "default": "mdi:weather-sunny-alert"
       }
+    },
+    "switch": {
+      "automatic_control": {
+        "default": "mdi:robot",
+        "state": {
+          "off": "mdi:robot-off"
+        }
+      }
     }
   },
   "services": {

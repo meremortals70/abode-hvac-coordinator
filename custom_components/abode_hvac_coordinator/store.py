@@ -42,6 +42,11 @@ STORAGE_KEY = f"{DOMAIN}.model"
 #: the flash under Home Assistant does not need a write per evaluation.
 SAVE_DELAY_SECONDS = 300
 
+#: A choice the user made by hand is written out quickly. Losing five minutes
+#: of learning costs nothing; losing a switch the user flipped means a room
+#: they turned off starts up again after a crash.
+USER_CHOICE_SAVE_DELAY_SECONDS = 5
+
 
 class ModelStore:
     """Load and save learned per-room model state."""
@@ -54,7 +59,7 @@ class ModelStore:
             atomic_writes=True,
             minor_version=STORAGE_MINOR_VERSION,
         )
-        self._data: dict[str, Any] = {"rooms": {}, "groups": {}}
+        self._data: dict[str, Any] = {"rooms": {}, "groups": {}, "switched_off": []}
 
     async def async_load(self) -> None:
         stored = await self._store.async_load()
@@ -78,6 +83,27 @@ class ModelStore:
         """Drop a removed room's learned state."""
         if self._data.get("rooms", {}).pop(room_id, None) is not None:
             self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
+
+    def switched_off(self) -> set[str]:
+        """Rooms the user has switched off at their Automatic control switch.
+
+        This is a choice the user made, not something learned, and it must
+        survive a restart: a room held off must not start its unit in the
+        first evaluation after Home Assistant comes back. It is read here,
+        before the coordinator's first refresh, which a restored entity state
+        could not be.
+        """
+        return set(self._data.get("switched_off", []))
+
+    def set_switched_off(self, room_id: str, off: bool) -> None:
+        """Record the user's choice for one room, written out soon."""
+        rooms = self.switched_off()
+        if off:
+            rooms.add(room_id)
+        else:
+            rooms.discard(room_id)
+        self._data["switched_off"] = sorted(rooms)
+        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
 
     def group(self, group_name: str) -> dict[str, Any]:
         """Learned state for one outdoor unit group (0.8.9, finding 14).
