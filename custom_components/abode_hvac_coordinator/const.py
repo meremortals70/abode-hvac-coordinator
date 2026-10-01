@@ -220,6 +220,8 @@ DEFAULT_BANDS: Final = {
 #: Used when a room is locked out but no reason was given. Should not normally
 #: happen, but a lockout without an explanation is worse than a generic one.
 FALLBACK_LOCKOUT_REASON: Final = "Locked out"
+#: The reason shown in the trace while a room's Automatic control switch is off.
+SWITCHED_OFF_REASON: Final = "Automatic control switched off"
 CONF_BANDS: Final = "bands"
 CONF_BAND_LOW: Final = "low"
 CONF_BAND_HIGH: Final = "high"

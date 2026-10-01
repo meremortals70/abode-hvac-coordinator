@@ -3896,3 +3896,233 @@ class TestSolarOffset(unittest.TestCase):
         net_house, credit = _power.solar_offset_kw(2.0, 2.0)
         self.assertAlmostEqual(net_house, 0.0)
         self.assertAlmostEqual(credit, 0.0)
+
+
+class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
+    """0.8.14, DR-002. The four decisions that lived in `coordinator.py`.
+
+    Expected values are worked by hand, not read back from the code.
+    """
+
+    # setpoint_direction and the ceiling clamp (DR-037)
+
+    def test_direction_is_the_target_against_the_room_reading(self):
+        self.assertEqual(_power.setpoint_direction(24.0, 27.0), "cool")
+        self.assertEqual(_power.setpoint_direction(27.0, 24.0), "heat")
+
+    def test_within_a_hundredth_of_a_degree_there_is_no_direction(self):
+        self.assertIsNone(_power.setpoint_direction(25.0, 25.005))
+        self.assertIsNone(_power.setpoint_direction(25.005, 25.0))
+        self.assertIsNone(_power.setpoint_direction(None, 25.0))
+        self.assertIsNone(_power.setpoint_direction(25.0, None))
+
+    def test_cooling_may_not_be_set_colder_than_room_minus_ceiling(self):
+        self.assertEqual(_power.held_setpoint(22.0, 27.0, "cool", 2.0), 25.0)
+
+    def test_cooling_inside_the_ceiling_is_left_alone(self):
+        self.assertEqual(_power.held_setpoint(26.0, 27.0, "cool", 2.0), 26.0)
+
+    def test_heating_may_not_be_set_warmer_than_room_plus_ceiling(self):
+        self.assertEqual(_power.held_setpoint(25.0, 20.0, "heat", 2.0), 22.0)
+
+    def test_a_zero_ceiling_holds_the_setpoint_at_the_room_reading(self):
+        self.assertEqual(_power.held_setpoint(22.0, 27.0, "cool", 0.0), 27.0)
+        self.assertEqual(_power.held_setpoint(25.0, 20.0, "heat", 0.0), 20.0)
+
+    def test_the_ceiling_is_binding_only_when_it_would_move_the_setpoint(self):
+        self.assertTrue(_power.ceiling_is_binding(22.0, 27.0, "cool", 2.0))
+        self.assertFalse(_power.ceiling_is_binding(26.0, 27.0, "cool", 2.0))
+        self.assertFalse(_power.ceiling_is_binding(25.0, 27.0, "cool", 2.0))
+
+    # budget_allowance_kw (DR-037, DR-039)
+
+    def test_available_energy_is_charge_less_reserve(self):
+        self.assertAlmostEqual(_power.battery_available_kwh(50.0, 13.5, 1.0), 5.75)
+
+    def test_allowance_is_the_energy_rate_when_the_battery_can_deliver_it(self):
+        # 6 kWh over 3 h = 2 kW. No solar, rest of house 1 kW, 5 kW battery:
+        # plant rate 4 kW. The lesser is 2 kW.
+        allowance = _power.budget_allowance_kw(
+            available_kwh=6.0,
+            hours_until_clear=3.0,
+            max_discharge_kw=5.0,
+            house_load_w=1000.0,
+            own_draw_kw=0.0,
+            sustained_solar_kw=0.0,
+        )
+        self.assertAlmostEqual(allowance, 2.0)
+
+    def test_allowance_is_the_discharge_headroom_when_the_house_uses_it(self):
+        # Energy would allow 4 kW. House 4 kW against a 5 kW battery leaves 1.
+        allowance = _power.budget_allowance_kw(
+            available_kwh=12.0,
+            hours_until_clear=3.0,
+            max_discharge_kw=5.0,
+            house_load_w=4000.0,
+            own_draw_kw=0.0,
+            sustained_solar_kw=0.0,
+        )
+        self.assertAlmostEqual(allowance, 1.0)
+
+    def test_the_rooms_own_draw_is_taken_out_of_the_house_load(self):
+        # House 4 kW of which 1.5 kW is this room: the rest of the house is
+        # 2.5 kW, leaving 2.5 kW of a 5 kW battery. Energy gives 4 kW.
+        allowance = _power.budget_allowance_kw(
+            available_kwh=12.0,
+            hours_until_clear=3.0,
+            max_discharge_kw=5.0,
+            house_load_w=4000.0,
+            own_draw_kw=1.5,
+            sustained_solar_kw=0.0,
+        )
+        self.assertAlmostEqual(allowance, 2.5)
+
+    def test_solar_left_over_after_the_house_goes_straight_to_the_room(self):
+        # Solar 3 kW pays the 1 kW house and leaves 2 kW credit, on top of the
+        # battery's 2 kW energy rate.
+        allowance = _power.budget_allowance_kw(
+            available_kwh=6.0,
+            hours_until_clear=3.0,
+            max_discharge_kw=5.0,
+            house_load_w=1000.0,
+            own_draw_kw=0.0,
+            sustained_solar_kw=3.0,
+        )
+        self.assertAlmostEqual(allowance, 4.0)
+
+    def test_an_unknown_house_load_counts_as_zero(self):
+        allowance = _power.budget_allowance_kw(
+            available_kwh=6.0,
+            hours_until_clear=3.0,
+            max_discharge_kw=None,
+            house_load_w=None,
+            own_draw_kw=0.0,
+            sustained_solar_kw=0.0,
+        )
+        self.assertAlmostEqual(allowance, 2.0)
+
+    # wants_running and arbitrate_cycling (DR-016)
+
+    def test_compressor_and_dry_ask_for_the_compressor(self):
+        for step in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY):
+            self.assertTrue(
+                _regulate.wants_running(step, previous_want=False, running_now=False)
+            )
+
+    def test_off_fan_and_covers_do_not(self):
+        for step in (ActuatorStep.OFF, ActuatorStep.FAN, ActuatorStep.COVERS):
+            self.assertFalse(
+                _regulate.wants_running(step, previous_want=True, running_now=True)
+            )
+
+    def test_none_asks_for_what_it_asked_for_last_cycle(self):
+        self.assertTrue(
+            _regulate.wants_running(
+                ActuatorStep.NONE, previous_want=True, running_now=False
+            )
+        )
+        self.assertFalse(
+            _regulate.wants_running(
+                ActuatorStep.NONE, previous_want=False, running_now=True
+            )
+        )
+
+    def test_none_with_no_history_follows_the_compressor(self):
+        self.assertTrue(
+            _regulate.wants_running(
+                ActuatorStep.NONE, previous_want=None, running_now=True
+            )
+        )
+
+    def _verdict(self, running, held, wants, *, neighbours=False, forced=False):
+        state = _regulate.CompressorState(running=running, changed_at=NOW)
+        return _regulate.arbitrate_cycling(
+            {"unit": state},
+            wants=wants,
+            neighbours_want={"unit": neighbours},
+            now=NOW + held,
+            forced=forced,
+        )
+
+    def test_a_stop_inside_the_minimum_run_is_refused_and_holds_the_compressor(self):
+        verdict = self._verdict(True, timedelta(minutes=3), False)
+        self.assertIn("short-cycle guard", verdict.refusal)
+        self.assertTrue(verdict.holding)
+        self.assertEqual(verdict.record, ())
+
+    def test_a_start_inside_the_minimum_off_is_refused_and_does_not_hold(self):
+        verdict = self._verdict(False, timedelta(minutes=1), True)
+        self.assertIn("short-cycle guard", verdict.refusal)
+        self.assertFalse(verdict.holding)
+        self.assertEqual(verdict.record, ())
+
+    def test_a_permitted_transition_is_recorded(self):
+        verdict = self._verdict(True, _regulate.MIN_RUN, False)
+        self.assertIsNone(verdict.refusal)
+        self.assertEqual(verdict.record, (("unit", False),))
+
+    def test_a_neighbour_still_calling_keeps_the_compressor_wanted(self):
+        verdict = self._verdict(True, timedelta(minutes=3), False, neighbours=True)
+        self.assertIsNone(verdict.refusal)
+        self.assertEqual(verdict.record, (("unit", True),))
+
+    def test_a_forced_stop_is_never_refused_and_is_recorded(self):
+        verdict = self._verdict(True, timedelta(minutes=3), False, forced=True)
+        self.assertIsNone(verdict.refusal)
+        self.assertFalse(verdict.holding)
+        self.assertEqual(verdict.record, (("unit", False),))
+
+    def test_each_outdoor_unit_is_judged_on_its_own(self):
+        young = _regulate.CompressorState(running=True, changed_at=NOW)
+        old = _regulate.CompressorState(
+            running=True, changed_at=NOW - timedelta(hours=1)
+        )
+        verdict = _regulate.arbitrate_cycling(
+            {"young": young, "old": old},
+            wants=False,
+            neighbours_want={},
+            now=NOW + timedelta(minutes=3),
+        )
+        self.assertTrue(verdict.holding)
+        self.assertIsNotNone(verdict.refusal)
+        self.assertEqual(verdict.record, (("old", False),))
+
+    # hours_until_cheaper_interval (DR-035)
+
+    def _tariff(self, prices):
+        intervals = tuple(
+            Interval(
+                start=NOW + timedelta(hours=i) - timedelta(minutes=30),
+                end=NOW + timedelta(hours=i + 1) - timedelta(minutes=30),
+                rate="r",
+                per_kwh=price,
+                export_per_kwh=None,
+                constraints=frozenset(),
+                coasting_permitted=True,
+            )
+            for i, price in enumerate(prices)
+        )
+        return TariffSeries(intervals, NOW)
+
+    def test_hours_until_the_next_strictly_cheaper_interval(self):
+        series = self._tariff([0.30, 0.30, 0.10])
+        hours = _tariff.hours_until_cheaper_interval(series, NOW, timedelta(hours=3))
+        self.assertAlmostEqual(hours, 1.5)
+
+    def test_an_equal_price_is_not_cheaper(self):
+        series = self._tariff([0.30, 0.30, 0.30])
+        self.assertIsNone(
+            _tariff.hours_until_cheaper_interval(series, NOW, timedelta(hours=3))
+        )
+
+    def test_a_cheaper_interval_beyond_the_horizon_is_ignored(self):
+        series = self._tariff([0.30, 0.30, 0.10])
+        self.assertIsNone(
+            _tariff.hours_until_cheaper_interval(series, NOW, timedelta(hours=1))
+        )
+
+    def test_an_interval_in_force_with_no_price_gives_no_answer(self):
+        series = self._tariff([None, 0.10])
+        self.assertIsNone(
+            _tariff.hours_until_cheaper_interval(series, NOW, timedelta(hours=3))
+        )

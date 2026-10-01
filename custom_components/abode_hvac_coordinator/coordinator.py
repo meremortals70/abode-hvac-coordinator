@@ -109,6 +109,7 @@ from .const import (
     PRECOOL_DEMAND_MARGIN_C,
     STARTUP_FETCH_ATTEMPTS,
     STARTUP_FETCH_DELAY,
+    SWITCHED_OFF_REASON,
     TARIFF_DOMAIN,
     TARIFF_HORIZON_HOURS,
     TARIFF_REFRESH_INTERVAL,
@@ -132,21 +133,25 @@ from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
 from .modes import evaluate_room
 from .power import (
     GRID_SIGN_IMPORTING,
-    allowable_draw_kw,
+    battery_available_kwh,
+    budget_allowance_kw,
     ceiling_bin,
+    ceiling_is_binding,
     derive_battery_w,
+    held_setpoint,
     implied_sign,
     normalise_grid_import_w,
-    solar_offset_kw,
+    setpoint_direction,
 )
 from .psychro import dew_point_c
 from .regulate import (
     CompressorState,
     RegulatorState,
+    arbitrate_cycling,
     commanded_setpoint,
     integrate,
     note_transition,
-    permit_transition,
+    wants_running,
 )
 from .scheduling import PreconditionPlan, plan_precondition
 from .staleness import (
@@ -165,6 +170,7 @@ from .tariff import (
     Interval,
     TariffPayloadError,
     TariffSeries,
+    hours_until_cheaper_interval,
 )
 from .thermal import (
     APPROACH_AT_SETPOINT_C,
@@ -455,6 +461,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Heading-home requests, per room, with the deadline if one was given.
         #: There is no target: a heading-home room is driven to its comfort band.
         self._heading_home: dict[str, datetime | None] = {}
+        #: Rooms the user has switched off. Held off: the unit is commanded
+        #: off every cycle and nothing in the room's decision can start it.
+        #: Read from the store, not from entity state, so it is already known
+        #: when the first evaluation runs. DR-047.
+        self._switched_off: set[str] = store.switched_off() & set(self.rooms)
         #: Each room's last-solved dry-bulb target, one cycle behind. The
         #: power-aware compressor check needs a target to project energy need
         #: against, but the target itself is solved inside evaluate_room —
@@ -891,6 +902,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """Bring a room to its comfort band ahead of arrival."""
         self._heading_home[room_id] = deadline
 
+    def is_room_switched_off(self, room_id: str) -> bool:
+        """Whether the user has switched this room's automatic control off."""
+        return room_id in self._switched_off
+
+    async def async_set_room_switched_off(self, room_id: str, off: bool) -> None:
+        """Switch a room's automatic control off or on, and act on it now."""
+        if off:
+            self._switched_off.add(room_id)
+        else:
+            self._switched_off.discard(room_id)
+        self.store.set_switched_off(room_id, off)
+        await self.async_request_refresh()
+
     @callback
     def async_clear_override(self, room_id: str) -> None:
         """Drop any heading-home request for a room."""
@@ -923,7 +947,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             inputs = self._inputs_for(room, now)
             capabilities = self._capabilities(room)
             self._learn(room, inputs, now)
-            trace = evaluate_room(room, inputs)
+            switched_off = room.room_id in self._switched_off
+            trace = evaluate_room(
+                replace(room, lockout_reason=SWITCHED_OFF_REASON)
+                if switched_off
+                else room,
+                inputs,
+            )
             self._announce_free_cooling(room, trace)
             trace.model = self.model_for(room.room_id).diagnostics()
             if trace.target_dry_bulb_c is not None:
@@ -942,7 +972,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # Guard first. The regulator's anti-windup gate has to see the
             # step that will actually be carried out, not the one that was
             # wanted before the short-cycle guard had its say.
-            self._guard_cycling(room, trace, now)
+            self._guard_cycling(room, trace, now, forced=switched_off)
             self._regulate(room, inputs, trace, now)
             self._track_mode(room.room_id, trace.mode, now)
             traces[room.room_id] = trace
@@ -998,13 +1028,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # `trace.demand` — the ceiling's primary case is a room *inside* its
         # band (demand is None there), where the solved target still exists
         # and still says which way the compressor is being asked to work.
-        direction: str | None = None
-        if trace.target_dry_bulb_c is not None and inputs.temperature_c is not None:
-            gap = trace.target_dry_bulb_c - inputs.temperature_c
-            if gap < -0.01:
-                direction = "cool"
-            elif gap > 0.01:
-                direction = "heat"
+        direction = setpoint_direction(trace.target_dry_bulb_c, inputs.temperature_c)
 
         binding = False
         uncapped = (
@@ -1019,14 +1043,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             and direction is not None
             and uncapped is not None
         ):
-            if direction == "cool":
-                binding = uncapped < round(
-                    inputs.temperature_c - trace.power_ceiling_c, 1
-                )
-            else:
-                binding = uncapped > round(
-                    inputs.temperature_c + trace.power_ceiling_c, 1
-                )
+            binding = ceiling_is_binding(
+                uncapped, inputs.temperature_c, direction, trace.power_ceiling_c
+            )
 
         integrate(
             state,
@@ -1055,27 +1074,25 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             and inputs.temperature_c is not None
             and direction is not None
         ):
-            if direction == "cool":
-                floor_c = round(inputs.temperature_c - trace.power_ceiling_c, 1)
-                if commanded < floor_c:
-                    commanded = floor_c
-                    trace.reasons.append(
-                        f"power budget: commanded held at {commanded:.1f} C, "
-                        f"{trace.power_ceiling_c:.1f} C ceiling"
-                    )
-            else:
-                cap_c = round(inputs.temperature_c + trace.power_ceiling_c, 1)
-                if commanded > cap_c:
-                    commanded = cap_c
-                    trace.reasons.append(
-                        f"power budget: commanded held at {commanded:.1f} C, "
-                        f"{trace.power_ceiling_c:.1f} C ceiling"
-                    )
+            held = held_setpoint(
+                commanded, inputs.temperature_c, direction, trace.power_ceiling_c
+            )
+            if held != commanded:
+                commanded = held
+                trace.reasons.append(
+                    f"power budget: commanded held at {commanded:.1f} C, "
+                    f"{trace.power_ceiling_c:.1f} C ceiling"
+                )
 
         trace.commanded_dry_bulb_c = commanded
 
     def _guard_cycling(
-        self, room: RoomConfig, trace: DecisionTrace, now: datetime
+        self,
+        room: RoomConfig,
+        trace: DecisionTrace,
+        now: datetime,
+        *,
+        forced: bool = False,
     ) -> None:
         """Refuse a compressor transition inside its minimum on or off time.
 
@@ -1083,6 +1100,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         split system, and nothing else in the stack prevents it: the unit's own
         protection is against its own thermostat, not against a coordinator
         commanding hvac_mode from outside.
+
+        `forced` is set for a room the user has switched off. The guard
+        protects the compressor from this coordinator, not from the person who
+        owns the house: an off switch that waits ten minutes to act is not an
+        off switch. The stop is still recorded, so the guard's picture of the
+        compressor stays true. DR-047.
 
         A refusal downgrades the step and is written into the trace, because a
         room that appears to ignore its own decision with no explanation is
@@ -1099,44 +1122,45 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # step alone and resolved NONE as "not running", so every time a room
         # reached its band the guard logged a stop that never happened — the
         # most common state the controller is in.
+        # The decisions themselves are `regulate.wants_running` and
+        # `regulate.arbitrate_cycling`; what is left here is gathering their
+        # inputs and carrying out the verdict.
         groups = room.groups
-        running_now = any(
-            self._compressors.setdefault(group, CompressorState()).running
+        compressors = {
+            group: self._compressors.setdefault(group, CompressorState())
             for group in groups
+        }
+        wants = wants_running(
+            trace.actuator,
+            previous_want=self._room_wants.get(room.room_id),
+            running_now=any(state.running for state in compressors.values()),
         )
-        if trace.actuator is ActuatorStep.NONE:
-            wants = self._room_wants.get(room.room_id, running_now)
-        else:
-            wants = trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
-
-        # What the *compressor* is being asked for, which is not what this room
-        # is being asked for when another room shares the outdoor unit. A room
-        # reaching its band does not stop a compressor that its neighbour is
-        # still calling on.
-        refusal: str | None = None
-        holding = False
-        for group in groups:
-            compressor = self._compressors.setdefault(group, CompressorState())
-            wanted_by_group = wants or any(
-                self._room_wants.get(other.room_id, False)
-                for other in self.rooms.values()
-                if other.room_id != room.room_id and group in other.groups
-            )
-            permitted, reason = permit_transition(
-                compressor, want_running=wanted_by_group, now=now
-            )
-            if not permitted and reason is not None:
-                refusal = reason
-                holding = holding or compressor.running
-                continue
+        verdict = arbitrate_cycling(
+            compressors,
+            wants=wants,
+            neighbours_want={
+                group: any(
+                    self._room_wants.get(other.room_id, False)
+                    for other in self.rooms.values()
+                    if other.room_id != room.room_id and group in other.groups
+                )
+                for group in compressors
+            },
+            now=now,
+            forced=forced,
+        )
+        for group, running in verdict.record:
+            compressor = compressors[group]
             was_running = compressor.running
-            note_transition(compressor, running=wanted_by_group, now=now)
+            note_transition(compressor, running=running, now=now)
             if compressor.running != was_running:
                 # 0.8.9, finding 14. The signal this learns draw from: one
                 # group's compressor actually changed state.
                 self._note_compressor_transition(
                     group, started=compressor.running, now=now
                 )
+        refusal = verdict.refusal
+        holding = verdict.holding
 
         self._room_wants[room.room_id] = wants
 
@@ -1314,13 +1338,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """
         if self.tariff is None:
             return False
-        current = self.tariff.interval_at(now)
-        if current is None or current.per_kwh is None:
-            return False
-        cheaper_at = self.tariff.cheaper_interval_ahead(
-            now, current.per_kwh, timedelta(hours=COAST_HORIZON_HOURS)
+        hours = hours_until_cheaper_interval(
+            self.tariff, now, timedelta(hours=COAST_HORIZON_HOURS)
         )
-        if cheaper_at is None:
+        if hours is None:
             return False
 
         model = self.model_for(room.room_id)
@@ -1333,8 +1354,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             return False
         lower_c = dry_bulb_for_index(band.low, humidity)
         upper_c = dry_bulb_for_index(band.high, humidity)
-        hours = (cheaper_at - now).total_seconds() / 3600.0
-
         return (
             model.holds_through(
                 indoor,
@@ -2404,35 +2423,29 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         if hours_until_clear is None or hours_until_clear <= 0:
             return
 
-        available_kwh = (
-            context.battery_soc_percent / 100.0
-        ) * context.battery_capacity_kwh - context.reserve_margin_kwh
+        available_kwh = battery_available_kwh(
+            context.battery_soc_percent,
+            context.battery_capacity_kwh,
+            context.reserve_margin_kwh,
+        )
 
         running = self._compressor_direction(room) != 0 or self._is_drying(room)
         own_draw_kw = self._rated_kw_for(room) if running else 0.0
-        other_house_draw_kw = 0.0
-        if context.house_load_w is not None:
-            other_house_draw_kw = max(context.house_load_w / 1000.0 - own_draw_kw, 0.0)
 
         # 0.8.11, finding 18. Solar checked first, as a direct offset — the
-        # battery only binds where solar is insufficient. Whatever solar is
-        # left over after paying down the rest of the house goes straight to
-        # this room, free of the battery's own energy and discharge-rate
-        # limits; whatever solar the rest of the house still needs shrinks
-        # how much of the battery's discharge rate is left for this room.
+        # battery only binds where solar is insufficient. The arithmetic is in
+        # `power.budget_allowance_kw`.
         current_solar_kw = (context.solar_w or 0.0) / 1000.0
         sustained_solar_kw = self._sustained_solar_kw(
             now, hours_until_clear, current_solar_kw
         )
-        other_house_draw_kw, solar_credit_kw = solar_offset_kw(
-            sustained_solar_kw, other_house_draw_kw
-        )
-
-        allowance_kw = solar_credit_kw + allowable_draw_kw(
-            available_kwh,
-            hours_until_clear,
-            self.battery_max_discharge_kw,
-            other_house_draw_kw,
+        allowance_kw = budget_allowance_kw(
+            available_kwh=available_kwh,
+            hours_until_clear=hours_until_clear,
+            max_discharge_kw=self.battery_max_discharge_kw,
+            house_load_w=context.house_load_w,
+            own_draw_kw=own_draw_kw,
+            sustained_solar_kw=sustained_solar_kw,
         )
 
         draw_by_bin = [

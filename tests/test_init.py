@@ -2043,3 +2043,145 @@ async def test_an_empty_room_does_not_stop_its_neighbours_compressor(
     # And the study's own head really was switched off. A refused phantom
     # stop sets `hold_compressor`, which suppresses it.
     assert not study.attributes.get("hold_compressor"), study.attributes
+
+
+# 0.8.14, DR-047. The per-room Automatic control switch.
+
+_SWITCH = "switch.test_room_automatic_control"
+
+
+async def _switch(hass: HomeAssistant, service: str) -> None:
+    await hass.services.async_call(
+        "switch", service, {ATTR_ENTITY_ID: _SWITCH}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+
+async def _setup_hot_room(hass, mock_config_entry):
+    await _setup_running(
+        hass,
+        mock_config_entry,
+        sensor__test_temperature="32.0",
+        sensor__test_humidity="60.0",
+        binary_sensor__test_presence="on",
+    )
+    coordinator = mock_config_entry.runtime_data
+    await _let_occupancy_settle(hass, coordinator)
+    return coordinator
+
+
+async def test_each_room_has_an_automatic_control_switch_that_starts_on(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    await _setup_hot_room(hass, mock_config_entry)
+    state = hass.states.get(_SWITCH)
+    assert state is not None
+    assert state.state == "on"
+
+
+async def test_switching_a_room_off_stops_its_unit_at_once_even_inside_min_run(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The short-cycle guard must not make an off switch wait ten minutes.
+
+    The room is hot and cooling, so its compressor was started moments ago and
+    `MIN_RUN` has not elapsed. A coordinator-chosen stop would be refused here.
+    """
+    coordinator = await _setup_hot_room(hass, mock_config_entry)
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+
+    await _switch(hass, "turn_off")
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.state == "lockout", state.attributes
+    assert state.attributes["actuator"] == "off", state.attributes
+    sent = [call.data["hvac_mode"] for call in calls]
+    assert sent and set(sent) == {"off"}, sent
+    assert hass.states.get(_SWITCH).state == "off"  # type: ignore[union-attr]
+    assert coordinator.compressor_state()["climate.test"].running is False
+
+
+async def test_a_room_switched_off_stays_off_however_hot_it_gets(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    await _setup_hot_room(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    await _switch(hass, "turn_off")
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+
+    for minutes in (6, 20, 40):
+        with freeze_time(dt_util.utcnow() + timedelta(minutes=minutes)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.state == "lockout", state.attributes
+    assert "Automatic control switched off" in " ".join(state.attributes["reasons"])
+    assert {call.data["hvac_mode"] for call in calls} == {"off"}, calls
+
+
+async def test_switching_a_room_back_on_hands_it_back_to_the_coordinator(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup_hot_room(hass, mock_config_entry)
+    await _switch(hass, "turn_off")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=6)):
+        await _switch(hass, "turn_on")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.state != "lockout", state.attributes
+    assert hass.states.get(_SWITCH).state == "on"  # type: ignore[union-attr]
+
+
+async def test_a_room_switched_off_stays_off_across_a_restart(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    hass_storage: dict,
+) -> None:
+    """The first evaluation after start-up must already know.
+
+    Read from entity state it would not: the coordinator's first refresh runs
+    before any entity exists, and that refresh could start the unit.
+    """
+    hass_storage["abode_hvac_coordinator.model"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "abode_hvac_coordinator.model",
+        "data": {"rooms": {}, "groups": {}, "switched_off": ["test_room"]},
+    }
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_temperature", "32.0")
+    hass.states.async_set("sensor.test_humidity", "60.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set(
+        "climate.test",
+        "off",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "off",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.runtime_data.is_room_switched_off("test_room")
+    assert hass.states.get(_SWITCH).state == "off"  # type: ignore[union-attr]
+    assert hass.states.get("sensor.test_room_mode").state == "lockout"  # type: ignore[union-attr]
+    assert not [c for c in calls if c.data["hvac_mode"] != "off"], calls
+
+
+async def test_the_choice_is_written_to_the_store(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup_hot_room(hass, mock_config_entry)
+    await _switch(hass, "turn_off")
+    assert coordinator.store.switched_off() == {"test_room"}
+    await _switch(hass, "turn_on")
+    assert coordinator.store.switched_off() == set()

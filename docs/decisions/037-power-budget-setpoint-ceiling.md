@@ -45,12 +45,12 @@ commanded setpoint is held at the room's own reading.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.** Precool was rationed in 0.8.12; the
+Checked against: 0.8.14. **Conforms.** Precool was rationed in 0.8.12; the
 exemption was added in 0.8.13.
 
 - `power.py:94` - `allowable_draw_kw` - the allowance
 - `power.py:121` - `ceiling_bin` - the most permissive bin that fits
-- `coordinator.py:2331` - `_power_ceiling` - the ceiling
-- `coordinator.py:2378-2384` - `Mode.PRECOOL` - precool is not rationed
-- `coordinator.py:2461-2477` - `bin_index is None` - floor at 0.0 C, never off
-- `coordinator.py:1051-1073` - `floor_c` - the clamp
+- `coordinator.py:2350` - `_power_ceiling` - the ceiling
+- `coordinator.py:2397-2403` - `Mode.PRECOOL` - precool is not rationed
+- `coordinator.py:2474-2490` - `bin_index is None` - floor at 0.0 C, never off
+- `power.py:216-229` - `held_setpoint` - the clamp

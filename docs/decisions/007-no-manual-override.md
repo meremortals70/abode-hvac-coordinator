@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-047 (a switch entity now exists) |
 | Since | Principle from design v0.4; live-state check in 0.8.11 (2026-08-24) |
 | Origin | Finding 19a |
-| Related | DR-009, DR-024 |
+| Related | DR-009, DR-024, DR-047 |
 
 ## Decision
 
@@ -33,7 +33,7 @@ room in the options flow (DR-021). There is no switch entity for it.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
 - `actuator.py:124` - `_matches_live_state` - the live comparison
 - `actuator.py:314-319` - `_matches_live_state` - skip only when memory and live state agree

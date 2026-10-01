@@ -41,11 +41,11 @@ report (DR-043) is how that shows.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.** The precool gap found at 0.8.12 was
+Checked against: 0.8.14. **Conforms.** The precool gap found at 0.8.12 was
 closed in 0.8.13 (DR-037).
 
 - `config_flow.py:299-311` - `POWER_MANAGEMENT_OFF` - the three states
-- `coordinator.py:2369-2372` - `POWER_MANAGEMENT_OFF` - off returns before anything is computed
-- `coordinator.py:1015-1021` - `POWER_MANAGEMENT_ENFORCED` - anti-windup only when enforced
-- `coordinator.py:1051-1057` - `POWER_MANAGEMENT_ENFORCED` - clamp only when enforced
-- `coordinator.py:2454-2457` - `comfort_reduction_active` - true only when enforced and correcting
+- `coordinator.py:2388-2391` - `POWER_MANAGEMENT_OFF` - off returns before anything is computed
+- `coordinator.py:1039-1045` - `POWER_MANAGEMENT_ENFORCED` - anti-windup only when enforced
+- `coordinator.py:1070-1076` - `POWER_MANAGEMENT_ENFORCED` - clamp only when enforced
+- `coordinator.py:2467-2470` - `comfort_reduction_active` - true only when enforced and correcting

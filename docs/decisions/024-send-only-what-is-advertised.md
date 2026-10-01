@@ -30,9 +30,9 @@ target plus and minus 1.0 C.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
 - `actuator.py:110` - `resolve_hvac_mode` - mode resolved against the entity
 - `actuator.py:349` - `_async_set_temperature` - single or range
 - `actuator.py:72` - `RANGE_DEADBAND_C` - 1.0 C either side
-- `coordinator.py:2100` - `_capabilities` - fed into the decision
+- `coordinator.py:2119` - `_capabilities` - fed into the decision

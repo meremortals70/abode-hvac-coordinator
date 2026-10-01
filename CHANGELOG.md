@@ -6,6 +6,29 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.8.14 - 2026-10-01
+
+### Added
+
+- **An Automatic control switch for every room.** On is normal. Turn it off
+  and the room's air conditioning is switched off and the integration will not
+  start it again until you turn the switch back on. It takes effect at once,
+  even if the unit started only a moment ago, and it survives a restart of
+  Home Assistant. The room shows as Lockout, with "Automatic control switched
+  off" as the reason. Turning it back on does not restart the unit until it has
+  been off for five minutes. (DR-047, which amends DR-007)
+- Tests: six for the switch, and 27 for the decisions moved below.
+
+### Changed
+
+- **Four decisions moved out of the coordinator into the modules that hold
+  decisions, with no change in behaviour:** the power allowance and the
+  setpoint clamp under the power ceiling (`power.py`), the short-cycle
+  arbitration between rooms on one outdoor unit (`regulate.py`), and the
+  tariff half of the cheaper-window test (`tariff.py`). DR-002 now reads
+  Conforms. (DR-002)
+- Decision records: DR-047 added; all 48 re-checked against this build.
+
 ## 0.8.13 - 2026-10-01
 
 ### Fixed

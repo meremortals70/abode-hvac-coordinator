@@ -29,7 +29,7 @@ because someone left for a minute.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
 - `modes.py:350-354` - `Mode.UNOCCUPIED` - off
-- `coordinator.py:1410` - `_graced_presence` - the grace period
+- `coordinator.py:1429` - `_graced_presence` - the grace period

@@ -39,29 +39,29 @@ Each record has the same six parts, in this order ([template](TEMPLATE.md)):
 
 ## Index
 
-Anchors checked against 0.8.12 (`50e6abf`), 2026-10-01.
+Anchors checked against 0.8.14, 2026-10-01.
 
 ### Origin
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [000](000-origin-and-purpose.md) | Origin and purpose | Accepted | The project brief | Conforms |
 
 ### Foundations
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [001](001-four-layer-model.md) | Four layers, and Layers 2 and 3 only see a climate entity | Accepted | Design v0.5 | Conforms |
-| [002](002-decisions-in-pure-modules.md) | Decisions live in pure modules; the coordinator gathers and acts | Accepted | Design v0.4 | Partly |
+| [002](002-decisions-in-pure-modules.md) | Decisions live in pure modules; the coordinator gathers and acts | Accepted | Design v0.4 | Conforms |
 | [003](003-build-layer-2-here.md) | Build the regulation layer here instead of adopting a regulator | Accepted | Design v0.8, replacing the v0.5 plan | Conforms |
 | [004](004-tariff-lives-elsewhere.md) | The tariff lives in Abode Power Tariffs; this integration only reads it | Accepted | Design v0.8, replacing the v0.5 in-house tariff | Conforms |
 | [005](005-one-writer-per-actuator.md) | One writer per actuator; never write the battery | Accepted | Design v0.4 | Conforms |
 | [006](006-decision-trace-is-mandatory.md) | Every room publishes why it is doing what it is doing | Accepted | Design v0.4 | Conforms |
-| [007](007-no-manual-override.md) | No manual override; re-assert from the entity's live state | Accepted | Finding 19a | Conforms |
+| [007](007-no-manual-override.md) | No manual override; re-assert from the entity's live state | Accepted; amended by DR-047 | Finding 19a | Conforms |
 
 ### Comfort
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [008](008-comfort-is-the-constraint.md) | Comfort is the constraint, not the variable | Accepted | Design v0.4 | Conforms |
 | [009](009-one-comfort-definition-the-band.md) | One comfort definition per room: a band in comfort index | Accepted | Design v0.4 | Conforms |
@@ -73,7 +73,7 @@ Anchors checked against 0.8.12 (`50e6abf`), 2026-10-01.
 
 ### Control
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [015](015-integral-only-outer-loop.md) | The outer loop is integral-only, and does not wind up against a limit | Accepted | Design v0.8; finding 7 | Conforms |
 | [016](016-short-cycle-guard-per-outdoor-unit.md) | Short-cycle protection is 10 minutes on, 5 off, per outdoor unit | Accepted | Design v0.8; findings 5 and 13 | Conforms |
@@ -82,10 +82,11 @@ Anchors checked against 0.8.12 (`50e6abf`), 2026-10-01.
 | [019](019-openings-stop-after-a-debounce.md) | An open window or door stops the unit after two minutes | Accepted | Finding 20 | Conforms |
 | [020](020-heads-and-outdoor-units.md) | A room has heads, and heads sit on named outdoor units | Accepted | Finding 13 | Conforms |
 | [021](021-lockout.md) | Lockout takes a room out of control, set by the user or forced by a conflict | Accepted | First release; finding 8 | Conforms |
+| [047](047-automatic-control-switch.md) | A room's Automatic control switch holds its unit off | Accepted; amends DR-007 | Instruction, 2026-10-01 | Conforms |
 
 ### Actuation
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [022](022-actuator-ordering.md) | Cheapest first: covers, fan, dry, compressor, every skip traced | Accepted | Design v0.4; finding 1 | Conforms |
 | [023](023-covers-gated-on-sun-geometry.md) | Covers are gated on sun geometry, not light level | Accepted | Design v0.4 | Conforms |
@@ -93,7 +94,7 @@ Anchors checked against 0.8.12 (`50e6abf`), 2026-10-01.
 
 ### Learning
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [025](025-learned-thermal-model.md) | A learned per-room thermal model, with hysteresis until it converges | Accepted | Design v0.4, after RoomMind; findings 2 and 4 | Conforms |
 | [026](026-sensible-and-latent-separately.md) | Sensible and latent load are learned separately | Accepted | Design v0.4; the addition to RoomMind's approach | Conforms |
@@ -105,35 +106,35 @@ Anchors checked against 0.8.12 (`50e6abf`), 2026-10-01.
 
 ### Modes
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [032](032-coast-on-a-one-hour-hold.md) | A room coasts when the model says its band holds for an hour | Accepted | Design v0.4 | Conforms |
 | [033](033-precool-ignores-occupancy.md) | Precool ignores present occupancy and runs on the weather forecast | Accepted | Design v0.4 and v0.8 | Conforms |
 
 ### Tariff and cost
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [034](034-tariff-constraints-are-absolute.md) | Tariff constraints are declared, absolute, and reported if unknown | Accepted; amended by DR-041 for `no_grid_import` | Design v0.4 | Conforms |
 | [035](035-cost-minimised-at-every-decision-point.md) | Every decision point looks for the cheapest way to deliver the band | Accepted | Findings 12 and 19b | Conforms |
 
 ### Power
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
-| [036](036-boolean-power-veto.md) | Refuse the compressor when the battery cannot cover a no-import window | Superseded by DR-037 | 0.8.5 | Dead code remains |
-| [037](037-power-budget-setpoint-ceiling.md) | A no-import window is met with a setpoint ceiling, never a stop | Accepted; gated per room by DR-041 | Finding 10, superseding DR-036 | Does not conform on precool |
+| [036](036-boolean-power-veto.md) | Refuse the compressor when the battery cannot cover a no-import window | Superseded by DR-037 | 0.8.5 | Superseded |
+| [037](037-power-budget-setpoint-ceiling.md) | A no-import window is met with a setpoint ceiling, never a stop | Accepted; gated per room by DR-041 | Finding 10, superseding DR-036 | Conforms |
 | [038](038-grid-sign-settled-at-setup.md) | The grid sensor's sign is settled at setup and never inferred again | Accepted | Finding 11 | Conforms |
 | [039](039-solar-checked-first.md) | Solar pays down the house first; the battery binds only on the shortfall | Accepted | Finding 18 | Conforms |
 | [040](040-comfort-reduction-checkbox.md) | A per-room checkbox permits power management to reduce comfort | Superseded by DR-041 | Finding 15 | Superseded |
-| [041](041-power-management-off-guidance-enforced.md) | Power management per room is off, guidance or enforced | Accepted | Instruction, 2026-08-24, superseding DR-040 | Does not conform on precool |
+| [041](041-power-management-off-guidance-enforced.md) | Power management per room is off, guidance or enforced | Accepted | Instruction, 2026-08-24, superseding DR-040 | Conforms |
 | [042](042-battery-discharge-is-a-setting.md) | The battery's maximum discharge is a setup figure, not learned | Accepted | Finding 10 build | Conforms |
-| [043](043-shortfall-measured-afterwards.md) | A no-import window's actual grid import is measured and reported afterwards | Accepted | Finding 16 | Does not conform |
+| [043](043-shortfall-measured-afterwards.md) | A no-import window's actual grid import is measured and reported afterwards | Accepted | Finding 16 | Conforms |
 | [044](044-power-management-fails-open.md) | Power management fails open | Accepted | Finding 3 | Conforms |
 
 ### Configuration
 
-| DR | Decision | Status | Origin | At 0.8.12 |
+| DR | Decision | Status | Origin | At 0.8.14 |
 |---|---|---|---|---|
 | [045](045-configuration-discipline.md) | A setting exists only if a correct result is impossible without it | Accepted | Design v0.4, in reaction to Dual Smart Thermostat | Conforms |
 | [046](046-comfort-inputs-required.md) | A room needs a temperature and a humidity sensor | Accepted | 0.8.9 build | Conforms |

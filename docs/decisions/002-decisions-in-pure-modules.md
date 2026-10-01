@@ -35,13 +35,15 @@ every cycle.
 
 ## In the code
 
-Checked against: 0.8.13. **Partly.** Sixteen modules import nothing from Home Assistant. But some
-decisions have grown inside `coordinator.py`: the power ceiling's bin
-choice and floor, the setpoint clamp, the short-cycle arbitration across rooms
-on one compressor, and the cheaper-window test.
+Checked against: 0.8.14. **Conforms.** At 0.8.13 this was **Partly**: four
+decisions had grown inside `coordinator.py`. In 0.8.14 each moved into a pure
+module with its behaviour unchanged, and each has core tests with hand-worked
+expected values. What the coordinator keeps is gathering inputs, writing the
+trace and carrying out the result.
 
 - `modes.py:513` - `evaluate_room` - the pure decision entry point
-- `coordinator.py:2331` - `_power_ceiling` - decision logic in the coordinator
-- `coordinator.py:1051-1073` - `POWER_MANAGEMENT_ENFORCED` - setpoint clamp in the coordinator
-- `coordinator.py:1077` - `_guard_cycling` - compressor arbitration in the coordinator
-- `coordinator.py:1299` - `_cheaper_window_imminent` - cost test in the coordinator
+- `power.py:163` - `budget_allowance_kw` - the power allowance arithmetic
+- `power.py:216` - `held_setpoint` - the setpoint clamp under the ceiling
+- `regulate.py:275` - `arbitrate_cycling` - compressor arbitration across rooms on one outdoor unit
+- `tariff.py:341` - `hours_until_cheaper_interval` - the tariff half of the cheaper-window test
+- `coordinator.py:2350` - `_power_ceiling` - gathers the inputs, calls the above, writes the trace

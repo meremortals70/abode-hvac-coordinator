@@ -41,11 +41,11 @@ trim pins at its limit, the trace says the unit is not keeping up.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
-- `regulate.py:57` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
-- `regulate.py:62` - `DEADBAND_C` - 0.3 C
-- `regulate.py:51` - `MAX_TRIM_C` - 3.0 C
-- `regulate.py:137` - `integrate` - the gated integrator
-- `coordinator.py:945-946` - `_guard_cycling` - guard first, then regulate
-- `coordinator.py:1042-1045` - `regulating` - integrates only on the applied step, and not while capped
+- `regulate.py:60` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
+- `regulate.py:65` - `DEADBAND_C` - 0.3 C
+- `regulate.py:54` - `MAX_TRIM_C` - 3.0 C
+- `regulate.py:140` - `integrate` - the gated integrator
+- `coordinator.py:975-976` - `_guard_cycling` - guard first, then regulate
+- `coordinator.py:1061-1064` - `regulating` - integrates only on the applied step, and not while capped

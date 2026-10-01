@@ -31,7 +31,7 @@ defined, with the reason, so a week of real data can move them.
 
 ## In the code
 
-Checked against: 0.8.12 (`50e6abf`). **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
 - `const.py:214` - `DEFAULT_BANDS` - seeds from ASHRAE 55, not this house
-- `regulate.py:57` - `INTEGRAL_GAIN_PER_HOUR` - a constant, not a setting
+- `regulate.py:60` - `INTEGRAL_GAIN_PER_HOUR` - a constant, not a setting

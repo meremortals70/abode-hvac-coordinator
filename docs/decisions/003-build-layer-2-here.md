@@ -35,9 +35,9 @@ presence and presets stay in Layer 3 only.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms** in code. `ATTRIBUTION.md` still describes Versatile
+Checked against: 0.8.14. **Conforms** in code. `ATTRIBUTION.md` still describes Versatile
 Thermostat as "the regulation layer this design assumes at Layer 2", and its
 paths still use the pre-0.8 domain `hvac_coordinator`.
 
-- `regulate.py:137` - `integrate` - the outer loop
-- `regulate.py:201` - `permit_transition` - short-cycle protection
+- `regulate.py:140` - `integrate` - the outer loop
+- `regulate.py:204` - `permit_transition` - short-cycle protection

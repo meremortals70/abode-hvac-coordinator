@@ -34,8 +34,8 @@ complete gate. DR-041 removed it.
 
 ## In the code
 
-Checked against: 0.8.13. **Superseded.** The stored key is unchanged; a stored true reads as
+Checked against: 0.8.14. **Superseded.** The stored key is unchanged; a stored true reads as
 "enforced" and false as "off".
 
 - `forms.py:60` - `power_management_from_raw` - old booleans mapped
-- `coordinator.py:2361-2367` - `first version` - the within-band ceiling, recorded as a mistake
+- `coordinator.py:2380-2386` - `first version` - the within-band ceiling, recorded as a mistake

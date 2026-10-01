@@ -45,10 +45,10 @@ outside it.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
-- `regulate.py:74-75` - `MIN_RUN` - 10 and 5 minutes
-- `regulate.py:104` - `CompressorState` - keyed by outdoor unit
-- `coordinator.py:1110` - `ActuatorStep.DRY` - dry counts as running
-- `coordinator.py:1120-1124` - `wanted_by_group` - OR across the rooms on a compressor
-- `coordinator.py:1145-1151` - `hold_compressor` - a refused stop holds, decision kept
+- `regulate.py:77-78` - `MIN_RUN` - 10 and 5 minutes
+- `regulate.py:107` - `CompressorState` - keyed by outdoor unit
+- `regulate.py:259` - `ActuatorStep.DRY` - dry counts as running (`wants_running`)
+- `regulate.py:299` - `wanted_by_group` - OR across the rooms on a compressor (`arbitrate_cycling`)
+- `coordinator.py:1169-1175` - `hold_compressor` - a refused stop holds, decision kept

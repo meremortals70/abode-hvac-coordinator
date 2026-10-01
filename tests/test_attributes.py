@@ -180,7 +180,7 @@ class TestPureModulesStayPure(unittest.TestCase):
         on_disk = {p.stem for p in SRC.glob("*.py")} - {"__init__"}
         impure = {
             "actuator", "config_flow", "coordinator", "diagnostics",
-            "entity", "sensor", "store",
+            "entity", "sensor", "store", "switch",
         }
         self.assertEqual(
             on_disk - set(PURE_MODULES) - impure,

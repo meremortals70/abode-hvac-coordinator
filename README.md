@@ -5,7 +5,7 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.8.13 — beta
+> ### Status: v0.8.14 — beta
 > The architecture is built, 447 tests pass, and every build runs
 > continuously against a live air conditioner in a real office, used as the
 > test room — that is where real compressor, blind and fan behaviour is

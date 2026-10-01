@@ -32,7 +32,7 @@ start wastes energy, a late one misses the deadline the request existed for.
 
 ## In the code
 
-Checked against: 0.8.13. **Conforms.**
+Checked against: 0.8.14. **Conforms.**
 
 - `scheduling.py:58` - `plan_precondition` - when to start
 - `scheduling.py:89` - `hours_needed is None` - unconverged model starts now
