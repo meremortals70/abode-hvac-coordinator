@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; set aside for the vane switch by DR-049 and for the opening grace by DR-050 |
 | Since | Design v0.4 |
 | Origin | Design v0.4, in reaction to Dual Smart Thermostat |
 | Related | DR-009, DR-015, DR-030, DR-040 |
@@ -31,7 +31,7 @@ defined, with the reason, so a week of real data can move them.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.**
+Checked against: 0.9.0. **Conforms.**
 
-- `const.py:214` - `DEFAULT_BANDS` - seeds from ASHRAE 55, not this house
-- `regulate.py:60` - `INTEGRAL_GAIN_PER_HOUR` - a constant, not a setting
+- `const.py:221` - `DEFAULT_BANDS` - seeds from ASHRAE 55, not this house
+- `regulate.py:74` - `INTEGRAL_GAIN_PER_HOUR` - a constant, not a setting

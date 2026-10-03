@@ -318,6 +318,7 @@ class TestActuatorOrdering(unittest.TestCase):
                 relative_humidity=70.0,
                 presence=True,
                 opening_open=True,
+                opening_open_since=NOW - timedelta(minutes=30),
             ),
         )
         self.assertIs(trace.actuator, ActuatorStep.OFF)
@@ -3595,6 +3596,7 @@ class TestStoppingTheCompressor(unittest.TestCase):
                 relative_humidity=70.0,
                 presence=True,
                 opening_open=True,
+                opening_open_since=NOW - timedelta(minutes=30),
             ),
         )
         self.assertIs(trace.actuator, ActuatorStep.OFF)
@@ -3605,14 +3607,18 @@ class TestStoppingTheCompressor(unittest.TestCase):
 
 
 class TestOpeningDebounce(unittest.TestCase):
-    """0.8.7. A door held open for twenty seconds is not a window left open.
+    """0.8.7, reworked in 0.9.0 (DR-050). A door held open for twenty seconds
+    is not a window left open.
 
     Stopping immediately costs a compressor stop and then the five-minute
     minimum off. Never stopping was the defect. The interlock fires at once;
-    only the stop waits.
+    only the stop waits, for the room's own grace: five minutes by default.
+    An opening whose age cannot be read holds the unit rather than stopping
+    it.
     """
 
-    def _trace(self, open_for):
+    def _trace(self, open_for, grace=None):
+        extra = {} if grace is None else {"opening_grace_minutes": grace}
         return evaluate_room(
             room(),
             RoomInputs(
@@ -3622,11 +3628,22 @@ class TestOpeningDebounce(unittest.TestCase):
                 presence=True,
                 opening_open=True,
                 opening_open_since=None if open_for is None else NOW - open_for,
+                **extra,
             ),
         )
 
+    def test_the_default_grace_is_five_minutes(self):
+        self.assertEqual(_modes.DEFAULT_OPENING_GRACE_MINUTES, 5.0)
+        self.assertEqual(_models.RoomConfig(
+            room_id="r", name="R", climate_entity_ids=("climate.r",), bands={}
+        ).opening_grace_minutes, 5.0)
+
     def test_a_door_open_briefly_leaves_the_unit_alone(self):
         trace = self._trace(timedelta(seconds=20))
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+
+    def test_four_minutes_open_is_still_inside_the_default_grace(self):
+        trace = self._trace(timedelta(minutes=4))
         self.assertIs(trace.actuator, ActuatorStep.NONE)
 
     def test_nothing_is_actuated_into_an_open_room_either_way(self):
@@ -3647,22 +3664,35 @@ class TestOpeningDebounce(unittest.TestCase):
             any("another 0 minute" in r for r in trace.rejected), trace.rejected
         )
 
-    def test_an_opening_left_open_stops_the_unit(self):
-        trace = self._trace(timedelta(minutes=3))
+    def test_an_opening_left_open_past_the_grace_stops_the_unit(self):
+        trace = self._trace(timedelta(minutes=6))
         self.assertIs(trace.actuator, ActuatorStep.OFF)
 
     def test_the_boundary_stops_the_unit(self):
-        trace = self._trace(_modes.OPENING_STOP_DEBOUNCE)
+        trace = self._trace(timedelta(minutes=5))
         self.assertIs(trace.actuator, ActuatorStep.OFF)
 
-    def test_an_unknown_age_stops_the_unit(self):
-        """An unknown age is not a young one.
+    def test_a_rooms_own_grace_is_used(self):
+        """Two minutes set for this room stops it at three."""
+        self.assertIs(
+            self._trace(timedelta(minutes=3), grace=2.0).actuator, ActuatorStep.OFF
+        )
+        self.assertIs(
+            self._trace(timedelta(minutes=3), grace=10.0).actuator, ActuatorStep.NONE
+        )
 
-        A stale contact or a missing state gives no age. Holding on that would
-        leave a unit running against an opening nobody can date.
+    def test_an_unknown_age_holds_the_unit(self):
+        """An unknown age is not an old one (DR-050).
+
+        A sensor whose own timestamp cannot be read is not evidence the door
+        has been open long. 0.8.7 stopped the unit on that; 0.9.0 holds it,
+        and says why.
         """
         trace = self._trace(None)
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertTrue(
+            any("not known" in r for r in trace.rejected), trace.rejected
+        )
 
 
 class TestOutdoorUnits(unittest.TestCase):
@@ -4034,14 +4064,13 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
             )
         )
 
-    def _verdict(self, running, held, wants, *, neighbours=False, forced=False):
+    def _verdict(self, running, held, wants, *, neighbours=False):
         state = _regulate.CompressorState(running=running, changed_at=NOW)
         return _regulate.arbitrate_cycling(
             {"unit": state},
             wants=wants,
             neighbours_want={"unit": neighbours},
             now=NOW + held,
-            forced=forced,
         )
 
     def test_a_stop_inside_the_minimum_run_is_refused_and_holds_the_compressor(self):
@@ -4065,12 +4094,6 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
         verdict = self._verdict(True, timedelta(minutes=3), False, neighbours=True)
         self.assertIsNone(verdict.refusal)
         self.assertEqual(verdict.record, (("unit", True),))
-
-    def test_a_forced_stop_is_never_refused_and_is_recorded(self):
-        verdict = self._verdict(True, timedelta(minutes=3), False, forced=True)
-        self.assertIsNone(verdict.refusal)
-        self.assertFalse(verdict.holding)
-        self.assertEqual(verdict.record, (("unit", False),))
 
     def test_each_outdoor_unit_is_judged_on_its_own(self):
         young = _regulate.CompressorState(running=True, changed_at=NOW)
@@ -4126,3 +4149,882 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
         self.assertIsNone(
             _tariff.hours_until_cheaper_interval(series, NOW, timedelta(hours=3))
         )
+
+
+# ---------------------------------------------------------------------------
+# 0.9.0
+# ---------------------------------------------------------------------------
+
+_capabilities = importlib.import_module("hvac_core.capabilities")
+
+
+def _converged(value, samples=30, variance=0.01):
+    return _thermal.Coefficient(value, variance=variance, samples=samples)
+
+
+def _learned_model(
+    bins=(0.5, 2.0, 4.5, 8.0), k_loss=0.15, k_solar=1.0, pooled=2.0
+):
+    """A model that has converged. Approach rate is 2.0 degrees per hour per
+    degree of approach, so the curve is a straight line and every hand-worked
+    figure below can be checked on paper."""
+    model = _thermal.ThermalModel()
+    model.k_loss = _converged(k_loss)
+    model.k_solar = _converged(k_solar)
+    model.k_sensible = _converged(pooled)
+    model.k_sensible_bins = [_converged(value) for value in bins]
+    return model
+
+
+class TestSetpointRounding(unittest.TestCase):
+    """0.9.0, DR-051. A setpoint is rounded to what the unit can hold.
+
+    The Office Aircon advertises a step of 1.0 and holds whole degrees. The
+    component sent 22.8, 22.9 and 22.2; the unit kept 22.0, and the component
+    sent again every cycle.
+    """
+
+    WHOLE = _regulate.SetpointLimits(step=1.0, minimum=18.0, maximum=30.0)
+
+    def test_the_nearest_step_is_used(self):
+        self.assertEqual(_regulate.quantise_setpoint(22.8, self.WHOLE), 23.0)
+        self.assertEqual(_regulate.quantise_setpoint(22.2, self.WHOLE), 22.0)
+        self.assertEqual(_regulate.quantise_setpoint(22.9, self.WHOLE), 23.0)
+
+    def test_a_value_already_on_the_step_is_unchanged(self):
+        self.assertEqual(_regulate.quantise_setpoint(22.0, self.WHOLE), 22.0)
+
+    def test_half_a_step_rounds_up(self):
+        self.assertEqual(_regulate.quantise_setpoint(22.5, self.WHOLE), 23.0)
+
+    def test_steps_are_counted_from_the_units_minimum(self):
+        """A unit whose range starts at 18.5 holds 22.5, not 22.0."""
+        limits = _regulate.SetpointLimits(step=1.0, minimum=18.5, maximum=30.5)
+        self.assertEqual(_regulate.quantise_setpoint(22.8, limits), 22.5)
+
+    def test_a_half_degree_unit_keeps_half_degrees(self):
+        limits = _regulate.SetpointLimits(step=0.5, minimum=16.0, maximum=30.0)
+        self.assertEqual(_regulate.quantise_setpoint(22.8, limits), 23.0)
+        self.assertEqual(_regulate.quantise_setpoint(22.6, limits), 22.5)
+
+    def test_the_unit_s_range_is_respected(self):
+        self.assertEqual(_regulate.quantise_setpoint(35.0, self.WHOLE), 30.0)
+        self.assertEqual(_regulate.quantise_setpoint(10.0, self.WHOLE), 18.0)
+
+    def test_a_unit_with_no_step_is_rounded_to_tenths_as_before(self):
+        self.assertEqual(
+            _regulate.quantise_setpoint(22.84, _regulate.SetpointLimits()), 22.8
+        )
+
+    def test_rounding_toward_a_ceiling_never_crosses_it(self):
+        """Cooling: the ceiling is the coldest the unit may be asked for, so
+        round up. Heating: round down."""
+        self.assertEqual(
+            _regulate.quantise_setpoint(22.2, self.WHOLE, toward="up"), 23.0
+        )
+        self.assertEqual(
+            _regulate.quantise_setpoint(22.8, self.WHOLE, toward="down"), 22.0
+        )
+        self.assertEqual(
+            _regulate.quantise_setpoint(22.0, self.WHOLE, toward="up"), 22.0
+        )
+
+    def test_two_heads_use_the_coarser_step_and_narrower_range(self):
+        limits, note = _regulate.combine_limits(
+            [
+                _regulate.SetpointLimits(1.0, 18.0, 30.0),
+                _regulate.SetpointLimits(0.5, 16.0, 28.0),
+            ]
+        )
+        self.assertIsNone(note)
+        self.assertEqual((limits.step, limits.minimum, limits.maximum), (1.0, 18.0, 28.0))
+
+    def test_steps_that_are_not_whole_multiples_are_left_unrounded_and_said(self):
+        limits, note = _regulate.combine_limits(
+            [
+                _regulate.SetpointLimits(1.0, None, None),
+                _regulate.SetpointLimits(0.3, None, None),
+            ]
+        )
+        self.assertIsNone(limits.step)
+        self.assertIn("not a whole multiple", note)
+
+    def test_no_advertised_step_anywhere_is_no_step(self):
+        limits, note = _regulate.combine_limits(
+            [_regulate.SetpointLimits(None, 18.0, 30.0)]
+        )
+        self.assertIsNone(limits.step)
+        self.assertIsNone(note)
+        self.assertEqual(limits.minimum, 18.0)
+
+    def test_the_deadband_is_half_the_step_but_never_under_point_three(self):
+        self.assertEqual(
+            _regulate.effective_deadband(_regulate.SetpointLimits()),
+            _regulate.DEADBAND_C,
+        )
+        self.assertEqual(
+            _regulate.effective_deadband(_regulate.SetpointLimits(step=0.5)),
+            _regulate.DEADBAND_C,
+        )
+        self.assertEqual(
+            _regulate.effective_deadband(_regulate.SetpointLimits(step=1.0)), 0.5
+        )
+
+    def test_an_error_inside_half_a_step_is_not_chased(self):
+        """At a whole-degree step a 0.4 degree error cannot be resolved; the
+        trim must not wind against it and flip the setpoint by a degree."""
+        state = _regulate.RegulatorState()
+        _regulate.integrate(
+            state, target_c=24.0, room_c=24.0, now=NOW, regulating=True
+        )
+        _regulate.integrate(
+            state,
+            target_c=24.0,
+            room_c=24.4,
+            now=NOW + timedelta(minutes=30),
+            regulating=True,
+            deadband_c=0.5,
+        )
+        self.assertEqual(state.trim_c, 0.0)
+        # The default deadband does integrate the same error.
+        other = _regulate.RegulatorState()
+        _regulate.integrate(other, target_c=24.0, room_c=24.0, now=NOW, regulating=True)
+        _regulate.integrate(
+            other,
+            target_c=24.0,
+            room_c=24.4,
+            now=NOW + timedelta(minutes=30),
+            regulating=True,
+        )
+        self.assertLess(other.trim_c, 0.0)
+
+
+class TestTrimPerDirection(unittest.TestCase):
+    """0.9.0, DR-054. A trim learned while cooling is not a heating trim.
+
+    At 11:08:38 on 2026-10-03 the Office had a target of 23.2 C, a heat demand
+    and a commanded setpoint of 22.8 C: a trim of -0.4 learned while cooling,
+    applied to heating, asked the unit to heat to below the room's own target.
+    """
+
+    def _integrate_twice(self, state, room_c, direction):
+        _regulate.integrate(
+            state, target_c=24.0, room_c=room_c, now=NOW, regulating=True,
+            direction=direction,
+        )
+        _regulate.integrate(
+            state, target_c=24.0, room_c=room_c, now=NOW + timedelta(hours=1),
+            regulating=True, direction=direction,
+        )
+
+    def test_cooling_integrates_only_the_cooling_trim(self):
+        state = _regulate.RegulatorState()
+        self._integrate_twice(state, 26.0, "cool")
+        self.assertLess(state.trim_c, 0.0)
+        self.assertEqual(state.heat_trim_c, 0.0)
+
+    def test_heating_integrates_only_the_heating_trim(self):
+        state = _regulate.RegulatorState()
+        self._integrate_twice(state, 22.0, "heat")
+        self.assertGreater(state.heat_trim_c, 0.0)
+        self.assertEqual(state.trim_c, 0.0)
+
+    def test_a_cooling_trim_is_not_applied_to_heating(self):
+        """The incident: target 23.2, cooling trim -0.41, heating asked."""
+        state = _regulate.RegulatorState(trim_c=-0.41)
+        self.assertEqual(_regulate.commanded_setpoint(state, 23.2, "heat"), 23.2)
+        self.assertEqual(_regulate.commanded_setpoint(state, 23.2, "cool"), 22.8)
+
+    def test_the_default_direction_is_cooling(self):
+        state = _regulate.RegulatorState(trim_c=-0.4)
+        self.assertEqual(_regulate.commanded_setpoint(state, 24.0), 23.6)
+
+
+class TestRoomRate(unittest.TestCase):
+    """0.9.0, DR-054. The derivative term works on the room's own measurement."""
+
+    def test_a_falling_room_has_a_negative_rate(self):
+        state = _regulate.RegulatorState()
+        _regulate.track_room_rate(state, 26.0, NOW)
+        _regulate.track_room_rate(state, 25.5, NOW + timedelta(minutes=6))
+        self.assertLess(state.room_rate_c_per_hour, 0.0)
+
+    def test_the_same_reading_is_not_a_rate(self):
+        """A sensor that reports every few minutes is a staircase."""
+        state = _regulate.RegulatorState()
+        _regulate.track_room_rate(state, 26.0, NOW)
+        _regulate.track_room_rate(state, 26.0, NOW + timedelta(minutes=6))
+        self.assertEqual(state.room_rate_c_per_hour, 0.0)
+
+    def test_a_rate_decays_while_the_sensor_is_silent(self):
+        state = _regulate.RegulatorState()
+        _regulate.track_room_rate(state, 26.0, NOW)
+        _regulate.track_room_rate(state, 25.0, NOW + timedelta(minutes=6))
+        first = state.room_rate_c_per_hour
+        for minute in range(7, 40):
+            _regulate.track_room_rate(
+                state, 25.0, NOW + timedelta(minutes=minute)
+            )
+        self.assertLess(abs(state.room_rate_c_per_hour), abs(first))
+
+    def test_a_missing_reading_changes_nothing(self):
+        state = _regulate.RegulatorState()
+        _regulate.track_room_rate(state, None, NOW)
+        self.assertIsNone(state.room_c)
+
+    def test_a_jump_is_capped(self):
+        state = _regulate.RegulatorState()
+        _regulate.track_room_rate(state, 20.0, NOW)
+        _regulate.track_room_rate(state, 40.0, NOW + timedelta(minutes=1))
+        self.assertLessEqual(
+            abs(state.room_rate_c_per_hour), _regulate.RATE_LIMIT_C_PER_HOUR
+        )
+
+
+class TestApproachForRate(unittest.TestCase):
+    """0.9.0, DR-054. The learned rate against approach, read backwards."""
+
+    def test_no_rate_asks_for_no_approach(self):
+        model = _learned_model()
+        self.assertEqual(model.approach_for_rate(0.0), 0.0)
+        self.assertEqual(model.approach_for_rate(-1.0), 0.0)
+
+    def test_a_bins_own_rate_gives_its_representative_approach(self):
+        model = _learned_model()
+        self.assertAlmostEqual(model.approach_for_rate(2.0), 1.0)
+        self.assertAlmostEqual(model.approach_for_rate(4.5), 2.25)
+
+    def test_between_bins_it_is_interpolated(self):
+        model = _learned_model()
+        # Halfway between 2.0 (approach 1.0) and 4.5 (approach 2.25).
+        self.assertAlmostEqual(model.approach_for_rate(3.25), 1.625)
+
+    def test_below_the_first_bin_it_runs_from_zero(self):
+        model = _learned_model()
+        self.assertAlmostEqual(model.approach_for_rate(0.25), 0.125)
+
+    def test_more_than_the_unit_does_asks_for_the_most_it_does(self):
+        model = _learned_model()
+        self.assertEqual(model.approach_for_rate(50.0), 4.0)
+
+    def test_a_bin_that_learned_less_than_the_one_below_is_held_up(self):
+        """The curve has to be invertible: a noisy bin cannot go backwards."""
+        model = _learned_model(bins=(0.5, 2.0, 1.5, 8.0))
+        self.assertAlmostEqual(model.approach_for_rate(2.0), 1.0)
+        self.assertGreater(model.approach_for_rate(5.0), 2.25)
+
+    def test_a_dip_in_the_curve_means_more_than_that_rate_needs_more_approach(self):
+        """With the third bin held at the second's 2.0, a rate just over 2.0
+        cannot be had until the approach reaches the third bin's 2.25."""
+        model = _learned_model(bins=(0.5, 2.0, 1.5, 8.0))
+        self.assertAlmostEqual(
+            model.approach_for_rate(2.2), 2.25 + (0.2 / 6.0) * 1.75, places=3
+        )
+
+    def test_an_unconverged_bin_falls_back_to_the_pooled_rate(self):
+        model = _learned_model()
+        model.k_sensible_bins[1] = _thermal.Coefficient(9.9)
+        # The first bin now reads the pooled 2.0 at approach 1.0.
+        self.assertIsNotNone(model.approach_for_rate(1.0))
+
+    def test_nothing_converged_says_nothing(self):
+        model = _thermal.ThermalModel()
+        self.assertIsNone(model.approach_for_rate(1.0))
+
+    def test_a_unit_that_cannot_move_the_room_says_nothing(self):
+        model = _learned_model(bins=(0.0, 0.0, 0.0, 0.0), pooled=0.0)
+        self.assertIsNone(model.approach_for_rate(1.0))
+
+
+class TestRoomLoop(unittest.TestCase):
+    """0.9.0, DR-054. A PID on the room, built from what the room has learned."""
+
+    def setUp(self):
+        self.model = _learned_model()
+
+    def _pid(self, room_c, *, drift, direction="cool", state=None, target=24.0):
+        return _regulate.pid_setpoint(
+            state or _regulate.RegulatorState(),
+            target_c=target,
+            room_c=room_c,
+            direction=direction,
+            drift_c_per_hour=drift,
+            approach_for_rate=self.model.approach_for_rate,
+        )
+
+    def test_a_room_one_degree_hot_is_asked_to_close_it_in_half_an_hour(self):
+        """Needs 2 C/h; the curve gives 1.0 C of approach for 2 C/h."""
+        result = self._pid(25.0, drift=0.0)
+        self.assertAlmostEqual(result.wanted_rate_c_per_hour, -2.0)
+        self.assertAlmostEqual(result.approach_c, 1.0)
+        self.assertAlmostEqual(result.setpoint_c, 24.0)
+
+    def test_at_target_the_unit_is_asked_only_to_hold_against_the_drift(self):
+        """Feed-forward: a room warming at 0.6 C/h needs 0.6 C/h to stand
+        still, which the curve gives at 0.3 C of approach."""
+        result = self._pid(24.0, drift=0.6)
+        self.assertAlmostEqual(result.feed_forward_c, 0.3)
+        self.assertAlmostEqual(result.approach_c, 0.3)
+        self.assertAlmostEqual(result.setpoint_c, 23.7)
+
+    def test_the_feed_forward_is_what_makes_the_hold_gentle(self):
+        """Without it the setpoint would sit at the target and the unit would
+        do nothing about a room that is drifting away."""
+        result = self._pid(24.0, drift=0.6)
+        self.assertLess(result.setpoint_c, 24.0)
+
+    def test_a_room_already_below_target_while_cooling_asks_for_nothing(self):
+        result = self._pid(23.5, drift=0.0)
+        self.assertEqual(result.approach_c, 0.0)
+        self.assertEqual(result.setpoint_c, 23.5)
+
+    def test_a_room_falling_fast_toward_target_is_eased_off(self):
+        """Derivative on the measurement: the same error is asked for less
+        when the room is already on its way."""
+        steady = self._pid(25.0, drift=0.0)
+        falling_state = _regulate.RegulatorState(room_rate_c_per_hour=-4.0)
+        falling = self._pid(25.0, drift=0.0, state=falling_state)
+        self.assertLess(falling.approach_c, steady.approach_c)
+        self.assertGreater(falling.setpoint_c, steady.setpoint_c)
+
+    def test_a_room_rising_away_is_pushed_harder(self):
+        steady = self._pid(25.0, drift=0.0)
+        rising = self._pid(
+            25.0, drift=0.0, state=_regulate.RegulatorState(room_rate_c_per_hour=2.0)
+        )
+        self.assertGreater(rising.approach_c, steady.approach_c)
+
+    def test_heating_is_the_mirror_image(self):
+        result = self._pid(23.0, drift=0.0, direction="heat")
+        self.assertAlmostEqual(result.approach_c, 1.0)
+        self.assertAlmostEqual(result.setpoint_c, 24.0)
+
+    def test_the_trim_for_the_direction_is_added(self):
+        state = _regulate.RegulatorState(trim_c=-0.4, heat_trim_c=0.3)
+        self.assertAlmostEqual(self._pid(25.0, drift=0.0, state=state).setpoint_c, 23.6)
+        self.assertAlmostEqual(
+            self._pid(23.0, drift=0.0, direction="heat", state=state).setpoint_c, 24.3
+        )
+
+    def test_no_drift_estimate_means_no_loop_and_the_caller_falls_back(self):
+        """An unconverged coefficient is not a zero."""
+        self.assertIsNone(self._pid(25.0, drift=None))
+
+    def test_no_learned_curve_means_no_loop(self):
+        result = _regulate.pid_setpoint(
+            _regulate.RegulatorState(),
+            target_c=24.0,
+            room_c=25.0,
+            direction="cool",
+            drift_c_per_hour=0.0,
+            approach_for_rate=lambda rate: None,
+        )
+        self.assertIsNone(result)
+
+    def test_no_direction_means_no_loop(self):
+        self.assertIsNone(self._pid(24.0, drift=0.0, direction="none"))
+
+    def test_the_closed_loop_arrives_in_band_without_overshoot(self):
+        """The whole point. A room 3 C hot on a day that keeps pushing it up is
+        brought to its target and held there: it does not undershoot, and it
+        settles."""
+        temperature, state, lowest = 27.0, _regulate.RegulatorState(), 27.0
+        for minute in range(180):
+            now = NOW + timedelta(minutes=minute)
+            _regulate.track_room_rate(state, temperature, now)
+            drift = self.model.drift_rate(temperature, 32.0, direct_sun=False)
+            direction = "cool" if temperature > 24.0 else "heat"
+            result = _regulate.pid_setpoint(
+                state,
+                target_c=24.0,
+                room_c=temperature,
+                direction=direction,
+                drift_c_per_hour=drift,
+                approach_for_rate=self.model.approach_for_rate,
+            )
+            rate = 2.0 * min(result.approach_c, 4.0)
+            unit = rate if direction == "cool" else -rate
+            temperature += (drift - unit) / 60.0
+            lowest = min(lowest, temperature)
+        self.assertGreater(lowest, 23.8, f"overshot to {lowest:.2f}")
+        self.assertAlmostEqual(temperature, 24.0, delta=0.1)
+
+
+class TestUnaidedProjection(unittest.TestCase):
+    """0.9.0, DR-053. What the room does with nothing running."""
+
+    def _project(self, model, indoor, outdoor, *, sun=0.0, hours=1.0):
+        return model.project_unaided(
+            indoor,
+            outdoor_at=lambda t: outdoor,
+            sun_at=lambda t: sun,
+            hours=hours,
+        )
+
+    def test_a_room_drifts_toward_a_warmer_outdoors(self):
+        points = self._project(_learned_model(), 22.0, 27.0)
+        self.assertGreater(points[-1], points[0])
+
+    def test_the_figure_matches_the_exact_solution(self):
+        """dT/dt = k (T_out - T) has T = T_out - (T_out - T0) e^(-kt)."""
+        import math
+
+        points = self._project(_learned_model(k_loss=0.15), 22.0, 27.0)
+        exact = 27.0 - 5.0 * math.exp(-0.15)
+        self.assertAlmostEqual(points[-1], exact, delta=0.02)
+
+    def test_the_drift_slows_as_the_room_nears_outdoors_and_never_passes_it(self):
+        points = self._project(_learned_model(k_loss=0.5), 22.0, 25.0, hours=6.0)
+        steps = [b - a for a, b in zip(points, points[1:], strict=False)]
+        self.assertEqual(steps, sorted(steps, reverse=True))
+        self.assertLess(points[-1], 25.0)
+
+    def test_it_starts_from_the_rooms_reading_and_has_a_point_per_step(self):
+        points = self._project(_learned_model(), 22.0, 27.0)
+        self.assertEqual(points[0], 22.0)
+        self.assertEqual(len(points), 13)
+
+    def test_the_sun_adds_its_term(self):
+        model = _learned_model(k_loss=0.15, k_solar=1.0)
+        shade = self._project(model, 24.0, 24.0)
+        sun = self._project(model, 24.0, 24.0, sun=1.0)
+        self.assertAlmostEqual(shade[-1], 24.0)
+        self.assertGreater(sun[-1], 24.5)
+
+    def test_cloud_scales_the_sun(self):
+        model = _learned_model()
+        full = self._project(model, 24.0, 24.0, sun=1.0)[-1]
+        half = self._project(model, 24.0, 24.0, sun=0.5)[-1]
+        self.assertAlmostEqual(half - 24.0, (full - 24.0) / 2.0, delta=0.02)
+
+    def test_the_forecast_can_change_along_the_way(self):
+        model = _learned_model()
+        points = model.project_unaided(
+            22.0,
+            outdoor_at=lambda t: 30.0 if t < 0.5 else 15.0,
+            sun_at=lambda t: 0.0,
+            hours=1.0,
+        )
+        peak = max(points)
+        self.assertGreater(peak, points[0])
+        self.assertLess(points[-1], peak)
+
+    def test_an_unconverged_loss_term_says_nothing(self):
+        model = _learned_model()
+        model.k_loss = _thermal.Coefficient(0.15)
+        self.assertIsNone(self._project(model, 22.0, 27.0))
+
+    def test_no_outdoor_figure_says_nothing(self):
+        model = _learned_model()
+        self.assertIsNone(
+            model.project_unaided(
+                22.0, outdoor_at=lambda t: None, sun_at=lambda t: 0.0, hours=1.0
+            )
+        )
+
+    def test_sun_on_the_glass_with_an_unconverged_solar_term_says_nothing(self):
+        """Absence of a measurement is not a measurement of zero."""
+        model = _learned_model()
+        model.k_solar = _thermal.Coefficient(1.0)
+        self.assertIsNone(self._project(model, 22.0, 27.0, sun=1.0))
+        self.assertIsNotNone(self._project(model, 22.0, 27.0, sun=0.0))
+
+
+class TestUnaidedOutlook(unittest.TestCase):
+    """0.9.0, DR-053. A projection read against the band: when is it back in,
+    for good."""
+
+    def _outlook(self, points):
+        return _thermal.unaided_outlook(points, lower_c=22.0, upper_c=26.0)
+
+    def test_a_room_inside_and_staying_inside_is_back_at_once(self):
+        self.assertEqual(self._outlook([23.0, 23.5, 24.0]).return_minutes, 0.0)
+
+    def test_a_room_that_enters_the_band_is_back_at_that_step(self):
+        outlook = self._outlook([21.0, 21.5, 22.0, 22.5])
+        self.assertEqual(outlook.return_minutes, 10.0)
+        self.assertTrue(outlook.returns)
+
+    def test_a_room_that_leaves_again_is_not_back_for_good(self):
+        self.assertIsNone(self._outlook([23.0, 25.0, 27.0]).return_minutes)
+
+    def test_a_room_that_leaves_and_returns_is_back_only_when_it_returns(self):
+        """Not at step 0 because it started inside: it is out in the middle.
+        Checking only the start and the end would call this room back at once."""
+        outlook = self._outlook([23.0, 27.0, 24.0])
+        self.assertEqual(outlook.return_minutes, 10.0)
+
+    def test_a_room_that_passes_through_and_out_is_not_back_for_good(self):
+        outlook = self._outlook([21.0, 23.0, 27.0])
+        self.assertIsNone(outlook.return_minutes)
+        self.assertFalse(outlook.returns)
+
+    def test_a_room_that_never_gets_in_is_not_back(self):
+        self.assertIsNone(self._outlook([18.0, 18.5, 19.0]).return_minutes)
+
+    def test_a_room_that_overshoots_the_far_side_is_not_back(self):
+        self.assertIsNone(self._outlook([21.0, 24.0, 28.0]).return_minutes)
+
+
+class TestWeatherCoast(unittest.TestCase):
+    """0.9.0, DR-053. A room coasts when its own physics will bring it back.
+
+    The Office was sent Heat 0.12 below its floor on a day it was 25 C
+    outside. The decision came from the comfort index alone.
+    """
+
+    def _inputs(self, temperature_c, **overrides):
+        base = {
+            "now": NOW,
+            "temperature_c": temperature_c,
+            "relative_humidity": 50.0,
+            "presence": True,
+            "outdoor_c": 30.0,
+            "outdoor_relative_humidity": 60.0,
+        }
+        base.update(overrides)
+        return RoomInputs(**base)
+
+    def test_a_cold_room_with_a_warm_projection_coasts(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                21.0,
+                unaided_available=True,
+                unaided_return_minutes=8.0,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertIs(trace.base_mode, Mode.OCCUPIED)
+        self.assertTrue(any("weather brings" in r for r in trace.reasons), trace.reasons)
+        self.assertEqual(trace.unaided_return_minutes, 8.0)
+
+    def test_a_hot_room_with_a_cooling_projection_coasts(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                31.0,
+                outdoor_c=20.0,
+                unaided_available=True,
+                unaided_return_minutes=10.0,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+
+    def test_a_return_slower_than_the_limit_is_driven_and_says_why(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                21.0,
+                unaided_available=True,
+                unaided_return_minutes=40.0,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertTrue(
+            any("longer than the 15 min allowed" in r for r in trace.rejected),
+            trace.rejected,
+        )
+
+    def test_a_room_the_weather_never_brings_back_is_driven(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                21.0,
+                unaided_available=True,
+                unaided_return_minutes=None,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertTrue(
+            any("does not bring the room back" in r for r in trace.rejected),
+            trace.rejected,
+        )
+
+    def test_without_a_projection_heat_into_a_warm_outdoors_is_refused(self):
+        """The floor: outdoors feels at least as warm as the band's lower bound."""
+        trace = evaluate_room(room(), self._inputs(21.0))
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertTrue(any("work against the weather" in r or "against the" in r for r in trace.reasons), trace.reasons)
+
+    def test_without_a_projection_heat_into_a_cold_outdoors_goes_ahead(self):
+        trace = evaluate_room(
+            room(), self._inputs(21.0, outdoor_c=8.0, outdoor_relative_humidity=60.0)
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertIs(trace.mode, Mode.OCCUPIED)
+
+    def test_without_a_projection_cooling_into_a_cold_outdoors_is_refused(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(31.0, outdoor_c=15.0, outdoor_relative_humidity=50.0,
+                         direct_sun=False),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+
+    def test_without_a_projection_sun_on_the_glass_keeps_the_cooling(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(31.0, outdoor_c=15.0, outdoor_relative_humidity=50.0,
+                         direct_sun=True),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_a_missing_outdoor_reading_never_coasts(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(21.0, outdoor_c=None, outdoor_relative_humidity=None),
+        )
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_a_room_inside_its_band_is_not_a_coast(self):
+        trace = evaluate_room(room(), self._inputs(25.5))
+        self.assertIsNot(trace.mode, Mode.COAST)
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+
+    def test_precool_is_banking_on_purpose_and_is_not_replaced(self):
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                31.0,
+                precool_opportunity=True,
+                forecast_demand_ahead=True,
+                unaided_available=True,
+                unaided_return_minutes=5.0,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        self.assertIsNot(trace.mode, Mode.COAST)
+
+    def test_the_fan_is_still_tried_before_the_weather_is(self):
+        """Only the compressor step is replaced; cheaper steps keep their order."""
+        trace = evaluate_room(
+            room(),
+            self._inputs(
+                25.8,
+                outdoor_c=40.0,
+                unaided_available=True,
+                unaided_return_minutes=5.0,
+                unaided_return_limit_minutes=15.0,
+            ),
+        )
+        # Marginally above the band: air movement is the cheaper step, and the
+        # weather is only consulted once the compressor has been chosen.
+        self.assertIs(trace.actuator, ActuatorStep.FAN)
+        self.assertIsNot(trace.mode, Mode.COAST)
+
+
+class TestCapabilityProfile(unittest.TestCase):
+    """0.9.0, DR-048. What a room's units can do, read once at setup."""
+
+    def _profile(self, **overrides):
+        base = {
+            "hvac_modes": ("off", "cool", "heat", "dry", "fan_only"),
+            "fan_modes": ("auto", "low", "high"),
+            "swing_modes": ("off", "auto"),
+            "min_temp": 18.0,
+            "max_temp": 30.0,
+            "target_temp_step": 1.0,
+            "single_target": True,
+        }
+        base.update(overrides)
+        return _capabilities.RoomCapabilities(**base)
+
+    def test_it_survives_storage(self):
+        profile = self._profile(swing_horizontal_modes=("left", "right"))
+        again = _capabilities.RoomCapabilities.from_dict(profile.to_dict())
+        self.assertEqual(again, profile)
+
+    def test_nothing_stored_is_none_not_an_empty_profile(self):
+        self.assertIsNone(_capabilities.RoomCapabilities.from_dict(None))
+        self.assertIsNone(_capabilities.RoomCapabilities.from_dict({}))
+        self.assertIsNone(_capabilities.RoomCapabilities.from_dict("nonsense"))
+
+    def test_a_garbled_number_is_none_not_a_crash(self):
+        raw = self._profile().to_dict()
+        raw["min_temp"] = "cold"
+        self.assertIsNone(_capabilities.RoomCapabilities.from_dict(raw).min_temp)
+
+    def test_what_the_units_offer_is_reported_as_features(self):
+        profile = self._profile()
+        self.assertTrue(profile.has_fan)
+        self.assertTrue(profile.has_swing)
+        self.assertFalse(profile.has_swing_horizontal)
+        self.assertTrue(profile.has_setpoint)
+        bare = self._profile(fan_modes=(), swing_modes=(), single_target=False)
+        self.assertFalse(bare.has_fan)
+        self.assertFalse(bare.has_swing)
+        self.assertFalse(bare.has_setpoint)
+
+    def test_two_heads_get_only_what_both_have(self):
+        merged = _capabilities.intersect(
+            [
+                self._profile(),
+                self._profile(
+                    hvac_modes=("off", "cool", "fan_only"),
+                    fan_modes=("low", "high", "turbo"),
+                    swing_modes=("off", "auto", "up"),
+                    min_temp=16.0,
+                    max_temp=28.0,
+                    target_temp_step=0.5,
+                    single_target=False,
+                    range_target=True,
+                ),
+            ]
+        )
+        self.assertEqual(merged.hvac_modes, ("off", "cool", "fan_only"))
+        self.assertEqual(merged.fan_modes, ("low", "high"))
+        self.assertEqual(merged.swing_modes, ("off", "auto"))
+        self.assertEqual((merged.min_temp, merged.max_temp), (18.0, 28.0))
+        self.assertEqual(merged.target_temp_step, 1.0)
+        self.assertFalse(merged.single_target)
+        self.assertFalse(merged.range_target)
+
+    def test_one_head_is_returned_as_it_is_and_none_is_empty(self):
+        profile = self._profile()
+        self.assertIs(_capabilities.intersect([profile]), profile)
+        self.assertEqual(_capabilities.intersect([]), _capabilities.RoomCapabilities())
+
+    def test_a_head_with_no_fan_leaves_the_room_with_none(self):
+        merged = _capabilities.intersect([self._profile(), self._profile(fan_modes=())])
+        self.assertEqual(merged.fan_modes, ())
+
+
+class TestOpeningWarnings(unittest.TestCase):
+    """0.9.0, DR-050. A window left open is warned about, then stopped for."""
+
+    GRACE = timedelta(minutes=5)
+    WARNING = timedelta(minutes=3)
+
+    def _step(self, state, open_for, *, announce=True, grace=None):
+        return _grace.evaluate_opening_warnings(
+            state,
+            open_since=None if open_for is None else NOW - open_for,
+            now=NOW,
+            grace=grace or self.GRACE,
+            warning_grace=self.WARNING,
+            announce=announce,
+        )
+
+    def test_nothing_is_said_while_the_opening_is_young(self):
+        state = _grace.OpeningWarningState()
+        self.assertIs(self._step(state, timedelta(minutes=1)), _grace.Announcement.NONE)
+
+    def test_the_first_warning_is_one_warning_grace_before_the_stop(self):
+        state = _grace.OpeningWarningState()
+        self.assertIs(
+            self._step(state, timedelta(minutes=2)),
+            _grace.Announcement.OPENING_FIRST_WARNING,
+        )
+
+    def test_the_first_warning_is_said_once(self):
+        state = _grace.OpeningWarningState()
+        self._step(state, timedelta(minutes=2))
+        self.assertIs(self._step(state, timedelta(minutes=3)), _grace.Announcement.NONE)
+
+    def test_the_final_warning_comes_when_the_grace_expires(self):
+        state = _grace.OpeningWarningState()
+        self._step(state, timedelta(minutes=2))
+        self.assertIs(
+            self._step(state, timedelta(minutes=5)),
+            _grace.Announcement.OPENING_FINAL_WARNING,
+        )
+
+    def test_the_final_warning_is_said_once(self):
+        state = _grace.OpeningWarningState()
+        self._step(state, timedelta(minutes=5))
+        self.assertIs(self._step(state, timedelta(minutes=6)), _grace.Announcement.NONE)
+
+    def test_a_grace_shorter_than_the_warning_warns_at_once(self):
+        state = _grace.OpeningWarningState()
+        self.assertIs(
+            self._step(state, timedelta(seconds=10), grace=timedelta(minutes=2)),
+            _grace.Announcement.OPENING_FIRST_WARNING,
+        )
+
+    def test_an_opening_that_closes_resets_the_warnings(self):
+        state = _grace.OpeningWarningState()
+        self._step(state, timedelta(minutes=5))
+        self._step(state, None)
+        self.assertIs(
+            self._step(state, timedelta(minutes=2)),
+            _grace.Announcement.OPENING_FIRST_WARNING,
+        )
+
+    def test_a_room_with_announcements_off_is_silent(self):
+        state = _grace.OpeningWarningState()
+        for minutes in (2, 5, 8):
+            self.assertIs(
+                self._step(state, timedelta(minutes=minutes), announce=False),
+                _grace.Announcement.NONE,
+            )
+
+
+class TestSolarPosition(unittest.TestCase):
+    """0.9.0, DR-053. The sun's position at a time that has not happened yet.
+
+    Brisbane, 3 October 2026. Solar noon is about 11:37 local, the sun is due
+    north then, and its elevation is 90 less the gap between latitude and
+    declination (-27.47 and about -4.3 degrees).
+    """
+
+    LAT, LON = -27.47, 153.03
+    AEST = timezone(timedelta(hours=10))
+
+    def _at(self, hour, minute=0):
+        return _sun.solar_position(
+            self.LAT, self.LON, datetime(2026, 10, 3, hour, minute, tzinfo=self.AEST)
+        )
+
+    def test_solar_noon_is_due_north_and_high(self):
+        azimuth, elevation = self._at(11, 37)
+        self.assertLess(min(azimuth, 360.0 - azimuth), 5.0)
+        self.assertAlmostEqual(elevation, 66.8, delta=1.5)
+
+    def test_the_equation_of_time_puts_solar_noon_where_an_almanac_does(self):
+        """26 October 2026 in Brisbane: solar noon 11:33, sunrise 05:02 and
+        sunset 18:02, from an independent published table (r-astro.com, at
+        -27.4698, 153.0251). The equation of time that day is about +16
+        minutes, so a sign error in it moves everything below by minutes."""
+        lat, lon = -27.4698, 153.0251
+
+        def at(hour, minute):
+            return _sun.solar_position(
+                lat, lon, datetime(2026, 10, 26, hour, minute, tzinfo=self.AEST)
+            )
+
+        azimuth, _ = at(11, 33)
+        self.assertLess(min(azimuth, 360.0 - azimuth), 3.5)
+        # The horizon, allowing for refraction and the sun's width (-0.83).
+        self.assertAlmostEqual(at(5, 2)[1], -0.83, delta=0.5)
+        self.assertAlmostEqual(at(18, 2)[1], -0.83, delta=0.5)
+
+    def test_the_sun_rises_in_the_east(self):
+        azimuth, elevation = self._at(6, 0)
+        self.assertAlmostEqual(azimuth, 90.0, delta=12.0)
+        self.assertGreater(elevation, 0.0)
+
+    def test_it_sets_in_the_west(self):
+        azimuth, _ = self._at(17, 30)
+        self.assertAlmostEqual(azimuth, 270.0, delta=15.0)
+
+    def test_it_is_below_the_horizon_at_night(self):
+        self.assertLess(self._at(2, 0)[1], -20.0)
+
+    def test_it_crosses_the_horizon_near_sunrise(self):
+        self.assertLess(self._at(5, 5)[1], 0.0)
+        self.assertGreater(self._at(5, 45)[1], 0.0)
+
+    def test_a_morning_sun_is_on_an_east_window_and_not_a_west_one(self):
+        azimuth, elevation = self._at(8, 0)
+        self.assertTrue(_sun.sun_on_window(azimuth, elevation, 90.0))
+        self.assertFalse(_sun.sun_on_window(azimuth, elevation, 270.0))
+
+    def test_an_afternoon_sun_is_on_a_west_window(self):
+        azimuth, elevation = self._at(15, 30)
+        self.assertTrue(_sun.sun_on_window(azimuth, elevation, 270.0))

@@ -87,11 +87,36 @@ process noise eventually stops learning.
 
 | Consumer | What it asks |
 |---|---|
-| `COAST` | Does the band hold unaided over the next hour? |
+| `COAST` | Does the band hold unaided over the next hour? For a room already in band |
+| Weather coast | With nothing running, does the room come back into band, for good, within the limit? A stepped projection from `k_loss`, `k_solar`, the forecast and the sun at each step |
+| The room loop | How far from the room's own reading must the unit work to move the room at a given rate? The learned rate against approach, read backwards |
 | `PRECOOL` | How far to overshoot. Whether a load is coming is the weather forecast's answer, not the model's |
 | Heading home | How long to reach comfort, and therefore when to start |
 | Dry against cool | Which closes the comfort gap faster, from `k_sensible` and `k_latent` |
 | Demand forecast | How much energy over the horizon? |
+
+## Looking ahead without the compressor
+
+Two of those uses need the room's own physics run forward, not a single number.
+(DR-053)
+
+`project_unaided` steps the room's temperature forward five minutes at a time:
+
+    dT/dt = k_loss * (T_out(t) - T) + k_solar * sun(t)
+
+so the drift slows as the room nears the outdoor temperature, instead of running
+on in a straight line past it. `T_out(t)` is the forecast at each step and
+`sun(t)` is the sun on this room's window at that step, from the sun's position
+and the window direction, scaled by the forecast's cloud. Where the model cannot
+say, because `k_loss` has not converged or the sun is on the glass with `k_solar`
+not converged, it returns nothing. It does not treat the missing coefficient as
+zero.
+
+`approach_for_rate` reads the learned `k_sensible` bins the other way round: given
+a rate the room is wanted to move at, how far from its own reading the unit must
+be asked to work. A bin that learned less than the bin below it is held level, so
+the curve can be read backwards, and a rate beyond the top bin asks for the most
+the unit does.
 
 ## Seeing its state
 

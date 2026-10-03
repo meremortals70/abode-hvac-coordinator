@@ -98,6 +98,49 @@ entities:
     name: Demand
 ```
 
+## Greying out the controls while the automation owns them
+
+The room's mode, fan speed and setpoint controls refuse changes while
+**Automatic control** is on, and the vane controls refuse them while **Automatic
+vane control** is on. A native entity cannot be greyed out and still show its
+value, so the controls always show the unit's live state and the grey look comes
+from the card: a conditional card that shows the controls only while the room
+can be changed by hand.
+
+```yaml
+type: vertical-stack
+cards:
+  - type: entities
+    title: Office
+    entities:
+      - entity: switch.office_automatic_control
+      - entity: switch.office_automatic_vane_control
+  - type: conditional
+    conditions:
+      - entity: switch.office_automatic_control
+        state: "off"
+    card:
+      type: entities
+      title: Office, by hand
+      entities:
+        - entity: select.office_mode
+        - entity: select.office_fan_speed
+        - entity: number.office_setpoint
+  - type: conditional
+    conditions:
+      - entity: switch.office_automatic_vane_control
+        state: "off"
+    card:
+      type: entities
+      title: Office vanes
+      entities:
+        - entity: select.office_vertical_vane
+```
+
+To show the live state while the automation owns it, put the same entities in a
+second card that is shown when the switch is `on`, and add `secondary_info` or a
+muted theme to it.
+
 ## Gauge with the comfort scale
 
 ```yaml

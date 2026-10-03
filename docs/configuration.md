@@ -36,7 +36,8 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Heat source in the room | No | Equipment heat is not counted toward comfort. A binary sensor that is on while a workstation, server or dryer is running — heat a wall sensor barely sees and a person sitting next to it certainly does |
 | Outdoor unit, per air conditioner | No | Each air conditioner is treated as having its own compressor. See [Outdoor units](#outdoor-units) |
 | Fan or air movement | No | Falls back to whether the air conditioner is running, which is not the same question. A binary sensor, fan or switch that is on while the room's air is moving |
-| Windows and doors | No | No opening interlock. When one is configured and open, the room's air conditioner is switched off |
+| Windows and doors | No | No opening interlock. When one is configured and open for longer than the grace below, the room's air conditioner is switched off |
+| Wait this long with a window or door open before stopping | Seeded | 5 minutes. The unit is left alone for this long after an opening opens, in case it closes again. With announcements on, a warning is spoken 3 minutes before it stops and another as it does. Set per room |
 | Blinds | No | Covers are never used |
 | — blinds that report no position | — | The cover step is skipped, and the trace says so. See [Actuator ordering](actuator-ordering.md#covers-with-no-reported-position-are-skipped) |
 | Allow blind control | Seeded (on) | Off keeps this room's blinds untouched even with blinds configured — for a semi-transparent blind kept for privacy or glare, not shading |
@@ -56,6 +57,34 @@ screen, and no free text box that could be filled in by accident.
 
 The list offers six built-in reasons and accepts one you type. A reason you type
 is stored for the whole installation and offered for every room from then on.
+
+#### What the air conditioner can do
+
+**You are not asked.** When a room is added or edited, the form reads each
+air conditioner in it and keeps what it found: its HVAC modes, fan speeds,
+vertical and horizontal vane positions, temperature range and step, and whether
+it takes one target or a range. Everything the room does with that air
+conditioner afterwards, and every control it offers, is built from that list.
+(DR-048)
+
+- **A room cannot be added for an air conditioner that is not reporting.** If any
+  air conditioner in the room is unavailable or missing, the form says so and
+  nothing is saved. There would be nothing to build the room's commands or
+  controls from.
+- **A room with two air conditioners gets only what both can do:** the modes and
+  fan speeds they share, the narrower temperature range, the coarser step.
+- **Editing a room reads it again.** That is how a changed unit, such as a new
+  Wi-Fi dongle or new firmware, is picked up.
+- **Rooms configured before 0.9.0 are read once, the first time Home Assistant
+  starts on 0.9.0, and the result is kept.** Until their air conditioner has
+  reported, nothing is sent to the room and its trace says it is waiting for the
+  air conditioner to report; it carries on by itself as soon as it does. No
+  configuration is migrated and nothing needs re-adding.
+
+The list is only as accurate as the integration that publishes the climate
+entity. The Intesis integration, for one, reports a setpoint step of 1.0
+whatever the unit is. That happens to be right for the Office unit, which holds
+whole degrees only.
 
 #### One air conditioner per room
 

@@ -14,7 +14,9 @@ Check `actuator` on the mode sensor. `rejected` says why.
 |---|---|
 | `room is in lockout` | A lockout reason is set. Clear it in Configure |
 | `room unoccupied, air conditioning off` | Working as designed. Use heading home |
-| `an opening in this room is open` | A window or door has been open two minutes or more. The unit is off until it closes |
+| `an opening in this room is open` | A window or door has been open longer than the room's grace (five minutes unless changed). The unit is off until it closes |
+| `Automatic control is off, nothing is sent to this room` | The room's Automatic control switch is off. The unit is **not** off: it has been left exactly as it was |
+| `waiting for the air conditioner to report what it can do` | The room has not yet read what its air conditioner offers, so nothing is sent to it. It starts by itself as soon as the air conditioner reports. See [Configuration](configuration.md#what-the-air-conditioner-can-do) |
 | `coasting, model predicts the band holds` | Working as designed |
 | `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |
 | `this unit cannot cool` / `cannot heat` | The room needs a direction the unit does not have |

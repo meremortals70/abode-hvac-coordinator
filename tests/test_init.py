@@ -88,6 +88,15 @@ async def test_unoccupied_room_is_off(
     hass.states.async_set("sensor.test_temperature", "34.0")
     hass.states.async_set("sensor.test_humidity", "80.0")
     hass.states.async_set("binary_sensor.test_presence", "off")
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
 
     mock_config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -2079,36 +2088,39 @@ async def test_each_room_has_an_automatic_control_switch_that_starts_on(
     assert state.state == "on"
 
 
-async def test_switching_a_room_off_stops_its_unit_at_once_even_inside_min_run(
+async def test_switching_a_room_off_sends_nothing_and_leaves_the_unit_alone(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """The short-cycle guard must not make an off switch wait ten minutes.
+    """DR-049. Off means the automation is off, not the air conditioning.
 
-    The room is hot and cooling, so its compressor was started moments ago and
-    `MIN_RUN` has not elapsed. A coordinator-chosen stop would be refused here.
+    The room is hot and cooling. Turning Automatic control off must not send
+    the unit anything - not an off, not a new setpoint - and the compressor
+    stays recorded as running, because nothing stopped it.
     """
     coordinator = await _setup_hot_room(hass, mock_config_entry)
-    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    temperature_calls = async_mock_service(hass, "climate", "set_temperature")
 
     await _switch(hass, "turn_off")
 
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.state == "lockout", state.attributes
-    assert state.attributes["actuator"] == "off", state.attributes
-    sent = [call.data["hvac_mode"] for call in calls]
-    assert sent and set(sent) == {"off"}, sent
+    assert "Automatic control is off" in " ".join(state.attributes["reasons"])
+    assert not mode_calls, [call.data for call in mode_calls]
+    assert not temperature_calls, [call.data for call in temperature_calls]
     assert hass.states.get(_SWITCH).state == "off"  # type: ignore[union-attr]
-    assert coordinator.compressor_state()["climate.test"].running is False
+    assert coordinator.compressor_state()["climate.test"].running is True
 
 
-async def test_a_room_switched_off_stays_off_however_hot_it_gets(
+async def test_a_room_switched_off_is_left_alone_however_hot_it_gets(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
     await _setup_hot_room(hass, mock_config_entry)
     coordinator = mock_config_entry.runtime_data
     await _switch(hass, "turn_off")
-    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    temperature_calls = async_mock_service(hass, "climate", "set_temperature")
 
     for minutes in (6, 20, 40):
         with freeze_time(dt_util.utcnow() + timedelta(minutes=minutes)):
@@ -2118,8 +2130,8 @@ async def test_a_room_switched_off_stays_off_however_hot_it_gets(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.state == "lockout", state.attributes
-    assert "Automatic control switched off" in " ".join(state.attributes["reasons"])
-    assert {call.data["hvac_mode"] for call in calls} == {"off"}, calls
+    assert "Automatic control is off" in " ".join(state.attributes["reasons"])
+    assert not mode_calls and not temperature_calls, (mode_calls, temperature_calls)
 
 
 async def test_switching_a_room_back_on_hands_it_back_to_the_coordinator(
@@ -2174,7 +2186,7 @@ async def test_a_room_switched_off_stays_off_across_a_restart(
     assert mock_config_entry.runtime_data.is_room_switched_off("test_room")
     assert hass.states.get(_SWITCH).state == "off"  # type: ignore[union-attr]
     assert hass.states.get("sensor.test_room_mode").state == "lockout"  # type: ignore[union-attr]
-    assert not [c for c in calls if c.data["hvac_mode"] != "off"], calls
+    assert not calls, [call.data for call in calls]
 
 
 async def test_the_choice_is_written_to_the_store(

@@ -27,8 +27,8 @@ the second.
 
 ## In the code
 
-Checked against: 0.8.14. **Superseded, kept as a fallback.** The threshold is consulted only while
+Checked against: 0.9.0. **Superseded, kept as a fallback.** The threshold is consulted only while
 the model has not converged; once it has, DR-029 decides.
 
-- `modes.py:185` - `DRY_MODE_RH_FALLBACK` - 65%
-- `modes.py:258` - `DRY_MODE_RH_FALLBACK` - used only as the unconverged fallback
+- `modes.py:198` - `DRY_MODE_RH_FALLBACK` - 65%
+- `modes.py:271` - `DRY_MODE_RH_FALLBACK` - used only as the unconverged fallback

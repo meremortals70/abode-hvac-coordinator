@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-007 (a switch entity now exists) |
+| Status | Superseded by DR-049 |
 | Since | 0.8.14 (2026-10-01) |
 | Origin | Instruction, 2026-10-01: "I also need an off switch for a room." |
-| Related | DR-007, DR-016, DR-021 |
+| Related | DR-007, DR-016, DR-021, DR-049 |
 
 ## Decision
 
@@ -46,12 +46,11 @@ reconfiguration; this switch is for the day-to-day case.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.**
+Checked against: 0.9.0. **Superseded by DR-049.** The switch, its store entry and its survival of a restart remain. What it did when off does not: the unit is no longer commanded off every cycle, and the guard bypass for a forced stop is gone.
 
 - `switch.py:50` - `RoomAutomaticControlSwitch` - the entity
-- `store.py:87` - `switched_off` - read before the first refresh
-- `store.py:98` - `set_switched_off` - written within seconds
-- `coordinator.py:468` - `_switched_off` - loaded from the store
-- `coordinator.py:909` - `async_set_room_switched_off` - flips the choice and acts now
-- `coordinator.py:952` - `SWITCHED_OFF_REASON` - evaluated as a lockout
-- `regulate.py:275` - `arbitrate_cycling` - `forced` bypasses the guard
+- `store.py:95` - `switched_off` - read before the first refresh
+- `store.py:106` - `set_switched_off` - written within seconds
+- `coordinator.py:497` - `_switched_off` - loaded from the store
+- `coordinator.py:950` - `async_set_room_switched_off` - flips the choice and acts now
+- `coordinator.py:1026` - `SWITCHED_OFF_REASON` - the reason shown while the switch is off; the room is evaluated and sent nothing

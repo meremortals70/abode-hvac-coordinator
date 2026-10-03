@@ -52,6 +52,12 @@ INHERITED = {
     "coordinator",
     "trace",
     "_room_id",
+    # Provided by `HvacRoomControl` in entity.py, the base of the select and
+    # number controls (DR-049). They are defined there, and entity.py is
+    # checked by this same test.
+    "_head_state",
+    "_require_writable",
+    "_room",
     "data",
     "defer",
     "entity_description",
@@ -142,7 +148,7 @@ class TestNoStrayConstantsInCalls(unittest.TestCase):
 #: Modules that must import nothing from Home Assistant, so the whole decision
 #: path can be built and tested in a plain Python session.
 PURE_MODULES = (
-    "const", "forecast", "forms", "grace", "hci", "models", "modes",
+    "capabilities", "const", "forecast", "forms", "grace", "hci", "models", "modes",
     "power", "psychro", "regulate", "scheduling", "staleness", "sun",
     "tariff", "thermal", "weather",
 )
@@ -180,7 +186,7 @@ class TestPureModulesStayPure(unittest.TestCase):
         on_disk = {p.stem for p in SRC.glob("*.py")} - {"__init__"}
         impure = {
             "actuator", "config_flow", "coordinator", "diagnostics",
-            "entity", "sensor", "store", "switch",
+            "entity", "number", "select", "sensor", "store", "switch",
         }
         self.assertEqual(
             on_disk - set(PURE_MODULES) - impure,
@@ -196,9 +202,11 @@ class TestOutdoorApparentTemperatureIsNeverAnInput(unittest.TestCase):
     building. It has no business in the comfort index, in the dry-bulb target
     solved from it, or in the thermal model — all three describe the room.
 
-    It is *compared* against the index in one place, the free-cooling test,
-    which has to answer how the room will feel with outdoor air in it. That is
-    a comparison, not an input, and the distinction is the whole rule.
+    It is *compared* against the index in two places, both in `psychro.py`:
+    the free-cooling test, which has to answer how the room will feel with
+    outdoor air in it, and, from 0.9.0 (DR-053), the floor under the weather
+    coast while the room has not learned enough to project. Both are
+    comparisons, not inputs, and the distinction is the whole rule.
 
     This test exists because the difference is easy to erode: someone reaches
     for `apparent_temperature` in a fourth place, it looks reasonable, and the
@@ -209,7 +217,10 @@ class TestOutdoorApparentTemperatureIsNeverAnInput(unittest.TestCase):
     #: should feel like a decision, because it is one.
     PERMITTED: ClassVar[dict[str, str]] = {
         "hci.py": "its definition",
-        "psychro.py": "the free-cooling comparison — the one permitted use",
+        "psychro.py": (
+            "the free-cooling comparison and, from 0.9.0 (DR-053), the floor "
+            "under the weather coast - both comparisons, never an input"
+        ),
         "coordinator.py": "reads the outdoor feeds and computes the figure",
         "sensor.py": "publishes it as a diagnostic entity, does not decide on it",
         "diagnostics.py": "reports it in the diagnostics file, does not decide on it",

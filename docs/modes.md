@@ -12,7 +12,7 @@ Evaluated top to bottom. The first match wins.
 | `LOCKOUT` | A lockout reason is chosen for this room | Never actuates. Beats everything |
 | `PRECONDITION` | A heading-home request is active | Drives to the occupied band, ignoring presence |
 | `PRECOOL` | A precool window is declared and demand is forecast ahead | Drives to the low bound to bank thermal mass |
-| `COAST` | The thermal model predicts the band holds unaided, and the window permits coasting | No compressor |
+| `COAST` | The weather will bring the room back into band, or its band holds unaided, and (for a room already in band) the window permits coasting | No compressor |
 | `SLEEP` | The sleep schedule is on | Sleep band |
 | `OCCUPIED` | Presence detected, or presence unknown | Occupied band |
 | `UNOCCUPIED` | No presence | **Off.** Not a wider band |
@@ -53,6 +53,43 @@ stops, rather than continuing to run because free energy is available.
 own. A coasting room that was occupied is still held to the occupied band, which
 is what the model is predicting will hold. Without that, there would be nothing
 to compare against when deciding to leave coast.
+
+## Letting the weather do the work
+
+A room that has drifted out of its band is not always worth running the
+compressor for. If outdoors is warmer than the room's lower comfort bound, the
+room will warm back up by itself; heating it is working against the weather.
+The same is true the other way on a cool day. (DR-053)
+
+So before the compressor is started for a room that is out of band, the
+controller projects the room forward with nothing running, in five-minute steps
+over the next hour, from what the room has learned:
+
+> how fast the room drifts toward outdoors (`k_loss`), plus how much the sun
+> adds while it is on the glass (`k_solar`)
+
+driven by the **forecast** outdoor temperature at each step, and by where the
+**sun** will be at each step against the direction the room's windows face,
+scaled by the forecast's cloud. The room coasts if that projection puts it back
+inside its band, and keeps it there, within a limit: **the time the compressor
+itself would take plus ten minutes**, or fifteen minutes where the model cannot
+estimate that. A cooling room tries the fan first, as always.
+
+This is recomputed from the room's real temperature every evaluation. A room
+that is not moving as projected stops being left alone as soon as the projection
+no longer returns it in time.
+
+**Until the model has learned enough, a simpler floor applies.** Outdoors feeling
+at least as warm as the band's lower bound means no heating; outdoors feeling no
+warmer than the upper bound, with the sun not on the room, means no cooling. A
+missing outdoor reading means neither, and the room is driven as before.
+
+What the projection cannot see: people and equipment in the room (it runs
+optimistic for cooling in an occupied room, which the every-cycle recomputation
+corrects), and humidity changing over the hour (it is held at its current value).
+
+`PRECOOL` and `PRECONDITION` are never replaced by a coast. Their own reasons
+for running the compressor are not the weather's.
 
 ## Modes that wait on the thermal model
 

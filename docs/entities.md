@@ -30,10 +30,41 @@ Attributes:
 | `model` | The room's learned coefficients, their variance, sample count and whether each has converged |
 | `hci_air_only` | The index before the radiant, still-air and heat-load corrections |
 | `radiant_fraction` | How much solar load is reaching the room, 0 to 1 |
+| `room_c` | The room temperature the decision was made against |
+| `approach_c`, `feed_forward_c`, `wanted_rate_c_per_hour` | What the room loop asked of the unit: how far from the room's own reading, the part of that which holds the room against its drift, and the rate the room was asked to move at. Empty where the room has not learned enough for the loop |
+| `unaided_return_minutes`, `unaided_return_limit_minutes` | When the weather is projected to bring the room back into band, and how long it was allowed. Empty where no projection was made |
+| `setpoint_step_c` | The unit's step the setpoint was rounded to |
 
 **`reasons` and `rejected` are the point of this integration.** Between them
 they explain every decision, including which cheaper actuators were skipped and
 on what grounds.
+
+## The room's controls
+
+Each room device carries controls built from what its air conditioners offered
+when the room was set up. A control exists only where there was a choice to
+make: a unit with no horizontal vane has no horizontal vane control. (DR-049)
+
+| Entity | What it is |
+|---|---|
+| `switch.<room>_automatic_control` | On is the normal state. Off stops the automation: the coordinator sends the room nothing and the unit is left exactly as it is, running or not |
+| `switch.<room>_automatic_vane_control` | On is the normal state. Off, the coordinator never sends the room a vane command and the vane controls are yours at any time |
+| `select.<room>_mode` | The unit's mode |
+| `select.<room>_fan_speed` | The unit's fan speed |
+| `select.<room>_vertical_vane` | The vertical vane position |
+| `select.<room>_horizontal_vane` | The horizontal vane position, on units that have one |
+| `number.<room>_setpoint` | The unit's setpoint, in the range and step the unit offered |
+
+**They show the unit's live state**, so a change at the wall or the remote
+appears at once. A control **refuses a change** while the coordinator owns it:
+mode, fan speed and setpoint while Automatic control is on, and the vanes while
+Automatic vane control is on. The refusal says which switch to turn off. A change
+that is accepted goes to every air conditioner in the room, and is recorded in
+the command log.
+
+A native Home Assistant entity cannot be greyed out and still show its value, so
+the grey appearance is a dashboard card; see
+[Examples](examples.md#greying-out-the-controls-while-the-automation-owns-them).
 
 ## `sensor.<room>_comfort_index`
 
@@ -137,8 +168,11 @@ rather than mysterious.
 
 **Device page → three-dot menu → Download diagnostics.**
 
-Contains every room's configuration, which tariff entry is being read and when
-its series was last fetched, unrecognised constraints, the learned thermal
-model, and the current decision trace for every room. Entity IDs are included: they are how
+Contains every room's configuration (including what its air conditioners
+offered and the two switches), which tariff entry is being read and when its
+series was last fetched, unrecognised constraints, the learned thermal model,
+the current decision trace for every room, and **the last 200 mode and
+setpoint commands sent to any unit**, newest last. A change to a unit with no
+matching entry was not sent by this integration. Entity IDs are included: they are how
 your configuration is identified, and a diagnostics download without them cannot
 explain a wrong decision.

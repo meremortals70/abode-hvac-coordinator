@@ -32,9 +32,9 @@ start wastes energy, a late one misses the deadline the request existed for.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.**
+Checked against: 0.9.0. **Conforms.**
 
 - `scheduling.py:58` - `plan_precondition` - when to start
 - `scheduling.py:89` - `hours_needed is None` - unconverged model starts now
-- `modes.py:384-392` - `precondition_ready` - waits, unit off
-- `modes.py:82-84` - `heading_home` - overrides presence
+- `modes.py:409-417` - `precondition_ready` - waits, unit off
+- `modes.py:87-89` - `heading_home` - overrides presence

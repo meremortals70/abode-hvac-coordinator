@@ -27,8 +27,8 @@ it until the next evaluation.
 |---|---|
 | Room in lockout | Stop |
 | Room unoccupied | Stop |
-| An opening in the room is open, for two minutes or more | Stop |
-| An opening in the room is open, less than two minutes | **Leave alone** — see [Behaviour](behaviour.md#a-window-or-door-opens) |
+| An opening in the room is open, longer than the room's grace (five minutes by default) | Stop |
+| An opening in the room is open, within the grace, or its age is unknown | **Leave alone** — see [Behaviour](behaviour.md#a-window-or-door-opens) |
 | Coasting | Stop |
 | Preconditioning, and the pull can still wait | Stop |
 | The room needs a direction this unit cannot deliver | Stop |
@@ -192,9 +192,9 @@ whole of a no-import window. See
 | Step | Call |
 |---|---|
 | Covers | `cover.set_cover_position`. 0% to block gain, 100% to admit it |
-| Fan | `fan_only`, plus the quietest fan mode and the least draughty swing the unit advertises |
+| Fan | `fan_only`, plus the quietest fan mode and the least draughty swing the unit offered when the room was set up |
 | Dry | `dry`, plus the quietest fan mode |
-| Compressor | `cool` or `heat`, plus the setpoint, a mixing fan mode and a mixing swing mode |
+| Compressor | `cool` or `heat`, plus the setpoint (rounded to what the unit can hold), a mixing fan mode and a mixing swing mode |
 | Nothing, in lockout or unoccupied | `climate.set_hvac_mode` to `off` |
 
 Setpoints go through the standard `climate.set_temperature`, so this works
@@ -238,10 +238,26 @@ Targets follow `supported_features`. A unit taking a single target gets
 straddling the target by 1 °C, because sending a single value to a range-only
 unit is either rejected or silently applied to one side.
 
-**Swing is used where the unit has it.** A comfort index measured at one sensor
-is misled by a stratified room, so vanes move while conditioning and settle
-while idling. Fan and swing are only touched when `supported_features` says the
-unit has them.
+**Swing is used where the unit has it, and only while Automatic vane control is
+on.** A comfort index measured at one sensor is misled by a stratified room, so
+the vertical vane moves while conditioning and settles while idling. Fan and
+swing are chosen from the list the unit offered when the room was set up (see
+[Configuration](configuration.md#what-the-air-conditioner-can-do)), and are only
+touched where the unit offered one.
+
+The vane is a different sort of setting to the rest. Whether people like air
+flowing over them, or something in the room blocks a vane direction, is not
+something an autonomous controller can know. Each room therefore has an
+**Automatic vane control** switch. Turned off, the coordinator never sends that
+room a vane command and the room's vane controls are yours at any time, even
+while the rest of the room stays automatic. The horizontal vane is never moved
+by the coordinator at all. (DR-049)
+
+**Every command sent is recorded.** Each mode or setpoint command is written to
+the Home Assistant log at INFO level with the room, the unit, the mode, the
+setpoint, and the demand and temperatures it was decided from; the last 200 are
+also in the diagnostics download. A change to a unit with no matching line was
+not sent by this integration. (DR-052)
 
 An unchanged decision is not re-sent.
 

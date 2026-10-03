@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-048 |
 | Since | Design v0.4; in the code from 0.6.0 (2026-08-16) |
 | Origin | Design v0.4 |
-| Related | DR-001, DR-020, DR-022 |
+| Related | DR-001, DR-020, DR-022, DR-048 |
 
 ## Decision
 
@@ -30,9 +30,9 @@ target plus and minus 1.0 C.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.**
+Checked against: 0.9.0. **Conforms**, with the list a command is checked against now the one the unit advertised when the room was set up (DR-048), and the live entity consulted only to skip a command already in effect.
 
-- `actuator.py:110` - `resolve_hvac_mode` - mode resolved against the entity
-- `actuator.py:349` - `_async_set_temperature` - single or range
-- `actuator.py:72` - `RANGE_DEADBAND_C` - 1.0 C either side
-- `coordinator.py:2119` - `_capabilities` - fed into the decision
+- `actuator.py:214` - `resolve_hvac_mode` - mode resolved against the entity
+- `actuator.py:487` - `_async_set_temperature` - single or range
+- `actuator.py:94` - `RANGE_DEADBAND_C` - 1.0 C either side
+- `coordinator.py:2151` - `_capabilities` - fed into the decision

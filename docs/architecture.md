@@ -61,10 +61,13 @@ surfacing. None of them are required for the coordinator to work.
 Built here, in `regulate.py`. Two responsibilities and no others.
 
 **Close the outer loop.** The unit's thermostat regulates against its own
-return-air sensor, which is not the room. An integral-only controller trims the
-commanded setpoint until the room sensor reads the target. Integral only: the
-unit's thermostat is already the proportional loop, and a second one is two
-controllers fighting over one actuator.
+return-air sensor, which is not the room. A PID, built on what the room has
+learned, commands the setpoint until the room sensor reads the target
+(since 0.9.0, DR-054). Until then this loop was integral-only, on the reasoning
+that the unit's thermostat is the proportional loop and a second one is two
+controllers fighting over one actuator. That reasoning does not hold for a
+cascade, where the unit's thermostat is the fast inner loop and this is the slow
+outer one.
 
 **Protect the compressor.** Ten minutes minimum run, five minutes minimum off.
 Nothing else in the stack prevents short cycling, because the unit's own
@@ -390,12 +393,19 @@ than run the compressor.
 | Solar checked first in the power budget, battery only on the shortfall | Built, tested. New in 0.8.11. Corrects a gap in the 0.8.10 rewrite, where solar was dropped from the calculation entirely — see below |
 | Re-asserting the commanded setpoint from live entity state | Built, tested. New in 0.8.11 — see below |
 | Grid sign zero-flow correction | Built, tested. New in 0.8.11 — see below |
+| What a room's units can do, read at setup, and controls built from it | Built, tested. New in 0.9.0 (DR-048, DR-049) |
+| Automatic control as automation only; Automatic vane control | Built, tested. New in 0.9.0 (DR-049). Replaces the 0.8.14 switch that held the unit off |
+| Setpoint rounded to the unit's step and range; every command recorded | Built, tested. New in 0.9.0 (DR-051, DR-052) |
+| A room coasts when the weather will bring it back, by a stepped projection | Built, tested. New in 0.9.0 (DR-053). Replaces the straight-line end-point check |
+| The room loop is a PID built on the learned model, with a trim per direction | Built, tested. New in 0.9.0 (DR-054). Replaces the integral-only loop |
+| Per-room opening grace, five minutes by default, with spoken warnings | Built, tested. New in 0.9.0 (DR-050). Replaces the fixed two-minute stop |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules — 443 tests at 0.8.11, against 2025.1.4 rather than the 2026.8.x
-targeted, because the build sandbox is Python 3.12. Running it for the first
-time found two tests that had never passed. See
-[Known limitations](known-limitations.md).
+pure modules. At 0.9.0 it is 631 tests (487 over the pure modules),
+run against Home Assistant 2026.8.3, the version this integration targets, on
+Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
+2025.1.4 on Python 3.12, and running the suite for the first time found two
+tests that had never passed. See [Known limitations](known-limitations.md).
 
 ### The power budget replaces the boolean veto
 

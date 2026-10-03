@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Superseded by DR-054 |
 | Since | Design v0.8, in the code from 0.6.0 (2026-08-16); anti-windup ordering fixed in 0.8.6 (2026-08-21) |
 | Origin | Design v0.8; finding 7 |
-| Related | DR-003, DR-016, DR-031, DR-037 |
+| Related | DR-003, DR-016, DR-031, DR-037, DR-054 |
 
 ## Decision
 
@@ -41,11 +41,11 @@ trim pins at its limit, the trace says the unit is not keeping up.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.**
+Checked against: 0.9.0. **Superseded by DR-054.** The integrator, its deadband and its anti-windup remain as the integral term of the loop; the proportional and derivative terms this record refused now exist, and the trim is kept per direction.
 
-- `regulate.py:60` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
-- `regulate.py:65` - `DEADBAND_C` - 0.3 C
-- `regulate.py:54` - `MAX_TRIM_C` - 3.0 C
-- `regulate.py:140` - `integrate` - the gated integrator
-- `coordinator.py:975-976` - `_guard_cycling` - guard first, then regulate
-- `coordinator.py:1061-1064` - `regulating` - integrates only on the applied step, and not while capped
+- `regulate.py:74` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
+- `regulate.py:79` - `DEADBAND_C` - 0.3 C
+- `regulate.py:68` - `MAX_TRIM_C` - 3.0 C
+- `regulate.py:149` - `integrate` - the gated integrator
+- `coordinator.py:1062-1063` - `_guard_cycling` - guard first, then regulate
+- `coordinator.py:1160-1163` - `regulating` - integrates only on the applied step, and not while capped

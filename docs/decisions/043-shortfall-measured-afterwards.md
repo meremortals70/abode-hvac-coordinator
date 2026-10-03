@@ -34,15 +34,15 @@ Without a grid sensor, no breach can be measured.
 
 ## In the code
 
-Checked against: 0.8.14. **Conforms.** Three defects found at 0.8.12 were fixed
+Checked against: 0.9.0. **Conforms.** Three defects found at 0.8.12 were fixed
 in 0.8.13: import was overcounted when evaluations ran more often than every
 30 s; the window was judged per 30-minute tariff interval instead of as a
 whole; and the issue was never cleared. The issue text now describes the
 three power management settings.
 
-- `coordinator.py:2231` - `_breach_window_start is None` - the window opens once and runs until the constraint ends
-- `coordinator.py:2241` - `EVALUATION_INTERVAL` - each sample weighted by measured time, capped at one period
-- `coordinator.py:2283` - `_close_breach_window` - 0.05 kWh floor
-- `coordinator.py:2298` - `ir.async_create_issue` - raised for a window over the floor
-- `coordinator.py:2309` - `elif window_was_open` - cleared when a later window closes clean
-- `strings.json:330` - `power_shortfall` - the issue text
+- `coordinator.py:2548` - `_breach_window_start is None` - the window opens once and runs until the constraint ends
+- `coordinator.py:2558` - `EVALUATION_INTERVAL` - each sample weighted by measured time, capped at one period
+- `coordinator.py:2545` - `_close_breach_window` - 0.05 kWh floor
+- `coordinator.py:2615` - `ir.async_create_issue` - raised for a window over the floor
+- `coordinator.py:2626` - `elif window_was_open` - cleared when a later window closes clean
+- `strings.json:370` - `power_shortfall` - the issue text

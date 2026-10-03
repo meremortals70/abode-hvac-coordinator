@@ -5,8 +5,8 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.8.14 — beta
-> The architecture is built, 447 tests pass, and every build runs
+> ### Status: v0.9.0 — beta
+> The architecture is built, 631 tests pass, and every build runs
 > continuously against a live air conditioner in a real office, used as the
 > test room — that is where real compressor, blind and fan behaviour is
 > actually proven, not from the test suite alone. What that one room has not
@@ -64,6 +64,9 @@ integration afterwards.
 | Target dry bulb | What the comfort index solved for |
 | Commanded setpoint | What was actually sent, and how far the outer loop moved it |
 | Dew point | Indoor dew point, free-cooling advice and condensation risk |
+| Automatic control | Off stops the automation and leaves the air conditioner exactly as it is |
+| Automatic vane control | Off, and the coordinator never moves a vane; the vanes are yours |
+| Mode, fan speed, vanes, setpoint | Controls built from what the air conditioner offered when the room was set up. They show its live state, and take a change by hand once the matching switch is off |
 
 And for the whole house:
 
@@ -91,6 +94,12 @@ to sign for a delivery does not stop the compressor; the room waits, and only a
 sustained absence shuts it down. Coming back cancels it.
 
 **Cheapest actuator first.** Blinds, then fan, then dry, then compressor.
+
+**The weather does the work when it can.** A room a little out of band on a
+day the weather will bring it back is left to come back, not heated into a warm
+afternoon or cooled into a cool one. The decision comes from what the room has
+learned about itself, the forecast and where the sun will be, not from a
+threshold.
 
 **Every decision is explained.** Both what it did and what it decided against.
 

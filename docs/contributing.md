@@ -14,10 +14,10 @@ ordering â€” including which conditions stop the unit and which leave it alone â
 tariff windows and constraint handling, setpoint clamping, the setup form
 helpers, the seeded band defaults and lockout reason handling.
 
-389 tests in total across the pure and Home Assistant suites at 0.8.9, and
-that number is only meaningful alongside the version they ran against: the
-build sandbox installs Home Assistant 2025.1.4, not the 2026.8.x this targets.
-Say which every time.
+631 tests in total across the pure and Home Assistant suites at 0.9.0, run
+against Home Assistant 2026.8.3 on Python 3.14. That number is only meaningful
+alongside the version they ran against. Say which every time, and report a run
+against a different version as exactly that.
 
 **Every test written for a fix is checked by putting the bug back.** Not
 optional, and not sufficient on its own: the reinstated run has to fail for the

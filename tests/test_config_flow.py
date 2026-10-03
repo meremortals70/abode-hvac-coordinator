@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
@@ -17,6 +18,7 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.abode_hvac_coordinator.const import (
     CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
+    CONF_CAPABILITIES,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_MAX_DISCHARGE_KW,
     CONF_BATTERY_SOC_ENTITY,
@@ -25,6 +27,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_GRID_SIGN,
     CONF_HOUSE_LOAD_ENTITY,
     CONF_HUMIDITY_ENTITY,
+    CONF_OPENING_GRACE,
     CONF_RESERVE_MARGIN_KWH,
     CONF_ROOMS,
     CONF_SOLAR_POWER_ENTITY,
@@ -43,6 +46,40 @@ _REQUIRED_COMFORT_INPUTS = {
     CONF_TEMPERATURE_ENTITY: "sensor.test_temperature",
     CONF_HUMIDITY_ENTITY: "sensor.test_humidity",
 }
+
+
+#: The climate entities these tests submit. Setup reads each head's live state
+#: and refuses a room whose air conditioner is not reporting (DR-048), so every
+#: one has to be there, reporting, before a room step is submitted.
+_FEATURES = (
+    ClimateEntityFeature.TARGET_TEMPERATURE
+    | ClimateEntityFeature.FAN_MODE
+    | ClimateEntityFeature.SWING_MODE
+)
+
+
+def _climate_attributes(**overrides: object) -> dict[str, object]:
+    return {
+        "hvac_modes": ["off", "cool", "heat", "dry", "fan_only"],
+        "fan_modes": ["auto", "low", "medium", "high"],
+        "swing_modes": ["off", "auto", "up", "down"],
+        "min_temp": 18.0,
+        "max_temp": 30.0,
+        "target_temp_step": 1.0,
+        "supported_features": _FEATURES.value,
+        **overrides,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _climates_report(hass: HomeAssistant) -> None:
+    for entity_id in (
+        "climate.first",
+        "climate.second",
+        "climate.third",
+        "climate.office",
+    ):
+        hass.states.async_set(entity_id, "off", _climate_attributes())
 
 
 async def test_user_flow_collects_the_first_room(
@@ -864,3 +901,197 @@ async def test_a_room_saved_without_them_carries_none(
     stored = result["data"][CONF_ROOMS][0]
     assert stored["heat_load_entity_id"] is None
     assert stored["air_movement_entity_id"] is None
+
+
+async def _start(hass: HomeAssistant) -> dict:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert result["step_id"] == "room"
+    return result
+
+
+async def _finish_room(hass: HomeAssistant, flow_id: str, **room) -> dict:
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {"name": "First Room", **_REQUIRED_COMFORT_INPUTS, **room},
+    )
+    if result["type"] is FlowResultType.FORM and result["step_id"] == "room":
+        return result
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+
+
+async def test_setup_reads_what_the_air_conditioner_can_do_and_stores_it(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """DR-048. Nothing is chosen from a name list later: it is read once, here."""
+    result = await _start(hass)
+    result = await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.first"]}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    profile = result["data"][CONF_ROOMS][0][CONF_CAPABILITIES]
+    assert profile["hvac_modes"] == ["off", "cool", "heat", "dry", "fan_only"]
+    assert profile["fan_modes"] == ["auto", "low", "medium", "high"]
+    assert profile["swing_modes"] == ["off", "auto", "up", "down"]
+    assert profile["swing_horizontal_modes"] == []
+    assert profile["min_temp"] == 18.0
+    assert profile["max_temp"] == 30.0
+    assert profile["target_temp_step"] == 1.0
+    assert profile["single_target"] is True
+
+
+async def test_setup_refuses_a_room_whose_air_conditioner_is_unavailable(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """A room cannot be set up for a unit that is not reporting."""
+    hass.states.async_set("climate.first", "unavailable")
+    result = await _start(hass)
+    result = await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.first"]}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "room"
+    assert result["errors"] == {CONF_CLIMATE_ENTITIES: "climate_not_reporting"}
+
+
+async def test_setup_refuses_a_room_whose_air_conditioner_does_not_exist(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    result = await _start(hass)
+    result = await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.nothing"]}
+    )
+    assert result["errors"] == {CONF_CLIMATE_ENTITIES: "climate_not_reporting"}
+
+
+async def test_one_unavailable_head_of_two_refuses_the_room(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """A profile from one of two heads would offer what the other cannot do."""
+    hass.states.async_set("climate.second", "unavailable")
+    result = await _start(hass)
+    result = await _finish_room(
+        hass,
+        result["flow_id"],
+        **{CONF_CLIMATE_ENTITIES: ["climate.first", "climate.second"]},
+    )
+    assert result["errors"] == {CONF_CLIMATE_ENTITIES: "climate_not_reporting"}
+
+
+async def test_a_room_with_two_heads_gets_what_both_can_do(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    hass.states.async_set(
+        "climate.second",
+        "off",
+        _climate_attributes(
+            hvac_modes=["off", "cool", "fan_only"],
+            fan_modes=["low", "high", "turbo"],
+            swing_modes=["off", "auto"],
+            min_temp=16.0,
+            max_temp=28.0,
+            target_temp_step=0.5,
+        ),
+    )
+    result = await _start(hass)
+    result = await _finish_room(
+        hass,
+        result["flow_id"],
+        **{CONF_CLIMATE_ENTITIES: ["climate.first", "climate.second"]},
+    )
+    profile = result["data"][CONF_ROOMS][0][CONF_CAPABILITIES]
+    assert profile["hvac_modes"] == ["off", "cool", "fan_only"]
+    assert profile["fan_modes"] == ["low", "high"]
+    assert profile["swing_modes"] == ["off", "auto"]
+    assert profile["min_temp"] == 18.0
+    assert profile["max_temp"] == 28.0
+    # The coarser step; 1.0 is a whole multiple of 0.5, so it is valid on both.
+    assert profile["target_temp_step"] == 1.0
+
+
+async def test_a_unit_that_advertises_no_vanes_stores_none(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    """Features gate the lists: a list without its feature flag is not offered."""
+    hass.states.async_set(
+        "climate.first",
+        "off",
+        _climate_attributes(
+            supported_features=ClimateEntityFeature.TARGET_TEMPERATURE.value
+        ),
+    )
+    result = await _start(hass)
+    result = await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.first"]}
+    )
+    profile = result["data"][CONF_ROOMS][0][CONF_CAPABILITIES]
+    assert profile["fan_modes"] == []
+    assert profile["swing_modes"] == []
+
+
+async def test_the_opening_grace_defaults_to_five_minutes(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    result = await _start(hass)
+    result = await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.first"]}
+    )
+    assert result["data"][CONF_ROOMS][0][CONF_OPENING_GRACE] == 5.0
+
+
+async def test_a_rooms_own_opening_grace_is_stored(
+    hass: HomeAssistant, mock_setup_entry: None
+) -> None:
+    result = await _start(hass)
+    result = await _finish_room(
+        hass,
+        result["flow_id"],
+        **{CONF_CLIMATE_ENTITIES: ["climate.first"], CONF_OPENING_GRACE: 8},
+    )
+    assert result["data"][CONF_ROOMS][0][CONF_OPENING_GRACE] == 8.0
+
+
+async def test_editing_a_room_reads_the_air_conditioner_again(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Reconfiguring is how a changed unit (a new dongle, firmware) is re-read."""
+    hass.states.async_set("climate.test", "off", _climate_attributes())
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.states.async_set(
+        "climate.test",
+        "off",
+        _climate_attributes(fan_modes=["quiet", "powerful"], target_temp_step=0.5),
+    )
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "rooms"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "edit_room"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"room_id": "test_room"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Test Room",
+            CONF_CLIMATE_ENTITIES: ["climate.test"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"occupied_low": 24.0, "occupied_high": 27.0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    profile = result["data"][CONF_ROOMS][0][CONF_CAPABILITIES]
+    assert profile["fan_modes"] == ["quiet", "powerful"]
+    assert profile["target_temp_step"] == 0.5

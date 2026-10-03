@@ -11,7 +11,9 @@ The moment any opening configured for that room reports open:
 2. Every actuator is refused. The trace says
    `all actuators: an opening in this room is open`
 3. **The air conditioner is switched off** once the opening has been open for
-   two minutes, and sooner than that only if it was already off
+   the room's grace: **five minutes** unless you have set another figure for
+   that room. With announcements on, a first warning is spoken three minutes
+   before it stops, and a final one as it does
 
 When the opening closes, the next evaluation resumes normally. Nothing is
 remembered about the interruption.
@@ -31,23 +33,44 @@ bounded nothing.
 
 ### A door held open briefly does not stop anything
 
-The stop waits two minutes. The interlock itself does not: from the moment the
-opening is seen, nothing new is actuated into the room.
+The stop waits for the room's grace. The interlock itself does not: from the
+moment the opening is seen, nothing new is actuated into the room.
 
 So someone carrying washing through a door costs nothing. The unit keeps the
 setpoint it already had, no compressor stop is issued, and no five-minute
-minimum off follows. A window actually left open stops the unit two minutes in.
+minimum off follows. A window actually left open stops the unit when the grace
+runs out.
 
-The two minutes is not a setting. It matches the occupancy grace default, and a
-user cannot get a wrong result from changing it — which is the test for whether
-a setting should exist.
+**The grace is a setting for each room, five minutes by default** (Configure →
+the room → *Wait this long with a window or door open before stopping*). Until
+0.9.0 it was a fixed two minutes and not a setting, and the unit stopped for a
+door with no notice at all. A door and a window are not the same thing, so each
+room has its own. (DR-050)
 
-The trace says which of the two is happening. While the debounce is running it
+The trace says which of the two is happening. While the grace is running it
 names the minutes remaining and says the unit is being held in case the opening
 closes.
 
-**An opening whose age cannot be read stops the unit.** A stale contact or a
-missing state gives no age, and an unknown age is not a young one.
+**An opening whose age cannot be read holds the unit.** Until 0.9.0 it stopped
+it. A sensor that cannot be read is not evidence that the door has been open
+long, and a stop on that evidence is a stop nobody asked for. In practice Home
+Assistant always records when a contact last changed, so this is the rule the
+decision follows and not a state the running integration reaches.
+
+### The warnings
+
+Where the room has announcements on and media players to announce through (the
+same two settings the empty-room warnings use), an open window or door is
+announced twice, once each however long it stays open:
+
+- **A first warning** one warning grace before the stop. The warning grace is
+  three minutes by default, so with the default five-minute grace it is spoken
+  at two minutes. If the room's grace is shorter than the warning grace it is
+  spoken at once.
+- **A final warning** in the evaluation that stops the unit.
+
+Closing the opening resets both. A room with announcements off gets the grace
+and the hold, silently.
 
 ### The short-cycle guard still applies on top
 
