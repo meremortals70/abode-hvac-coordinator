@@ -42,7 +42,12 @@ from .models import (
     RoomConfig,
     RoomInputs,
 )
-from .psychro import condensation_risk, dew_point_c, free_cooling
+from .psychro import (
+    condensation_risk,
+    dew_point_c,
+    free_cooling,
+    weather_works_against_compressor,
+)
 from .scheduling import ramped_band
 
 
@@ -158,7 +163,8 @@ def _round_up_minutes(remaining: timedelta) -> int:
     return max(1, -(-int(remaining.total_seconds()) // 60))
 
 
-#: How long an opening must stay open before the unit is stopped for it.
+#: How long an opening may stay open before the unit is stopped for it, in
+#: minutes, where the room has not set its own (0.9.0, DR-050).
 #:
 #: Stopping immediately would cost a compressor stop and then the five-minute
 #: minimum off time for a door held open while someone carries washing
@@ -166,14 +172,21 @@ def _round_up_minutes(remaining: timedelta) -> int:
 #: a room does not stop a unit that is already running, so a window left open
 #: had the thermostat chasing a setpoint it could never reach, indefinitely.
 #:
-#: Two minutes, matching the occupancy grace default. It is not a setting: a
-#: user cannot get a wrong result from it, and exposing it rebuilds the
-#: configuration problem one layer up.
+#: Until 0.9.0 this was a fixed two minutes and was not a setting. It is a
+#: setting per room now, five minutes by default, because a door and a window
+#: are not the same, and the unit stopped for a door with no notice at all.
 #:
 #: The interlock itself is not debounced. Nothing may actuate into an open
 #: room from the moment the opening is seen; only the decision to stop a unit
 #: that is already running waits.
-OPENING_STOP_DEBOUNCE = timedelta(minutes=2)
+DEFAULT_OPENING_GRACE_MINUTES = 5.0
+
+#: How much longer than the compressor itself would take a room may be left to
+#: come back into band on the weather's account, and the figure used where the
+#: model cannot estimate the compressor's time. Judgements, not measurements
+#: (0.9.0, DR-053).
+UNAIDED_RETURN_MARGIN_MINUTES = 10.0
+UNAIDED_RETURN_FALLBACK_MINUTES = 15.0
 
 #: Fallback humidity threshold, used only while the thermal model has not
 #: converged. Once `k_sensible` and `k_latent` are known the decision is made
@@ -361,10 +374,22 @@ def select_actuator(
         #
         # But a door open for twenty seconds is not a window left open, and
         # stopping for it costs a compressor stop plus the minimum off time.
-        # So nothing new is actuated either way, and the stop waits.
+        # So nothing new is actuated either way, and the stop waits for the
+        # room's own grace (DR-050).
+        #
+        # An opening whose age cannot be read holds the unit. An unknown age
+        # is not an old one, and a sensor that cannot be read is not evidence
+        # the door has been open long.
+        grace = timedelta(minutes=inputs.opening_grace_minutes)
         since = inputs.opening_open_since
-        if since is not None and inputs.now - since < OPENING_STOP_DEBOUNCE:
-            remaining = OPENING_STOP_DEBOUNCE - (inputs.now - since)
+        if since is None:
+            trace.rejected.append(
+                "all actuators: an opening in this room is open and how long "
+                "it has been open is not known, holding the unit as it is"
+            )
+            return ActuatorStep.NONE
+        if inputs.now - since < grace:
+            remaining = grace - (inputs.now - since)
             trace.rejected.append(
                 "all actuators: an opening in this room is open, holding the "
                 f"unit as it is for another {_round_up_minutes(remaining)} "
@@ -510,6 +535,65 @@ def select_actuator(
     return ActuatorStep.COMPRESSOR
 
 
+def _weather_coast(
+    mode: Mode,
+    band: ComfortBand | None,
+    inputs: RoomInputs,
+    trace: DecisionTrace,
+) -> str | None:
+    """A reason to let the weather do the work instead of the compressor.
+
+    0.9.0, DR-053. Applies only where the compressor has been chosen for a
+    room in a normal occupied or sleeping mode: PRECOOL is banking on purpose
+    and PRECONDITION has a deadline. Returns the reason to coast, or None.
+
+    With a projection, the question is whether the room's own physics - the
+    learned loss and solar terms, the forecast, the sun on the window - bring
+    it back into band, for good, within the return limit. Without one, the
+    plain outdoor comparison is the floor: no heating while outdoors feels at
+    least as warm as the band's lower bound, no cooling while it feels no
+    warmer than the upper bound unless the sun is on the glass. A missing
+    outdoor reading means no coast at all, never a guess.
+    """
+    if mode not in (Mode.OCCUPIED, Mode.SLEEP) or band is None:
+        return None
+    demand = trace.demand
+    if demand not in ("cool", "heat"):
+        return None
+
+    if inputs.unaided_available:
+        trace.unaided_return_limit_minutes = inputs.unaided_return_limit_minutes
+        if inputs.unaided_return_minutes is None:
+            trace.rejected.append(
+                "coast: the model does not bring the room back into band "
+                "unaided, so the compressor works"
+            )
+            return None
+        trace.unaided_return_minutes = inputs.unaided_return_minutes
+        if inputs.unaided_return_minutes <= inputs.unaided_return_limit_minutes:
+            return (
+                "coast: the weather brings the room back into band in about "
+                f"{inputs.unaided_return_minutes:.0f} min unaided "
+                f"(limit {inputs.unaided_return_limit_minutes:.0f} min)"
+            )
+        trace.rejected.append(
+            "coast: the room would be back in band unaided in about "
+            f"{inputs.unaided_return_minutes:.0f} min, longer than the "
+            f"{inputs.unaided_return_limit_minutes:.0f} min allowed"
+        )
+        return None
+
+    return weather_works_against_compressor(
+        demand,
+        band_low=band.low,
+        band_high=band.high,
+        outdoor_c=inputs.outdoor_c,
+        outdoor_rh=inputs.outdoor_relative_humidity,
+        outdoor_wind_ms=inputs.outdoor_wind_ms,
+        direct_sun=inputs.direct_sun,
+    )
+
+
 def evaluate_room(
     config: RoomConfig, inputs: RoomInputs
 ) -> DecisionTrace:
@@ -519,6 +603,7 @@ def evaluate_room(
     mode, base = evaluate_mode(config, inputs, trace)
     trace.mode = mode
     trace.base_mode = base
+    trace.room_c = inputs.temperature_c
 
     # Sun through glass, still air and equipment heat all change how hot a
     # person is without moving the air temperature much. A wall sensor cannot
@@ -603,6 +688,17 @@ def evaluate_room(
         trace.target_dry_bulb_c = target_c
 
     trace.actuator = select_actuator(mode, band, hci, inputs, trace)
+
+    # The weather may bring the room back by itself. Where it will, the
+    # compressor is not started for it: the room coasts. Only the compressor
+    # step is replaced - covers and fan were already tried first.
+    if trace.actuator is ActuatorStep.COMPRESSOR:
+        coast_reason = _weather_coast(mode, band, inputs, trace)
+        if coast_reason is not None:
+            trace.reasons.append(coast_reason)
+            trace.base_mode = mode
+            trace.mode = Mode.COAST
+            trace.actuator = ActuatorStep.OFF
 
     # The felt comparison uses the room's own comfort index, corrections and
     # all. A sunlit room feels hotter than its air temperature, which makes

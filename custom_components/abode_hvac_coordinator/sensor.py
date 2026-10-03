@@ -549,5 +549,11 @@ class RoomSettingsSensor(HvacRoomEntity, SensorEntity):
             "announces_before_shutdown": room.grace.announce,
             "announce_through": list(room.announce_target_entity_ids)
             or "Nothing selected",
+            "stops_for_an_open_window_after_minutes": room.opening_grace_minutes,
+            "air_conditioning_offers": (
+                room.capabilities.to_dict()
+                if room.capabilities is not None
+                else "Not read yet — waiting for the air conditioner to report"
+            ),
             "lockout_reason": room.lockout_reason or "Not locked out",
         }

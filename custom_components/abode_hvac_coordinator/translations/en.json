@@ -25,10 +25,12 @@
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
           "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
           "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
-          "climate_entity_ids": "Air conditioners in this room"
+          "climate_entity_ids": "Air conditioners in this room",
+          "opening_grace_minutes": "Wait this long with a window or door open before stopping (minutes)"
         },
         "data_description": {
-          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units."
+          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units.",
+          "opening_grace_minutes": "Five by default. The air conditioning is left alone for this long after a window or door opens, in case it closes again. With announcements on, a warning is spoken three minutes before it stops."
         }
       },
       "bands": {
@@ -54,7 +56,8 @@
     },
     "error": {
       "band_inverted": "A band's lower bound must be below its upper bound.",
-      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room."
+      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room.",
+      "climate_not_reporting": "One of those air conditioners is not reporting what it can do (it is unavailable or missing). A room can only be set up once every air conditioner in it is working."
     }
   },
   "options": {
@@ -83,10 +86,12 @@
           "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
           "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
           "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
-          "climate_entity_ids": "Air conditioners in this room"
+          "climate_entity_ids": "Air conditioners in this room",
+          "opening_grace_minutes": "Wait this long with a window or door open before stopping (minutes)"
         },
         "data_description": {
-          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units."
+          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units.",
+          "opening_grace_minutes": "Five by default. The air conditioning is left alone for this long after a window or door opens, in case it closes again. With announcements on, a warning is spoken three minutes before it stops."
         }
       },
       "bands": {
@@ -193,7 +198,8 @@
     },
     "error": {
       "band_inverted": "A band's lower bound must be below its upper bound.",
-      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room."
+      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room.",
+      "climate_not_reporting": "One of those air conditioners is not reporting what it can do (it is unavailable or missing). A room can only be set up once every air conditioner in it is working."
     },
     "abort": {}
   },
@@ -260,6 +266,28 @@
     "switch": {
       "automatic_control": {
         "name": "Automatic control"
+      },
+      "automatic_vane_control": {
+        "name": "Automatic vane control"
+      }
+    },
+    "select": {
+      "unit_mode": {
+        "name": "Mode"
+      },
+      "fan_speed": {
+        "name": "Fan speed"
+      },
+      "vertical_vane": {
+        "name": "Vertical vane"
+      },
+      "horizontal_vane": {
+        "name": "Horizontal vane"
+      }
+    },
+    "number": {
+      "setpoint": {
+        "name": "Setpoint"
       }
     }
   },
@@ -292,6 +320,18 @@
   "exceptions": {
     "unknown_room": {
       "message": "No room called {room_id} is configured."
+    },
+    "control_not_writable": {
+      "message": "Automatic control is on for {room}, so the coordinator is running its air conditioning. Turn Automatic control off to change this by hand."
+    },
+    "vane_not_writable": {
+      "message": "Automatic vane control is on for {room}, so the coordinator is positioning its vane. Turn Automatic vane control off to set it by hand."
+    },
+    "control_value_not_offered": {
+      "message": "{value} is not a {control} the air conditioning in {room} offered when the room was set up."
+    },
+    "control_profile_not_read": {
+      "message": "{room} has not yet read what its air conditioning can do, so its controls cannot be used yet."
     }
   },
   "issues": {

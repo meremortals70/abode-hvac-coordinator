@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final
 
+from .capabilities import RoomCapabilities
 from .grace import GraceSettings
 from .hci import ComfortBand
 
@@ -147,6 +148,13 @@ class RoomConfig:
     #: is whatever the remaining energy can buy, which the controller already
     #: computes.
     power_management: str = "off"
+    #: 0.9.0, DR-050. How long an opening in this room may stay open before the
+    #: unit is stopped, in minutes. Per room, five by default.
+    opening_grace_minutes: float = 5.0
+    #: 0.9.0, DR-048. What this room's units can do, as read at setup (or on
+    #: first load for a room configured before 0.9.0). None until read; a room
+    #: with no profile is not evaluated and nothing is sent to it.
+    capabilities: RoomCapabilities | None = None
 
     def group_of(self, entity_id: str) -> str:
         """Which compressor a head runs on.
@@ -279,6 +287,24 @@ class RoomInputs:
     #: (for their position or for other automations) while telling this
     #: integration not to move them.
     allow_cover_control: bool = True
+    #: 0.9.0, DR-053. Whether the room's unaided temperature could be projected
+    #: at all - the model has converged for the terms the projection needs. A
+    #: room outside its band with no projection falls back to the plain outdoor
+    #: comparison.
+    unaided_available: bool = False
+    #: When the projection puts the room back inside its band for good, in
+    #: minutes from now; None where it does not within the projection.
+    unaided_return_minutes: float | None = None
+    #: How long the room may be left to come back unaided, in minutes: the time
+    #: the compressor itself would take plus ten, or fifteen where the model
+    #: cannot estimate that.
+    unaided_return_limit_minutes: float = 15.0
+    #: 0.9.0, DR-050. How long an opening may stay open before the unit stops,
+    #: and the warning grace before that for the first announcement.
+    opening_grace_minutes: float = 5.0
+    #: Opening warnings due this cycle, set by the coordinator from the room's
+    #: own announce setting and how long the opening has been open.
+    opening_age_unknown: bool = False
 
 
 @dataclass(slots=True)
@@ -295,6 +321,8 @@ class DecisionTrace:
     #: The occupancy mode COAST displaced, so the band in force is visible.
     base_mode: Mode | None = None
     hci: float | None = None
+    #: The room temperature this decision was made against.
+    room_c: float | None = None
     #: What the corrections contributed, so a surprising index can be read
     #: rather than argued with.
     hci_base: float | None = None
@@ -362,6 +390,19 @@ class DecisionTrace:
     #: Measured, not projected — None when no grid sensor is configured.
     #: True means the house is drawing from the grid right now.
     grid_importing_now: bool | None = None
+    #: 0.9.0, DR-054. What the room loop asked of the unit this cycle: how far
+    #: from the room's own reading, what holds the room against its drift, and
+    #: the rate the room was asked to move at.
+    approach_c: float | None = None
+    feed_forward_c: float | None = None
+    wanted_rate_c_per_hour: float | None = None
+    #: 0.9.0, DR-053. The projected minutes until the room is back in band
+    #: unaided, where one was made, and the limit it was held against.
+    unaided_return_minutes: float | None = None
+    unaided_return_limit_minutes: float | None = None
+    #: 0.9.0, DR-051. The unit's step and range the commanded setpoint was
+    #: rounded to, where it advertised them.
+    setpoint_step_c: float | None = None
 
     def as_attributes(self) -> dict[str, Any]:
         """Flatten for publication as entity attributes."""
@@ -371,6 +412,7 @@ class DecisionTrace:
             "mode": str(self.mode),
             "base_mode": str(self.base_mode) if self.base_mode else None,
             "hci": None if self.hci is None else round(self.hci, 2),
+            "room_c": self.room_c,
             "hci_air_only": (
                 None if self.hci_base is None else round(self.hci_base, 2)
             ),
@@ -416,4 +458,18 @@ class DecisionTrace:
             "power_bin": self.power_bin,
             "comfort_reduction_active": self.comfort_reduction_active,
             "grid_importing_now": self.grid_importing_now,
+            "approach_c": self.approach_c,
+            "feed_forward_c": self.feed_forward_c,
+            "wanted_rate_c_per_hour": self.wanted_rate_c_per_hour,
+            "unaided_return_minutes": (
+                None
+                if self.unaided_return_minutes is None
+                else round(self.unaided_return_minutes, 1)
+            ),
+            "unaided_return_limit_minutes": (
+                None
+                if self.unaided_return_limit_minutes is None
+                else round(self.unaided_return_limit_minutes, 1)
+            ),
+            "setpoint_step_c": self.setpoint_step_c,
         }

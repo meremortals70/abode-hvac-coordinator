@@ -47,11 +47,18 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import SpeedConverter
 
-from .actuator import Actuator, mean_cover_position, supported_hvac_modes
+from .actuator import (
+    Actuator,
+    mean_cover_position,
+    profile_from_states,
+    supported_hvac_modes,
+)
+from .capabilities import RoomCapabilities
 from .const import (
     COAST_HORIZON_HOURS,
     CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
+    CONF_CAPABILITIES,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
     CONF_BAND_HIGH,
@@ -74,6 +81,7 @@ from .const import (
     CONF_LOCKOUT_REASON,
     CONF_OCCUPIED_AFTER,
     CONF_OPENING_ENTITIES,
+    CONF_OPENING_GRACE,
     CONF_OUTDOOR_HUMIDITY_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_OUTDOOR_WIND_ENTITY,
@@ -109,6 +117,7 @@ from .const import (
     PRECOOL_DEMAND_MARGIN_C,
     STARTUP_FETCH_ATTEMPTS,
     STARTUP_FETCH_DELAY,
+    PROFILE_UNREAD_REASON,
     SWITCHED_OFF_REASON,
     TARIFF_DOMAIN,
     TARIFF_HORIZON_HOURS,
@@ -127,10 +136,22 @@ from .forecast import (
     build_forecast,
 )
 from .forms import power_management_from_raw
-from .grace import Announcement, GraceSettings, GraceState, evaluate_grace
-from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index
+from .grace import (
+    Announcement,
+    GraceSettings,
+    GraceState,
+    OpeningWarningState,
+    evaluate_grace,
+    evaluate_opening_warnings,
+)
+from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index, radiant_load
 from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
-from .modes import evaluate_room
+from .modes import (
+    DEFAULT_OPENING_GRACE_MINUTES,
+    UNAIDED_RETURN_FALLBACK_MINUTES,
+    UNAIDED_RETURN_MARGIN_MINUTES,
+    evaluate_room,
+)
 from .power import (
     GRID_SIGN_IMPORTING,
     battery_available_kwh,
@@ -147,10 +168,16 @@ from .psychro import dew_point_c
 from .regulate import (
     CompressorState,
     RegulatorState,
+    PidSetpoint,
+    SetpointLimits,
     arbitrate_cycling,
     commanded_setpoint,
+    effective_deadband,
     integrate,
     note_transition,
+    pid_setpoint,
+    quantise_setpoint,
+    track_room_rate,
     wants_running,
 )
 from .scheduling import PreconditionPlan, plan_precondition
@@ -163,7 +190,7 @@ from .staleness import (
     assess,
 )
 from .store import ModelStore
-from .sun import azimuth_for_direction, sun_on_window
+from .sun import azimuth_for_direction, solar_position, sun_on_window
 from .tariff import (
     CONSTRAINT_NO_GRID_IMPORT,
     CONSTRAINT_PRECOOL_OPPORTUNITY,
@@ -180,8 +207,10 @@ from .thermal import (
     MIN_DRAW_QUALITY,
     DrawModel,
     Observation,
+    PROJECTION_STEP_HOURS,
     ThermalModel,
     approach_bin,
+    unaided_outlook,
 )
 from .thermal import (
     MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
@@ -466,6 +495,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Read from the store, not from entity state, so it is already known
         #: when the first evaluation runs. DR-047.
         self._switched_off: set[str] = store.switched_off() & set(self.rooms)
+        #: Rooms whose Automatic vane control the user has switched off: the
+        #: coordinator never sends a vane command to them. Read from the store
+        #: for the same reason as the line above. DR-049.
+        self._manual_vanes: set[str] = store.manual_vanes() & set(self.rooms)
+        #: Opening warnings already spoken for each room's current opening.
+        #: DR-050.
+        self._opening_warnings: dict[str, OpeningWarningState] = {}
+        #: The last mode each room was evaluated in, for the controls.
+        self._last_modes: dict[str, Mode] = {}
+        #: Rooms whose units had nothing to read the first time they were
+        #: tried, named once in the log rather than every cycle.
+        self._profile_unread: set[str] = set()
         #: Each room's last-solved dry-bulb target, one cycle behind. The
         #: power-aware compressor check needs a target to project energy need
         #: against, but the target itself is solved inside evaluate_room —
@@ -915,6 +956,34 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.store.set_switched_off(room_id, off)
         await self.async_request_refresh()
 
+    def is_room_vanes_manual(self, room_id: str) -> bool:
+        """Whether the user has taken the vanes in this room into their own hands."""
+        return room_id in self._manual_vanes
+
+    async def async_set_room_vanes_manual(self, room_id: str, manual: bool) -> None:
+        """Hand a room's vanes to the user, or back to the coordinator."""
+        if manual:
+            self._manual_vanes.add(room_id)
+        else:
+            self._manual_vanes.discard(room_id)
+        self.store.set_manual_vanes(room_id, manual)
+        await self.async_request_refresh()
+
+    def last_mode(self, room_id: str) -> Mode:
+        """The mode a room was last evaluated in."""
+        return self._last_modes.get(room_id, Mode.LOCKOUT)
+
+    def controls_writable(self, room_id: str, *, vane: bool = False) -> bool:
+        """Whether the user may change a room's controls by hand right now.
+
+        DR-049. Everything is writable while Automatic control is off. The
+        vanes are also writable while Automatic vane control is off, and stay
+        so with Automatic control on.
+        """
+        if room_id in self._switched_off:
+            return True
+        return vane and room_id in self._manual_vanes
+
     @callback
     def async_clear_override(self, room_id: str) -> None:
         """Drop any heading-home request for a room."""
@@ -943,14 +1012,26 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._record_house_load_sample(now)
         self._power_context = self._compute_power_context(now)
         self._track_grid(now, self._power_context)
+        self._async_ensure_profiles()
         for room in self.rooms.values():
             inputs = self._inputs_for(room, now)
             capabilities = self._capabilities(room)
             self._learn(room, inputs, now)
-            switched_off = room.room_id in self._switched_off
+            # A room is evaluated, and its decision published, whether or not
+            # anything is sent to it. Two things stop the sending: the user's
+            # Automatic control switch (DR-049) and a room whose units have
+            # not yet reported what they can do (DR-048). Either way the unit
+            # is left exactly as it is.
+            inactive_reason = (
+                SWITCHED_OFF_REASON
+                if room.room_id in self._switched_off
+                else PROFILE_UNREAD_REASON
+                if room.capabilities is None
+                else None
+            )
             trace = evaluate_room(
-                replace(room, lockout_reason=SWITCHED_OFF_REASON)
-                if switched_off
+                replace(room, lockout_reason=inactive_reason)
+                if inactive_reason is not None
                 else room,
                 inputs,
             )
@@ -968,13 +1049,20 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 elif "precool" in reason:
                     trace.rejected.append(reason)
             trace.stale_feeds = self._stale.get(room.room_id, [])
+            if inactive_reason is not None:
+                self._track_mode(room.room_id, trace.mode, now)
+                self._last_modes[room.room_id] = trace.mode
+                traces[room.room_id] = trace
+                continue
             self._power_ceiling(room, inputs, trace, now, capabilities)
+            self._warn_about_opening(room, inputs, now)
             # Guard first. The regulator's anti-windup gate has to see the
             # step that will actually be carried out, not the one that was
             # wanted before the short-cycle guard had its say.
-            self._guard_cycling(room, trace, now, forced=switched_off)
+            self._guard_cycling(room, trace, now)
             self._regulate(room, inputs, trace, now)
             self._track_mode(room.room_id, trace.mode, now)
+            self._last_modes[room.room_id] = trace.mode
             traces[room.room_id] = trace
             LOGGER.debug(
                 "%s: mode=%s actuator=%s hci=%s target=%s",
@@ -1000,12 +1088,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         trace: DecisionTrace,
         now: datetime,
     ) -> None:
-        """Layer 2. Trim the commanded setpoint until the room reaches target.
+        """Layer 2. The room loop: a PID that uses what the room has learned.
 
         The unit's own thermostat regulates against its return-air sensor,
         which is not the room. This closes the outer loop around it, and it is
         the only place in the project allowed to command a temperature other
-        than the one the comfort index solved for.
+        than the one the comfort index solved for (DR-054).
+
+        Built from the learned drift and the learned rate against approach
+        where they have converged, and from the solved target plus the trim
+        where they have not. The trim is kept per direction. The result is
+        held to the power ceiling where that is enforced, and last rounded to
+        what the unit can actually hold and held inside its range (DR-051).
 
         The power ceiling only actually clamps `commanded_dry_bulb_c` — and
         only counts as binding for anti-windup — when the room's
@@ -1017,6 +1111,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         commanded setpoint is left exactly where comfort alone would put it.
         """
         state = self._regulators.setdefault(room.room_id, RegulatorState())
+        limits, limits_note = self._setpoint_limits(room)
+        trace.setpoint_step_c = limits.step
+        if limits_note is not None:
+            trace.rejected.append(limits_note)
+
+        track_room_rate(state, inputs.temperature_c, now)
+
+        # Direction comes from the target against the room reading, not from
+        # `trace.demand` — the ceiling's primary case is a room *inside* its
+        # band (demand is None there), where the solved target still exists
+        # and still says which way the compressor is being asked to work.
+        direction = setpoint_direction(trace.target_dry_bulb_c, inputs.temperature_c)
+        trim_direction = direction or "cool"
 
         # 0.8.10. Whether the power ceiling is actually binding this cycle —
         # would the uncapped commanded setpoint go further than the ceiling
@@ -1024,18 +1131,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # winding the trim further against a bound the ceiling is enforcing
         # is the same fault finding 7 fixed for the short-cycle guard, in a
         # second place.
-        # Direction comes from the target against the room reading, not from
-        # `trace.demand` — the ceiling's primary case is a room *inside* its
-        # band (demand is None there), where the solved target still exists
-        # and still says which way the compressor is being asked to work.
-        direction = setpoint_direction(trace.target_dry_bulb_c, inputs.temperature_c)
-
-        binding = False
-        uncapped = (
-            None
-            if trace.target_dry_bulb_c is None
-            else round(trace.target_dry_bulb_c + state.trim_c, 1)
+        uncapped, _ = self._room_loop_setpoint(
+            room, state, inputs, trace, direction, trim_direction
         )
+        binding = False
         if (
             room.power_management == POWER_MANAGEMENT_ENFORCED
             and trace.power_ceiling_c is not None
@@ -1062,11 +1161,21 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 (trace.actuator is ActuatorStep.COMPRESSOR or trace.hold_compressor)
                 and not binding
             ),
+            direction=trim_direction,
+            deadband_c=effective_deadband(limits),
         )
         trace.reasons.extend(state.notes)
-        trace.regulation_trim_c = state.trim_c
-        commanded = commanded_setpoint(state, trace.target_dry_bulb_c)
+        trace.regulation_trim_c = state.trim_for(trim_direction)
+        commanded, pid = self._room_loop_setpoint(
+            room, state, inputs, trace, direction, trim_direction
+        )
+        if pid is not None:
+            trace.approach_c = pid.approach_c
+            trace.feed_forward_c = pid.feed_forward_c
+            trace.wanted_rate_c_per_hour = pid.wanted_rate_c_per_hour
+            trace.reasons.append(pid.reason)
 
+        capped = False
         if (
             room.power_management == POWER_MANAGEMENT_ENFORCED
             and trace.power_ceiling_c is not None
@@ -1079,20 +1188,84 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
             if held != commanded:
                 commanded = held
+                capped = True
                 trace.reasons.append(
                     f"power budget: commanded held at {commanded:.1f} C, "
                     f"{trace.power_ceiling_c:.1f} C ceiling"
                 )
 
+        if commanded is not None:
+            # Last step, and the one that matters to the unit: what it is sent
+            # has to be a value it can hold (DR-051). Where the power ceiling
+            # has just bound, the rounding goes the way that stays inside it.
+            toward = None
+            if capped:
+                toward = "up" if direction == "cool" else "down"
+            rounded = quantise_setpoint(commanded, limits, toward=toward)
+            if abs(rounded - commanded) >= 0.05:
+                trace.reasons.append(
+                    f"setpoint {commanded:.1f} rounded to {rounded:.1f} C, "
+                    f"the unit holds {limits.rounding_step:g} C steps"
+                )
+            commanded = rounded
         trace.commanded_dry_bulb_c = commanded
+
+    def _room_loop_setpoint(
+        self,
+        room: RoomConfig,
+        state: RegulatorState,
+        inputs: RoomInputs,
+        trace: DecisionTrace,
+        direction: str | None,
+        trim_direction: str,
+    ) -> tuple[float | None, PidSetpoint | None]:
+        """The room loop's setpoint before the power ceiling and the rounding.
+
+        The PID where the drift and the learned rate against approach are both
+        known; otherwise the solved target plus the trim for this direction,
+        which is what the loop was before 0.9.0 (DR-054).
+        """
+        target = trace.target_dry_bulb_c
+        if target is None:
+            return None, None
+        if inputs.temperature_c is not None:
+            model = self.model_for(room.room_id)
+            drift = model.drift_rate(
+                inputs.temperature_c,
+                self.outdoor_reading(),
+                direct_sun=inputs.direct_sun is True,
+            )
+            pid_direction = direction or ("cool" if (drift or 0.0) >= 0 else "heat")
+            pid = pid_setpoint(
+                state,
+                target_c=target,
+                room_c=inputs.temperature_c,
+                direction=pid_direction,
+                drift_c_per_hour=drift,
+                approach_for_rate=model.approach_for_rate,
+            )
+            if pid is not None:
+                return pid.setpoint_c, pid
+        return commanded_setpoint(state, target, trim_direction), None
+
+    def _setpoint_limits(self, room: RoomConfig) -> tuple[SetpointLimits, str | None]:
+        """What the room's units can be set to, from the stored profile.
+
+        DR-051. No profile means no limits known, and the setpoint is rounded
+        to tenths as it always was.
+        """
+        profile = room.capabilities
+        if profile is None:
+            return SetpointLimits(), None
+        return SetpointLimits(
+            profile.target_temp_step, profile.min_temp, profile.max_temp
+        ), None
 
     def _guard_cycling(
         self,
         room: RoomConfig,
         trace: DecisionTrace,
         now: datetime,
-        *,
-        forced: bool = False,
     ) -> None:
         """Refuse a compressor transition inside its minimum on or off time.
 
@@ -1100,12 +1273,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         split system, and nothing else in the stack prevents it: the unit's own
         protection is against its own thermostat, not against a coordinator
         commanding hvac_mode from outside.
-
-        `forced` is set for a room the user has switched off. The guard
-        protects the compressor from this coordinator, not from the person who
-        owns the house: an off switch that waits ten minutes to act is not an
-        off switch. The stop is still recorded, so the guard's picture of the
-        compressor stays true. DR-047.
 
         A refusal downgrades the step and is written into the trace, because a
         room that appears to ignore its own decision with no explanation is
@@ -1147,7 +1314,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 for group in compressors
             },
             now=now,
-            forced=forced,
         )
         for group, running in verdict.record:
             compressor = compressors[group]
@@ -1289,36 +1455,24 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             now, temperature, humidity, compressor, drying, commanded
         )
 
-    def _predicted_to_hold(self, room: RoomConfig) -> bool | None:
-        """Whether the room stays in band unaided over the coast horizon.
+    @staticmethod
+    def _predicted_to_hold(unaided: Mapping[str, Any]) -> bool | None:
+        """Whether the room is in band now and stays there unaided.
 
-        None means the model cannot say, which the evaluator treats as "do not
-        coast" rather than as "yes". That is the hysteresis fallback: until the
-        filter has converged, the band is simply held.
+        0.9.0, DR-053. Read from the same stepped projection the weather coast
+        uses, not from a straight line to the point an hour ahead. That check
+        called a room back in band whenever the end of the hour landed inside
+        it, whatever the room was doing in the meantime and however far out of
+        band it was now, and it coasted such a room with no limit at all.
+
+        True only for a room already inside its band and staying inside it.
+        A room that is out of band is the weather coast's question, which has
+        a limit. None means the model cannot say, and the evaluator treats
+        that as \"do not coast\", never as \"yes\".
         """
-        model = self.model_for(room.room_id)
-        indoor = self._number(room.temperature_entity_id)
-        humidity = self._number(room.humidity_entity_id)
-        if indoor is None or humidity is None:
+        if not unaided["unaided_available"]:
             return None
-
-        band = room.band_for(Mode.SLEEP if self._sleeping(room) else Mode.OCCUPIED)
-        if band is None:
-            return None
-
-        # The band is in comfort index; the model works in dry bulb. Convert
-        # the bounds at the current humidity so the two are comparable.
-        lower_c = dry_bulb_for_index(band.low, humidity)
-        upper_c = dry_bulb_for_index(band.high, humidity)
-
-        return model.holds_through(
-            indoor,
-            self._number(self.outdoor_entity_id),
-            direct_sun=self._direct_sun(room) is True,
-            hours=COAST_HORIZON_HOURS,
-            lower_c=lower_c,
-            upper_c=upper_c,
-        )
+        return bool(unaided["unaided_return_minutes"] == 0.0)
 
     def _cheaper_window_imminent(self, room: RoomConfig, now: datetime) -> bool:
         """Whether a strictly cheaper tariff interval begins soon enough that
@@ -1995,6 +2149,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._precondition_reason.pop(room.room_id, None)
 
         capabilities = self._capabilities(room)
+        unaided = self._unaided_inputs(room, now)
 
         return RoomInputs(
             now=now,
@@ -2020,6 +2175,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 for entity_id in room.opening_entity_ids
             ),
             opening_open_since=self._opening_open_since(room),
+            opening_grace_minutes=room.opening_grace_minutes,
             precool_opportunity=CONSTRAINT_PRECOOL_OPPORTUNITY in constraints,
             no_grid_import=CONSTRAINT_NO_GRID_IMPORT in constraints,
             coasting_permitted=interval.coasting_permitted if interval else True,
@@ -2035,12 +2191,169 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             precondition_deadline=self._heading_home.get(room.room_id),
             k_sensible_c_per_hour=self._sensible_rate_for(room, now),
             k_latent_rh_per_hour=self._learned(room.room_id, "k_latent"),
-            predicted_to_hold=self._predicted_to_hold(room),
+            predicted_to_hold=self._predicted_to_hold(unaided),
+            **unaided,
             cheaper_window_imminent=self._cheaper_window_imminent(room, now),
             forecast_demand_ahead=self._demand_ahead(room, now),
             sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
             is True,
         )
+
+    def _async_ensure_profiles(self) -> None:
+        """Read, once, what each room's units can do where that is not known.
+
+        DR-048. A room set up from 0.9.0 carries its profile in its own
+        configuration. A room configured before that has none, and is read
+        here from its units' live state and the result kept in the store, so
+        a restart with a unit down does not lose it. Until a unit reports, the
+        room has no profile and nothing is sent to it.
+        """
+        for room_id, room in list(self.rooms.items()):
+            if room.capabilities is not None:
+                continue
+            stored = RoomCapabilities.from_dict(self.store.profile(room_id))
+            if stored is not None:
+                self.rooms[room_id] = replace(room, capabilities=stored)
+                continue
+            profile = self._read_profile(room)
+            if profile is None:
+                if room_id not in self._profile_unread:
+                    self._profile_unread.add(room_id)
+                    LOGGER.info(
+                        "%s: its air conditioner has not reported what it can "
+                        "do yet; nothing is sent to the room until it does",
+                        room.name,
+                    )
+                continue
+            self.store.set_profile(room_id, profile.to_dict())
+            self._profile_unread.discard(room_id)
+            self.rooms[room_id] = replace(room, capabilities=profile)
+            LOGGER.info(
+                "%s: read what its air conditioner can do (%d modes, %d fan "
+                "speeds, %d vane positions)",
+                room.name,
+                len(profile.hvac_modes),
+                len(profile.fan_modes),
+                len(profile.swing_modes),
+            )
+
+    def _read_profile(self, room: RoomConfig) -> RoomCapabilities | None:
+        """What a room's units offer right now, or None if any is not reporting."""
+        profile, note = profile_from_states(
+            [self.hass.states.get(entity_id) for entity_id in room.climate_entity_ids]
+        )
+        if note is not None:
+            LOGGER.warning("%s: %s", room.name, note)
+        return profile
+
+    def _unaided_inputs(self, room: RoomConfig, now: datetime) -> dict[str, Any]:
+        """Whether, and when, the weather brings the room back into band.
+
+        DR-053. Projects the room's own temperature forward with nothing
+        running, from the learned loss and solar terms, the forecast outdoor
+        temperature, and the sun on this room's window at each step ahead.
+        Returns the inputs the evaluator uses to decide whether to coast.
+        """
+        none = {
+            "unaided_available": False,
+            "unaided_return_minutes": None,
+            "unaided_return_limit_minutes": UNAIDED_RETURN_FALLBACK_MINUTES,
+        }
+        indoor = self._number(room.temperature_entity_id)
+        humidity = self._number(room.humidity_entity_id)
+        if indoor is None or humidity is None:
+            return none
+        band = room.band_for(Mode.SLEEP if self._sleeping(room) else Mode.OCCUPIED)
+        if band is None:
+            return none
+
+        # The band is in comfort index and the model works in dry bulb. The
+        # bounds are converted under the same corrections the index was
+        # measured under - sun on the glass, still air, heat in the room - so
+        # a room that is warm only because of the sun is not mistaken for one
+        # that is already inside its band.
+        direct_sun = self._direct_sun(room)
+        radiant = radiant_load(
+            direct_sun=direct_sun,
+            cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
+            has_covers=bool(room.cover_entity_ids),
+        )
+        still_air = not self._air_moving(room)
+        heat_load = self._bool(room.heat_load_entity_id) is True
+
+        def to_dry_bulb(index: float) -> float:
+            return dry_bulb_for_index(
+                index,
+                humidity,
+                radiant=radiant,
+                still_air=still_air,
+                heat_load=heat_load,
+            )
+
+        lower_c = to_dry_bulb(band.low)
+        upper_c = to_dry_bulb(band.high)
+        middle_c = to_dry_bulb(band.midpoint)
+
+        outdoor_now = self.outdoor_reading()
+        trajectory = self.trajectory
+
+        def outdoor_at(hours_ahead: float) -> float | None:
+            if trajectory is not None:
+                forecast = trajectory.temperature_at(now + timedelta(hours=hours_ahead))
+                if forecast is not None:
+                    return forecast
+            return outdoor_now
+
+        window_azimuth = azimuth_for_direction(room.window_direction)
+
+        def sun_at(hours_ahead: float) -> float | None:
+            if room.direct_sun_entity_id or window_azimuth is None:
+                # A sensor override, or no window direction: the sun is held
+                # at whatever it is now, as the coast prediction always did.
+                return 1.0 if direct_sun is True else 0.0
+            when = now + timedelta(hours=hours_ahead)
+            azimuth, elevation = solar_position(
+                self.hass.config.latitude, self.hass.config.longitude, when
+            )
+            on = sun_on_window(
+                azimuth,
+                elevation,
+                window_azimuth,
+                overhang_projection_m=room.overhang_projection_m,
+                overhang_height_m=room.overhang_height_m,
+            )
+            if on is not True:
+                return 0.0
+            clear = (
+                trajectory.solar_fraction_at(when) if trajectory is not None else None
+            )
+            return 1.0 if clear is None else clear
+
+        model = self.model_for(room.room_id)
+        points = model.project_unaided(
+            indoor,
+            outdoor_at=outdoor_at,
+            sun_at=sun_at,
+            hours=COAST_HORIZON_HOURS,
+            step_hours=PROJECTION_STEP_HOURS,
+        )
+        if points is None:
+            return none
+        outlook = unaided_outlook(points, lower_c=lower_c, upper_c=upper_c)
+
+        compressor_hours = model.hours_to_reach(
+            indoor, middle_c, outdoor_now, direct_sun=direct_sun is True
+        )
+        limit = (
+            UNAIDED_RETURN_FALLBACK_MINUTES
+            if compressor_hours is None
+            else compressor_hours * 60.0 + UNAIDED_RETURN_MARGIN_MINUTES
+        )
+        return {
+            "unaided_available": True,
+            "unaided_return_minutes": outlook.return_minutes,
+            "unaided_return_limit_minutes": limit,
+        }
 
     def _sensible_rate_for(self, room: RoomConfig, now: datetime) -> float | None:
         """The `k_sensible` figure the dry-versus-cool decision should use.
@@ -2137,7 +2450,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # The intersection across the room's heads. A room can only do what
         # all of them can: claiming dry mode because one of two heads has it
         # produces a decision the actuator cannot carry out on the other.
-        modes = set.intersection(*(supported_hvac_modes(state) for state in states))
+        modes = (
+            set(room.capabilities.hvac_modes)
+            if room.capabilities is not None
+            else set.intersection(*(supported_hvac_modes(state) for state in states))
+        )
         return {
             "can_cool": bool(modes & {"cool", "heat_cool", "auto"}),
             "can_heat": bool(modes & {"heat", "heat_cool", "auto"}),
@@ -2595,20 +2912,38 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         `last_changed` rather than anything tracked here: it survives a
         restart, and a window that was already open before Home Assistant
-        came up should not buy itself a fresh debounce.
+        came up should not buy itself a fresh grace.
 
-        None where nothing is open, or where the state is stale — an unknown
-        age is not a young one, so the caller stops rather than holds.
+        None where nothing is open. An opening whose reading is too old to
+        trust is not counted as open at all (see `_bool`), so an open opening
+        always has a state, and with it a time it last changed.
         """
         opened: list[datetime] = []
         for entity_id in room.opening_entity_ids:
             if self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is not True:
                 continue
             state = self.hass.states.get(entity_id)
-            if state is None:
-                return None
-            opened.append(state.last_changed)
+            if state is not None:
+                opened.append(state.last_changed)
         return min(opened) if opened else None
+
+    def _warn_about_opening(
+        self, room: RoomConfig, inputs: RoomInputs, now: datetime
+    ) -> None:
+        """Queue the spoken warnings for an open window or door (DR-050)."""
+        warnings = self._opening_warnings.setdefault(
+            room.room_id, OpeningWarningState()
+        )
+        announcement = evaluate_opening_warnings(
+            warnings,
+            open_since=inputs.opening_open_since if inputs.opening_open else None,
+            now=now,
+            grace=timedelta(minutes=room.opening_grace_minutes),
+            warning_grace=room.grace.warning_grace,
+            announce=room.grace.announce,
+        )
+        if announcement is not Announcement.NONE:
+            self._pending_announcements.append((room, announcement))
 
     def _bool(
         self,
@@ -2779,7 +3114,18 @@ def _room_from_raw(
         power_management=power_management_from_raw(
             raw.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
         ),
+        opening_grace_minutes=_opening_grace_from_raw(raw.get(CONF_OPENING_GRACE)),
+        capabilities=RoomCapabilities.from_dict(raw.get(CONF_CAPABILITIES)),
     )
+
+
+def _opening_grace_from_raw(value: object) -> float:
+    """A room's opening grace in minutes, five where none is stored."""
+    try:
+        minutes = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_OPENING_GRACE_MINUTES
+    return minutes if minutes >= 0 else DEFAULT_OPENING_GRACE_MINUTES
 
 
 def _announcement_text(room: RoomConfig, announcement: Announcement) -> str:
@@ -2788,6 +3134,18 @@ def _announcement_text(room: RoomConfig, announcement: Announcement) -> str:
         return (
             f"Opening the windows would help the {room.name} right now — it's "
             "cooler and drier outside than in."
+        )
+    if announcement is Announcement.OPENING_FIRST_WARNING:
+        minutes = int(room.grace.warning_grace.total_seconds() // 60)
+        return (
+            f"A window or door in the {room.name} has been open for a while. "
+            f"The air conditioning will turn off in about {minutes} minutes "
+            "unless it is closed."
+        )
+    if announcement is Announcement.OPENING_FINAL_WARNING:
+        return (
+            f"Turning the {room.name} air conditioning off because a window or "
+            "door is open."
         )
     minutes = int(room.grace.vacant_after.total_seconds() // 60)
     if announcement is Announcement.FIRST_WARNING:

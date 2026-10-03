@@ -23,11 +23,13 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.helpers import selector
 
+from .actuator import profile_from_states
 from .const import (
     CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_ANNOUNCE,
     CONF_ANNOUNCE_TARGETS,
+    CONF_CAPABILITIES,
     CONF_BAND_HIGH,
     CONF_BAND_LOW,
     CONF_BANDS,
@@ -48,6 +50,7 @@ from .const import (
     CONF_LOCKOUT_REASON,
     CONF_LOCKOUT_REASONS,
     CONF_OCCUPIED_AFTER,
+    CONF_OPENING_GRACE,
     CONF_OPENING_ENTITIES,
     CONF_OUTDOOR_HUMIDITY_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
@@ -67,6 +70,7 @@ from .const import (
     CONF_WEATHER_ENTITY,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
+    LOGGER,
     NOT_LOCKED_OUT,
     OWN_OUTDOOR_UNIT,
     POWER_MANAGEMENT_ENFORCED,
@@ -257,6 +261,7 @@ def room_schema(lockout_reasons: list[str]) -> vol.Schema:
             vol.Optional(CONF_VACANT_AFTER): _minutes_selector(),
             vol.Optional(CONF_WARNING_GRACE): _minutes_selector(),
             vol.Optional(CONF_ANNOUNCE, default=False): selector.BooleanSelector(),
+            vol.Optional(CONF_OPENING_GRACE): _minutes_selector(),
             vol.Optional(CONF_ANNOUNCE_TARGETS): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="media_player", multiple=True)
             ),
@@ -377,6 +382,27 @@ class _RoomSteps:
                 ),
                 errors={CONF_CLIMATE_ENTITIES: "climate_entity_in_use"},
             )
+
+        # What the room's units can do is read here, once, and stored with the
+        # room (DR-048). A room cannot be set up for an air conditioner that is
+        # not reporting: there would be nothing to build its commands or its
+        # controls from, and a room saved with an empty profile would offer
+        # nothing and send nothing.
+        profile, note = profile_from_states(
+            [self.hass.states.get(entity_id) for entity_id in room[CONF_CLIMATE_ENTITIES]]  # type: ignore[attr-defined]
+        )
+        if profile is None:
+            schema = room_schema(known_lockout_reasons(self._stored_lockout_reasons()))
+            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
+                step_id="room",
+                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                    schema, user_input
+                ),
+                errors={CONF_CLIMATE_ENTITIES: "climate_not_reporting"},
+            )
+        if note is not None:
+            LOGGER.warning("%s: %s", room["name"], note)
+        room[CONF_CAPABILITIES] = profile.to_dict()
 
         self._room = room
         return await self.async_step_room_outdoor()

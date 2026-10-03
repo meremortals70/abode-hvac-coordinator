@@ -59,7 +59,13 @@ class ModelStore:
             atomic_writes=True,
             minor_version=STORAGE_MINOR_VERSION,
         )
-        self._data: dict[str, Any] = {"rooms": {}, "groups": {}, "switched_off": []}
+        self._data: dict[str, Any] = {
+            "rooms": {},
+            "groups": {},
+            "switched_off": [],
+            "manual_vanes": [],
+            "profiles": {},
+        }
 
     async def async_load(self) -> None:
         stored = await self._store.async_load()
@@ -81,7 +87,9 @@ class ModelStore:
 
     def forget_room(self, room_id: str) -> None:
         """Drop a removed room's learned state."""
-        if self._data.get("rooms", {}).pop(room_id, None) is not None:
+        removed = self._data.get("rooms", {}).pop(room_id, None) is not None
+        removed = self._data.get("profiles", {}).pop(room_id, None) is not None or removed
+        if removed:
             self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
 
     def switched_off(self) -> set[str]:
@@ -104,6 +112,46 @@ class ModelStore:
             rooms.discard(room_id)
         self._data["switched_off"] = sorted(rooms)
         self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+
+    def manual_vanes(self) -> set[str]:
+        """Rooms whose Automatic vane control the user has switched off.
+
+        A choice the user made, kept the way `switched_off` is and for the same
+        reason: a room whose vanes were set by hand must not have them moved
+        by the first evaluation after a restart. DR-049.
+        """
+        return set(self._data.get("manual_vanes", []))
+
+    def set_manual_vanes(self, room_id: str, manual: bool) -> None:
+        """Record the user's vane choice for one room, written out soon."""
+        rooms = self.manual_vanes()
+        if manual:
+            rooms.add(room_id)
+        else:
+            rooms.discard(room_id)
+        self._data["manual_vanes"] = sorted(rooms)
+        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+
+    def profile(self, room_id: str) -> dict[str, Any] | None:
+        """The stored capability profile for a room read on first load.
+
+        Rooms set up from 0.9.0 keep their profile in the room's own
+        configuration. A room configured before that has none there, and the
+        profile read from its units on first load is kept here (DR-048), so
+        the next restart does not depend on a unit being up.
+        """
+        found = self._data.get("profiles", {}).get(room_id)
+        return found if isinstance(found, dict) else None
+
+    def set_profile(self, room_id: str, profile: dict[str, Any]) -> None:
+        """Keep a room's profile, written out soon."""
+        self._data.setdefault("profiles", {})[room_id] = profile
+        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+
+    def forget_profile(self, room_id: str) -> None:
+        """Drop a stored profile, so the next load reads the units again."""
+        if self._data.get("profiles", {}).pop(room_id, None) is not None:
+            self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
 
     def group(self, group_name: str) -> dict[str, Any]:
         """Learned state for one outdoor unit group (0.8.9, finding 14).

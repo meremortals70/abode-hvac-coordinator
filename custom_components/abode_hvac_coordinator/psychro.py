@@ -237,3 +237,44 @@ def condensation_risk(
             "room may sweat, dehumidify rather than chase the setpoint"
         ),
     )
+
+
+def weather_works_against_compressor(
+    demand: str | None,
+    *,
+    band_low: float,
+    band_high: float,
+    outdoor_c: float | None,
+    outdoor_rh: float | None,
+    outdoor_wind_ms: float | None,
+    direct_sun: bool | None,
+) -> str | None:
+    """A reason the compressor would be working against the weather, or None.
+
+    DR-053. The floor under the learned projection, used only while the room
+    has not learned enough to project: no heating while outdoors feels at
+    least as warm as the band's lower bound, and no cooling while it feels no
+    warmer than the upper bound unless the sun is on the glass. Compared on the
+    comfort index scale, exactly as free cooling compares - this is the second
+    and last place the outdoor apparent temperature is compared, and like the
+    first it is a comparison and never an input to the room's own computation.
+
+    A missing outdoor reading answers None, never a guess.
+    """
+    if demand not in ("cool", "heat") or outdoor_c is None or outdoor_rh is None:
+        return None
+    apparent = apparent_temperature(outdoor_c, outdoor_rh, outdoor_wind_ms or 0.0)
+    if demand == "heat" and apparent >= band_low:
+        return (
+            f"coast: outdoors feels {apparent:.1f}, at or above the band's "
+            f"lower bound {band_low:.1f}, so heating would work against the "
+            "weather (no model yet to say how long it takes)"
+        )
+    if demand == "cool" and apparent <= band_high and direct_sun is not True:
+        return (
+            f"coast: outdoors feels {apparent:.1f}, at or below the band's "
+            f"upper bound {band_high:.1f} and the sun is not on the room, so "
+            "cooling would work against the weather (no model yet to say how "
+            "long it takes)"
+        )
+    return None

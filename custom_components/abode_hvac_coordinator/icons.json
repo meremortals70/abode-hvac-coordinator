@@ -65,6 +65,31 @@
         "state": {
           "off": "mdi:robot-off"
         }
+      },
+      "automatic_vane_control": {
+        "default": "mdi:air-filter",
+        "state": {
+          "off": "mdi:hand-back-right"
+        }
+      }
+    },
+    "select": {
+      "unit_mode": {
+        "default": "mdi:air-conditioner"
+      },
+      "fan_speed": {
+        "default": "mdi:fan"
+      },
+      "vertical_vane": {
+        "default": "mdi:arrow-up-down"
+      },
+      "horizontal_vane": {
+        "default": "mdi:arrow-left-right"
+      }
+    },
+    "number": {
+      "setpoint": {
+        "default": "mdi:thermometer-auto"
       }
     }
   },

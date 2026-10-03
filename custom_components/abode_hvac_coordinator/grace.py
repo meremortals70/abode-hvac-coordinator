@@ -64,6 +64,10 @@ class Announcement(StrEnum):
     FINAL_WARNING = "final_warning"
     #: Free cooling has just become advised for this room.
     FREE_COOLING = "free_cooling"
+    #: An opening has been open long enough that the unit will stop soon.
+    OPENING_FIRST_WARNING = "opening_first_warning"
+    #: The opening's grace has expired; the unit is being stopped now.
+    OPENING_FINAL_WARNING = "opening_final_warning"
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,3 +220,51 @@ def _minutes(span: timedelta) -> str:
     """A span in whole minutes, for the decision trace."""
     total = int(span.total_seconds() // 60)
     return f"{total} min"
+
+
+@dataclass(slots=True)
+class OpeningWarningState:
+    """Which warnings have been spoken for the current opening.
+
+    One opening, one first warning and one final warning, however many cycles
+    it stays open. Cleared the moment the opening closes.
+    """
+
+    first_sent: bool = False
+    final_sent: bool = False
+
+
+def evaluate_opening_warnings(
+    state: OpeningWarningState,
+    *,
+    open_since: datetime | None,
+    now: datetime,
+    grace: timedelta,
+    warning_grace: timedelta,
+    announce: bool,
+) -> Announcement:
+    """What to say about an open window or door this evaluation (DR-050).
+
+    The first warning is spoken one `warning_grace` before the unit stops, or
+    at once where the room's grace is shorter than that. The final warning is
+    spoken in the cycle the stop is commanded. Nothing is said where the room
+    has announcements off, or where nothing is open.
+    """
+    if open_since is None:
+        state.first_sent = False
+        state.final_sent = False
+        return Announcement.NONE
+    if not announce:
+        return Announcement.NONE
+    open_for = now - open_since
+    if open_for >= grace:
+        if state.final_sent:
+            return Announcement.NONE
+        state.first_sent = True
+        state.final_sent = True
+        return Announcement.OPENING_FINAL_WARNING
+    first_at = max(grace - warning_grace, timedelta(0))
+    if open_for >= first_at and not state.first_sent:
+        state.first_sent = True
+        return Announcement.OPENING_FIRST_WARNING
+    return Announcement.NONE

@@ -103,6 +103,13 @@ CONF_GRID_SIGN: Final = "grid_sign"
 #: whose boolean True/False migrates to "enforced"/"off" on read.
 CONF_ALLOW_COMFORT_REDUCTION: Final = "allow_comfort_reduction"
 
+#: 0.9.0, DR-050. How long an opening may stay open, in minutes, before the
+#: unit is stopped. Per room.
+CONF_OPENING_GRACE: Final = "opening_grace_minutes"
+
+#: 0.9.0, DR-048. The profile of what a room's units can do, read at setup.
+CONF_CAPABILITIES: Final = "capabilities"
+
 #: Power management does not touch this room at all. Comfort wins
 #: unconditionally, exactly as if power management were not configured.
 POWER_MANAGEMENT_OFF: Final = "off"
@@ -221,7 +228,14 @@ DEFAULT_BANDS: Final = {
 #: happen, but a lockout without an explanation is worse than a generic one.
 FALLBACK_LOCKOUT_REASON: Final = "Locked out"
 #: The reason shown in the trace while a room's Automatic control switch is off.
-SWITCHED_OFF_REASON: Final = "Automatic control switched off"
+#: DR-049: the coordinator sends nothing to the room; the unit is left as it is.
+SWITCHED_OFF_REASON: Final = "Automatic control is off, nothing is sent to this room"
+#: The reason shown while a room's units have not yet reported what they can
+#: do, so there is no profile to build a command from (DR-048).
+PROFILE_UNREAD_REASON: Final = (
+    "waiting for the air conditioner to report what it can do, nothing is "
+    "sent to this room"
+)
 CONF_BANDS: Final = "bands"
 CONF_BAND_LOW: Final = "low"
 CONF_BAND_HIGH: Final = "high"

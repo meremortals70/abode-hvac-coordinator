@@ -20,6 +20,10 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry."""
     coordinator = entry.runtime_data
     return {
+        # The last COMMAND_LOG_SIZE mode and setpoint commands sent to any unit,
+        # newest last (DR-052). A change to a unit with no matching entry here
+        # was not sent by this integration.
+        "commands": list(coordinator.actuator.command_log),
         "rooms": {
             room_id: {
                 "name": room.name,
@@ -39,6 +43,14 @@ async def async_get_config_entry_diagnostics(
                 "overhang_height_m": room.overhang_height_m,
                 "lockout_reason": room.lockout_reason,
                 "power_management": room.power_management,
+                "opening_grace_minutes": room.opening_grace_minutes,
+                "automatic_control": not coordinator.is_room_switched_off(room_id),
+                "automatic_vane_control": not coordinator.is_room_vanes_manual(
+                    room_id
+                ),
+                "capabilities": (
+                    None if room.capabilities is None else room.capabilities.to_dict()
+                ),
                 "bands": {
                     str(mode): {"low": band.low, "high": band.high}
                     for mode, band in room.bands.items()

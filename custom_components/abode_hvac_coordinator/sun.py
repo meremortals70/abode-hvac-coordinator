@@ -36,6 +36,7 @@ measure and never change.
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 
 #: Half-width of the acceptance angle either side of the window normal, in
 #: degrees. Beyond about 90 degrees off-normal the sun is behind the wall and
@@ -136,3 +137,54 @@ def azimuth_for_direction(direction: str | None) -> float | None:
     if direction is None:
         return None
     return WINDOW_DIRECTIONS.get(direction)
+
+
+def solar_position(
+    latitude: float, longitude: float, when: datetime
+) -> tuple[float, float]:
+    """The sun's azimuth and elevation, in degrees, at a place and time.
+
+    0.9.0, DR-053. Pure: the NOAA general solar position equations, good to a
+    degree or so, which is all a window facing one of eight compass directions
+    needs. Azimuth is clockwise from north. `when` must be timezone-aware.
+    The coordinator reads the sun's position from `sun.sun` for the present
+    moment; this is for the moments the room's projection has not reached yet.
+    """
+    utc = when.astimezone(UTC)
+    day = utc.timetuple().tm_yday
+    hour = utc.hour + utc.minute / 60.0 + utc.second / 3600.0
+    gamma = 2.0 * math.pi / 365.0 * (day - 1 + (hour - 12.0) / 24.0)
+    equation_of_time = 229.18 * (
+        0.000075
+        + 0.001868 * math.cos(gamma)
+        - 0.032077 * math.sin(gamma)
+        - 0.014615 * math.cos(2 * gamma)
+        - 0.040849 * math.sin(2 * gamma)
+    )
+    declination = (
+        0.006918
+        - 0.399912 * math.cos(gamma)
+        + 0.070257 * math.sin(gamma)
+        - 0.006758 * math.cos(2 * gamma)
+        + 0.000907 * math.sin(2 * gamma)
+        - 0.002697 * math.cos(3 * gamma)
+        + 0.00148 * math.sin(3 * gamma)
+    )
+    solar_minutes = hour * 60.0 + equation_of_time + 4.0 * longitude
+    hour_angle = math.radians(solar_minutes / 4.0 - 180.0)
+    lat = math.radians(latitude)
+    sin_elevation = math.sin(lat) * math.sin(declination) + math.cos(
+        lat
+    ) * math.cos(declination) * math.cos(hour_angle)
+    elevation = math.degrees(math.asin(max(-1.0, min(1.0, sin_elevation))))
+    azimuth = (
+        math.degrees(
+            math.atan2(
+                math.sin(hour_angle),
+                math.cos(hour_angle) * math.sin(lat)
+                - math.tan(declination) * math.cos(lat),
+            )
+        )
+        + 180.0
+    ) % 360.0
+    return azimuth, elevation

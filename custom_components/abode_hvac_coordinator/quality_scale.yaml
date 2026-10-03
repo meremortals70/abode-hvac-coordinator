@@ -20,20 +20,17 @@ rules:
   config-flow-test-coverage:
     status: todo
     comment: |
-      tests/test_config_flow.py covers the room, bands, global menu, outdoor,
-      tariff, forecast and power steps and, as of 0.8.11, has actually been
-      run green — 28 tests, unchanged since 0.8.10, against Home Assistant
-      2025.1.4 under pytest-homeassistant-custom-component 0.13.205. 0.8.11
-      added no new config-flow steps or fields.
+      tests/test_config_flow.py covers the room, outdoor-unit, bands, global
+      menu, outdoor, tariff, forecast and power steps, and from 0.9.0 the new
+      read of what the air conditioner can do: refusing a room whose unit is
+      unavailable, missing or one of two heads, storing the profile, the
+      two-head intersection, the opening grace, and editing a room reading its
+      unit again. All 37 tests pass against Home Assistant 2026.8.3, the version
+      this integration targets, on Python 3.14.
 
-      Still todo, for two reasons. The run was against 2025.1.4, not the
-      2026.8.x this integration targets; the build sandbox is Python 3.12 and
-      cannot install a newer Home Assistant. And running it green for the
-      first time exposed a stale assertion — the naive-forecast test asserted
-      an inline forecast fetch that 0.8.4 replaced with a background task, and
-      had never been executed to find out. There is no reason to assume that
-      was the only one. Not "done" until it has run against the targeted
-      version.
+      Still todo because config_flow.py is covered at 90% by the whole suite, not
+      in full: the options flow's remove-room, tariff, forecast and several
+      power-step error paths have no test of their own.
   config-flow: done
   dependency-transparency:
     status: exempt
@@ -81,21 +78,15 @@ rules:
   test-coverage:
     status: todo
     comment: |
-      The pure modules have 364 tests in tests/test_core.py, run directly
-      with python3 and passing. As of 0.8.11 the Home Assistant side tests
-      run too: 443 tests pass in total across test_core, test_attributes,
-      test_config_flow and test_init. 0.8.11 added tests for the price-aware
-      coast deferral (findings 12/19b), the direct solar offset ahead of the
-      battery in the power budget (finding 18), re-asserting the commanded
-      setpoint from live entity state rather than memory (finding 19a), and
-      the corrected zero-flow handling in the grid sign check — each of the
-      new mechanisms checked by reinstating the defect and confirming the
-      test fails for the stated reason before being restored.
+      The suite is 631 tests (487 over the pure modules) and passes
+      against Home Assistant 2026.8.3 on Python 3.14. Measured line coverage of
+      the integration at 0.9.0 is 92% overall. The pure decision modules are at
+      98% or better; the gaps are actuator.py (77%), __init__.py (76%) and
+      coordinator.py (84%), mostly failure paths. The silver tier asks for more
+      than 95% in every module, so this stays todo.
 
-      Still todo for the same reason as config-flow-test-coverage: the run is
-      against Home Assistant 2025.1.4, not the 2026.8.x targeted, and two
-      tests that had never executed were found to be asserting behaviour the
-      component had already moved away from.
+      Every new decision in 0.9.0 was checked by putting the defect back and
+      watching its test fail; that is recorded in the changelog.
 
   # --- Gold ---
   devices: done
@@ -125,8 +116,10 @@ rules:
   entity-disabled-by-default:
     status: exempt
     comment: |
-      Three entities per room, all of them the reason the integration exists.
-      None is noisy enough to warrant being disabled by default.
+      Each room carries its sensors, two switches and the controls its air
+      conditioner offers (mode, fan speed, vanes, setpoint). All of them are what
+      the integration exists to provide, and none is noisy enough to warrant
+      being disabled by default.
   entity-translations: done
   exception-translations: done
   icon-translations: done

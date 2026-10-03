@@ -46,7 +46,9 @@ period before it does anything.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any, Final
 
 #: Samples before a coefficient is trusted, however tight its variance looks.
@@ -92,6 +94,16 @@ APPROACH_AT_SETPOINT_C: Final = 0.5
 APPROACH_CLOSE_C: Final = 1.5
 APPROACH_WORKING_C: Final = 3.0
 
+#: The approach each bin stands for when the learned rate is turned back into
+#: an approach (0.9.0, DR-054): the middle of the bin, and for the open-ended
+#: pulldown bin a value a little past its lower edge. The most a unit is ever
+#: asked to work is the last of these.
+BIN_REPRESENTATIVE_APPROACH_C: Final[tuple[float, ...]] = (0.25, 1.0, 2.25, 4.0)
+
+#: Step of the unaided projection, in hours (0.9.0, DR-053). Five minutes: a
+#: room's time constant is an hour or more, and a finer step buys nothing.
+PROJECTION_STEP_HOURS: Final = 5.0 / 60.0
+
 
 def approach_bin(approach_c: float) -> int:
     """Which of the four operating-point bins an approach magnitude falls in.
@@ -106,6 +118,38 @@ def approach_bin(approach_c: float) -> int:
     if magnitude < APPROACH_WORKING_C:
         return 2
     return 3
+
+
+@dataclass(frozen=True, slots=True)
+class UnaidedOutlook:
+    """What an unaided projection says about a room and its band.
+
+    `return_minutes` is how long until the room is back inside its band and
+    stays there to the end of the projection: 0.0 for a room already inside
+    and staying inside, None where it never gets back in and stays.
+    """
+
+    return_minutes: float | None
+
+    @property
+    def returns(self) -> bool:
+        """Whether the room is back in band, for good, within the projection."""
+        return self.return_minutes is not None
+
+
+def unaided_outlook(
+    points: list[float],
+    *,
+    lower_c: float,
+    upper_c: float,
+    step_hours: float = PROJECTION_STEP_HOURS,
+) -> UnaidedOutlook:
+    """Read a projection against the band: when is it back in, for good."""
+    inside = [lower_c <= value <= upper_c for value in points]
+    for index in range(len(points)):
+        if all(inside[index:]):
+            return UnaidedOutlook(index * step_hours * 60.0)
+    return UnaidedOutlook(None)
 
 
 def _mean_approach(obs: Observation) -> float:
@@ -400,6 +444,80 @@ class ThermalModel:
             return None
         projected = indoor_c + rate * hours
         return lower_c <= projected <= upper_c
+
+    def approach_for_rate(self, rate_c_per_hour: float) -> float | None:
+        """The approach at which the unit moves the room at a given rate.
+
+        0.9.0, DR-054. The learned rate against approach, inverted: the bins'
+        rates are the curve, taken as non-decreasing (a bin that learned a
+        lower rate than the bin below it is held at the lower bin's rate, so
+        the curve can be inverted), and read between the bins' representative
+        approaches by straight lines. A rate above the curve's top asks for the
+        most the unit does. None where a bin and the pooled coefficient have
+        both not converged, or where the unit's top rate is not positive: the
+        room has not learned enough to say.
+        """
+        if rate_c_per_hour <= 0:
+            return 0.0
+        points: list[tuple[float, float]] = [(0.0, 0.0)]
+        best = 0.0
+        for representative in BIN_REPRESENTATIVE_APPROACH_C:
+            rate = self.sensible_rate_at(representative)
+            if rate is None:
+                return None
+            best = max(best, rate)
+            points.append((representative, best))
+        top_approach, top_rate = points[-1]
+        if top_rate <= 0:
+            return None
+        if rate_c_per_hour >= top_rate:
+            return top_approach
+        for (low_a, low_r), (high_a, high_r) in pairwise(points):
+            if low_r <= rate_c_per_hour <= high_r:
+                if high_r - low_r < 1e-9:
+                    return low_a
+                share = (rate_c_per_hour - low_r) / (high_r - low_r)
+                return low_a + share * (high_a - low_a)
+        return top_approach
+
+    def project_unaided(
+        self,
+        indoor_c: float,
+        *,
+        outdoor_at: Callable[[float], float | None],
+        sun_at: Callable[[float], float | None],
+        hours: float,
+        step_hours: float = PROJECTION_STEP_HOURS,
+    ) -> list[float] | None:
+        """The room's temperature with nothing running, step by step.
+
+        0.9.0, DR-053. Steps `dT/dt = k_loss * (T_out(t) - T) + k_solar *
+        sun(t)` forward from the room's reading. `outdoor_at(t)` is the
+        outdoor temperature `t` hours from now and `sun_at(t)` the share of
+        full sun on the glass at that moment, 0 to 1. Returns the temperature
+        at each step including the start, or None where the model cannot say:
+        `k_loss` not converged, no outdoor figure, or sun on the glass with
+        `k_solar` not converged. Absence of a coefficient is not a zero.
+        """
+        if not self.k_loss.converged:
+            return None
+        steps = max(1, math.ceil(hours / step_hours - 1e-9))
+        temperature = indoor_c
+        points = [temperature]
+        for index in range(steps):
+            elapsed = index * step_hours
+            outdoor = outdoor_at(elapsed)
+            if outdoor is None:
+                return None
+            sun = sun_at(elapsed) or 0.0
+            if sun > 0 and not self.k_solar.converged:
+                return None
+            rate = self.k_loss.value * (outdoor - temperature)
+            if sun > 0:
+                rate += self.k_solar.value * sun
+            temperature += rate * step_hours
+            points.append(temperature)
+        return points
 
     def sensible_rate_at(self, approach_c: float) -> float | None:
         """The best available `k_sensible` for one approach.

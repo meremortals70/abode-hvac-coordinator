@@ -28,6 +28,7 @@ from .const import (
     CONF_LOCKOUT_REASON,
     CONF_OCCUPIED_AFTER,
     CONF_OPENING_ENTITIES,
+    CONF_OPENING_GRACE,
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
     CONF_PRESENCE_ENTITY,
@@ -51,6 +52,7 @@ from .grace import (
     DEFAULT_WARNING_GRACE,
 )
 from .models import Mode
+from .modes import DEFAULT_OPENING_GRACE_MINUTES
 
 #: Modes that carry a band of their own. Unoccupied is off, precondition uses
 #: the occupied band, coast inherits, lockout never actuates.
@@ -114,11 +116,25 @@ def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_WARNING_GRACE: user_input.get(CONF_WARNING_GRACE),
         CONF_ANNOUNCE: bool(user_input.get(CONF_ANNOUNCE, False)),
         CONF_ANNOUNCE_TARGETS: user_input.get(CONF_ANNOUNCE_TARGETS, []),
+        CONF_OPENING_GRACE: opening_grace_from_input(user_input),
         CONF_LOCKOUT_REASON: _lockout_reason(user_input.get(CONF_LOCKOUT_REASON)),
         CONF_ALLOW_COMFORT_REDUCTION: power_management_from_raw(
             user_input.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
         ),
     }
+
+
+def opening_grace_from_input(user_input: dict[str, Any]) -> float:
+    """The room form's opening grace, in minutes (DR-050).
+
+    Five where the field is blank or not a usable number. Zero is allowed and
+    means the unit is stopped as soon as an opening is seen open.
+    """
+    try:
+        minutes = float(user_input.get(CONF_OPENING_GRACE))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_OPENING_GRACE_MINUTES
+    return minutes if minutes >= 0 else DEFAULT_OPENING_GRACE_MINUTES
 
 
 def head_groups_from_input(user_input: dict[str, Any]) -> dict[str, str]:
@@ -213,6 +229,7 @@ def default_grace_suggestions() -> dict[str, float | bool]:
         CONF_VACANT_AFTER: DEFAULT_VACANT_AFTER.total_seconds() / 60,
         CONF_WARNING_GRACE: DEFAULT_WARNING_GRACE.total_seconds() / 60,
         CONF_ANNOUNCE: False,
+        CONF_OPENING_GRACE: DEFAULT_OPENING_GRACE_MINUTES,
     }
 
 
