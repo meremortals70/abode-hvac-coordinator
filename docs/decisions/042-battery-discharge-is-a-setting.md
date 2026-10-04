@@ -29,7 +29,7 @@ energy alone.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `config_flow.py:817` - `CONF_BATTERY_MAX_DISCHARGE_KW` - the field
 - `power.py:115-118` - `max_discharge_kw` - bounds the allowance

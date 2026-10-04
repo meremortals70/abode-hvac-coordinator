@@ -96,10 +96,25 @@ unaided for the next hour, and the tariff window permits coasting.
 There is no question asked and no confirmation. It is a continuous decision, not
 a state you enter and have to leave.
 
-**The room is never allowed to drift out of band while coasting.** The prediction
-is checked against the same band that would apply otherwise. If the prediction
-turns out to be wrong — the model is learned, not perfect — the next evaluation
-sees the room out of band and the compressor resumes, regardless of price.
+**A room that was in band is never allowed to drift out of it while coasting.**
+The prediction is checked against the same band that would apply otherwise. If
+the prediction turns out to be wrong — the model is learned, not perfect — the
+next evaluation sees the room out of band and the compressor resumes, regardless
+of price.
+
+**A room that was already out of band can coast for a limited time.** If the
+weather will bring it back (see [Modes](modes.md#letting-the-weather-do-the-work)),
+it is left to come back, for no longer than the compressor itself would have
+taken plus ten minutes. That is the one case in which a coasting room is out of
+its band, and it is on purpose. Before 0.9.0 this paragraph said a coasting room
+could never be out of band, which stopped being true when the weather coast was
+added; it was not corrected until 0.9.1.
+
+**Coasting is not off.** The compressor stops and the unit stays in fan-only mode
+on its quietest speed, so the room's air stays mixed while the weather does the
+work. A unit with no fan-only mode is stopped instead. Off is kept for lockout, an
+empty room, an opening held past its grace, a direction the unit cannot deliver
+and a deferred precondition. (DR-057)
 
 ## Someone leaves the room briefly
 

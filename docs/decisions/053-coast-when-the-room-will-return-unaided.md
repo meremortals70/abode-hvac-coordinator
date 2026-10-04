@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-032 (the end-point check is replaced; the one-hour hold for a room inside its band is unchanged) |
+| Status | Accepted; amends DR-032 (the end-point check is replaced; the one-hour hold for a room inside its band is unchanged); a coasting room is left on its fan by DR-057 |
 | Since | 0.9.0 (2026-10-03) |
 | Origin | Instruction, 2026-10-03: if outdoors is warmer than the room's comfort level the aircon should never heat it, it should coast or fan and let natural heat exchange bring the room back in band, and the reverse when it is cold outside. Window direction, sun and outside weather are the inputs |
-| Related | DR-006, DR-032, DR-035, DR-044, DR-051, DR-054 |
+| Related | DR-006, DR-032, DR-035, DR-044, DR-051, DR-054, DR-057 |
 
 ## Decision
 
@@ -87,12 +87,12 @@ being run. The outdoor apparent temperature is compared in a second place,
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
-- `thermal.py:483` - `def project_unaided` - the stepped projection
+- `thermal.py:490` - `def project_unaided` - the stepped projection
 - `thermal.py:140` - `def unaided_outlook` - when the room is back in band for good
 - `sun.py:142` - `def solar_position` - the sun at a moment that has not happened yet
-- `coordinator.py:2249` - `def _unaided_inputs` - forecast, sun on the window and the return limit
+- `coordinator.py:2254` - `def _unaided_inputs` - forecast, sun on the window and the return limit
 - `coordinator.py:1459` - `def _predicted_to_hold` - the in-band hold now read from the projection
-- `modes.py:538` - `def _weather_coast` - the coast decision and its return limit
+- `modes.py:561` - `def _weather_coast` - the coast decision and its return limit
 - `psychro.py:242` - `def weather_works_against_compressor` - the fallback until the model converges

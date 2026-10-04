@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-055 |
 | Since | Design v0.4 |
 | Origin | Design v0.4, replacing the index in use at v0.3 |
 | Related | DR-009, DR-026 |
@@ -34,7 +34,7 @@ opinion; `docs/known-limitations.md` says so.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `hci.py:162` - `comfort_index` - the indoor index
 - `hci.py:215` - `apparent_temperature` - the outdoor form, with wind

@@ -12,7 +12,7 @@ Evaluated top to bottom. The first match wins.
 | `LOCKOUT` | A lockout reason is chosen for this room | Never actuates. Beats everything |
 | `PRECONDITION` | A heading-home request is active | Drives to the occupied band, ignoring presence |
 | `PRECOOL` | A precool window is declared and demand is forecast ahead | Drives to the low bound to bank thermal mass |
-| `COAST` | The weather will bring the room back into band, or its band holds unaided, and (for a room already in band) the window permits coasting | No compressor |
+| `COAST` | The weather will bring the room back into band, or its band holds unaided, and (for a room already in band) the window permits coasting | No compressor; the unit stays on its quietest fan (DR-057) |
 | `SLEEP` | The sleep schedule is on | Sleep band |
 | `OCCUPIED` | Presence detected, or presence unknown | Occupied band |
 | `UNOCCUPIED` | No presence | **Off.** Not a wider band |

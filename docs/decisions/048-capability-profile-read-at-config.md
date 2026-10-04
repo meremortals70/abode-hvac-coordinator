@@ -57,14 +57,14 @@ is a hardcoded 1.0, not read from the unit.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `capabilities.py:36` - `class RoomCapabilities` - the stored profile
 - `capabilities.py:122` - `def intersect` - what two heads can both do
 - `actuator.py:131` - `def read_capabilities` - one entity's profile, None if it reports nothing
 - `actuator.py:176` - `def profile_from_states` - a whole room's profile, None if any head is missing
 - `config_flow.py:401` - `climate_not_reporting` - setup refuses a room whose unit is not reporting
-- `coordinator.py:2202` - `def _async_ensure_profiles` - first-load read for a room with no profile, kept in the store
+- `coordinator.py:2207` - `def _async_ensure_profiles` - first-load read for a room with no profile, kept in the store
 - `store.py:146` - `def set_profile` - the kept profile
 - `actuator.py:214` - `def resolve_hvac_mode` - modes resolved against the profile
 - `coordinator.py:1025` - `inactive_reason` - a room with no profile is evaluated and sent nothing

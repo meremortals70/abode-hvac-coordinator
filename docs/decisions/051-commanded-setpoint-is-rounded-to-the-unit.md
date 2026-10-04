@@ -60,7 +60,7 @@ trace reason could name a unit that does not hold what it was sent.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `regulate.py:383` - `def quantise_setpoint` - nearest step from the unit's minimum, inside its range, toward a ceiling
 - `regulate.py:413` - `def effective_deadband` - half the step, never under 0.3 C

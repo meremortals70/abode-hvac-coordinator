@@ -29,7 +29,7 @@ it until the next evaluation.
 | Room unoccupied | Stop |
 | An opening in the room is open, longer than the room's grace (five minutes by default) | Stop |
 | An opening in the room is open, within the grace, or its age is unknown | **Leave alone** — see [Behaviour](behaviour.md#a-window-or-door-opens) |
-| Coasting | Stop |
+| Coasting | **Fan only**: the compressor stops and the unit stays on its quietest fan. A unit with no fan-only mode is stopped (DR-057) |
 | Preconditioning, and the pull can still wait | Stop |
 | The room needs a direction this unit cannot deliver | Stop |
 | No grid import permitted and the battery cannot carry the room | Stop |

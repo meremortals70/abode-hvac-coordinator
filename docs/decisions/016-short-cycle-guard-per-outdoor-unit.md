@@ -45,7 +45,7 @@ outside it.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `regulate.py:119-120` - `MIN_RUN` - 10 and 5 minutes
 - `regulate.py:134` - `CompressorState` - keyed by outdoor unit

@@ -32,7 +32,7 @@ The horizon is the same one hour the coast test trusts, never further.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `tariff.py:294` - `cheaper_interval_ahead` - the next cheaper interval
 - `coordinator.py:1477` - `_cheaper_window_imminent` - holds until then

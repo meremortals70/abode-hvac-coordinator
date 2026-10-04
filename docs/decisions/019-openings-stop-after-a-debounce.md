@@ -30,6 +30,6 @@ For two minutes after an opening, the room holds its current state.
 
 ## In the code
 
-Checked against: 0.9.0. **Superseded by DR-050.** The fixed two-minute `OPENING_STOP_DEBOUNCE` is gone: the grace is a per-room setting, five minutes by default, and an opening of unknown age now holds the unit instead of stopping it.
+Checked against: 0.9.1. **Superseded by DR-050.** The fixed two-minute `OPENING_STOP_DEBOUNCE` is gone: the grace is a per-room setting, five minutes by default, and an opening of unknown age now holds the unit instead of stopping it.
 
 - `modes.py:356-375` - `opening_open` - hold, then off

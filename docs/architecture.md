@@ -399,9 +399,12 @@ than run the compressor.
 | A room coasts when the weather will bring it back, by a stepped projection | Built, tested. New in 0.9.0 (DR-053). Replaces the straight-line end-point check |
 | The room loop is a PID built on the learned model, with a trim per direction | Built, tested. New in 0.9.0 (DR-054). Replaces the integral-only loop |
 | Per-room opening grace, five minutes by default, with spoken warnings | Built, tested. New in 0.9.0 (DR-050). Replaces the fixed two-minute stop |
+| The comfort index never changes with the unit's own air | Built, tested. New in 0.9.1 (DR-055). Only an air-movement entity the user configured counts |
+| The room loop asks for what the unit can deliver, and walks its setpoint back in band | Built, tested. New in 0.9.1 (DR-056) |
+| Coasting is the compressor off and the unit on its fan | Built, tested. New in 0.9.1 (DR-057). Replaces coast commanding the unit off |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.0 it is 631 tests (487 over the pure modules),
+pure modules. At 0.9.1 it is 644 tests (491 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two

@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted; amended by DR-053 |
+| Status | Accepted; amended by DR-053; the "commands the unit off" is superseded by DR-057 |
 | Since | Design v0.4; in the code from 0.6.0 (2026-08-16) |
 | Origin | Design v0.4 |
-| Related | DR-017, DR-025, DR-035, DR-053 |
+| Related | DR-017, DR-025, DR-035, DR-053, DR-057 |
 
 ## Decision
 
@@ -36,7 +36,7 @@ under investigation against this record.
 
 ## In the code
 
-Checked against: 0.9.0. **Partly.** The one-hour hold still decides COAST for a room inside its band, but `_predicted_to_hold` now reads the stepped projection of DR-053 and is true only for a room in band now and staying there. A room outside its band no longer coasts on a straight-line end point; DR-053's return limit decides it. `holds_through` remains, used only by the cheaper-window deferral (DR-035).
+Checked against: 0.9.1. **Partly.** A coasting unit is no longer commanded off: it is left on its fan (DR-057). The one-hour hold still decides COAST for a room inside its band, but `_predicted_to_hold` now reads the stepped projection of DR-053 and is true only for a room in band now and staying there. A room outside its band no longer coasts on a straight-line end point; DR-053's return limit decides it. `holds_through` remains, used only by the cheaper-window deferral (DR-035).
 
 - `const.py:26` - `COAST_HORIZON_HOURS` - one hour
 - `modes.py:108-110` - `Mode.COAST` - entered when the band holds and the window permits

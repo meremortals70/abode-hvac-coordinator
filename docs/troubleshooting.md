@@ -17,7 +17,7 @@ Check `actuator` on the mode sensor. `rejected` says why.
 | `an opening in this room is open` | A window or door has been open longer than the room's grace (five minutes unless changed). The unit is off until it closes |
 | `Automatic control is off, nothing is sent to this room` | The room's Automatic control switch is off. The unit is **not** off: it has been left exactly as it was |
 | `waiting for the air conditioner to report what it can do` | The room has not yet read what its air conditioner offers, so nothing is sent to it. It starts by itself as soon as the air conditioner reports. See [Configuration](configuration.md#what-the-air-conditioner-can-do) |
-| `coasting, model predicts the band holds` | Working as designed |
+| `coasting, model predicts the band holds; this unit has no fan-only mode, so it is off` | A unit with no fan-only mode coasts off. One that has it is left on its fan and is not in this list |
 | `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |
 | `this unit cannot cool` / `cannot heat` | The room needs a direction the unit does not have |
 | `no grid import permitted…` | The tariff forbids import and the battery cannot carry the room |
@@ -66,6 +66,17 @@ lockout reason if the room is deliberately inactive.
 
 The room has no sleep schedule configured. Without one the sleep band is dead
 config. Add a Schedule helper and select it as the room's sleep schedule.
+
+## The unit keeps switching between running and off
+
+Check the mode sensor's `hci` and `hci_air_only` while it happens. From 0.9.1 the
+difference between them is a constant 1.0 unless you configured an air-movement
+entity; before that it moved by a full point each time the unit started or
+stopped, and that was the cause. If `hci` still jumps by a point or more with the
+room reading unchanged, something else is moving it, and the `reasons` list says
+what: the sun correction, an air-movement entity, or a heat source. If the room
+temperature itself changes by that much between readings, the room sensor is the
+fault, not the controller.
 
 ## Coast never happens
 

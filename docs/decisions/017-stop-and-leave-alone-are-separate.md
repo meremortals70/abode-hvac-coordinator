@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; coasting no longer stops the unit, DR-057 |
 | Since | 0.8.7 (2026-08-22) |
 | Origin | Finding 20 |
 | Related | DR-016, DR-018, DR-019 |
@@ -35,10 +35,10 @@ path `NONE`. The demand forecast follows the same verdict (finding 23).
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `models.py:40` - `ActuatorStep` - OFF and NONE as distinct values
 - `actuator.py:365-368` - `ActuatorStep.OFF` - commands off
 - `actuator.py:370-377` - `ActuatorStep.NONE` - sends nothing
 - `regulate.py:551-552` - `ActuatorStep.NONE` - NONE keeps the room's last demand
-- `coordinator.py:2082-2083` - `will_run` - forecast follows the verdict
+- `coordinator.py:2086-2087` - `will_run` - forecast follows the verdict

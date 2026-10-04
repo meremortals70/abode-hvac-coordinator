@@ -32,7 +32,7 @@ One direction per room: a corner room with two glazed walls is approximated.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `sun.py:96` - `sun_on_window` - the geometry
 - `modes.py:463-466` - `direct_sun` - covers gated on it

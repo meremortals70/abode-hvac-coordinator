@@ -30,9 +30,9 @@ target plus and minus 1.0 C.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms**, with the list a command is checked against now the one the unit advertised when the room was set up (DR-048), and the live entity consulted only to skip a command already in effect.
+Checked against: 0.9.1. **Conforms**, with the list a command is checked against now the one the unit advertised when the room was set up (DR-048), and the live entity consulted only to skip a command already in effect.
 
 - `actuator.py:214` - `resolve_hvac_mode` - mode resolved against the entity
-- `actuator.py:487` - `_async_set_temperature` - single or range
+- `actuator.py:441` - `_async_set_temperature` - single or range
 - `actuator.py:94` - `RANGE_DEADBAND_C` - 1.0 C either side
-- `coordinator.py:2151` - `_capabilities` - fed into the decision
+- `coordinator.py:2156` - `_capabilities` - fed into the decision

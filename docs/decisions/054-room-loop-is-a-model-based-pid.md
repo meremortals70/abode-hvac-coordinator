@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted; supersedes DR-015 |
+| Status | Accepted; supersedes DR-015; amended by DR-056 |
 | Since | 0.9.0 (2026-10-03) |
 | Origin | Instruction, 2026-10-03: the component learns the room, so it should know when the room will arrive in band and hold it there gently |
-| Related | DR-003, DR-015, DR-051, DR-053 |
+| Related | DR-003, DR-015, DR-051, DR-053, DR-056 |
 
 ## Decision
 
@@ -59,7 +59,7 @@ unit as the inner loop. The loop and DR-053 share the drift model.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `regulate.py:469` - `def pid_setpoint` - feed-forward, proportional and derivative terms
 - `regulate.py:423` - `def track_room_rate` - the room's filtered rate of change, from distinct readings

@@ -49,6 +49,6 @@ for has to argue against the brief, not just for itself.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms** at the level of the whole integration.
+Checked against: 0.9.1. **Conforms** at the level of the whole integration.
 
 - `manifest.json:2` - `abode_hvac_coordinator` - the domain

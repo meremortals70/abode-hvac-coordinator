@@ -35,7 +35,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Illuminance sensor | No | Recorded only; not acted on |
 | Heat source in the room | No | Equipment heat is not counted toward comfort. A binary sensor that is on while a workstation, server or dryer is running — heat a wall sensor barely sees and a person sitting next to it certainly does |
 | Outdoor unit, per air conditioner | No | Each air conditioner is treated as having its own compressor. See [Outdoor units](#outdoor-units) |
-| Fan or air movement | No | Falls back to whether the air conditioner is running, which is not the same question. A binary sensor, fan or switch that is on while the room's air is moving |
+| Fan or air movement | No | Still air is assumed. Only a binary sensor, fan or switch you name here, that is on while the room's air is moving (a ceiling fan, say), takes a point off the index. The air conditioner's own state is never used for this (DR-055) |
 | Windows and doors | No | No opening interlock. When one is configured and open for longer than the grace below, the room's air conditioner is switched off |
 | Wait this long with a window or door open before stopping | Seeded | 5 minutes. The unit is left alone for this long after an opening opens, in case it closes again. With announcements on, a warning is spoken 3 minutes before it stops and another as it does. Set per room |
 | Blinds | No | Covers are never used |

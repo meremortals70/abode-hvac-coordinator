@@ -40,7 +40,7 @@ it is uncomfortably hot. Three corrections close it:
 | Correction | Adds | When |
 |---|---|---|
 | Sun on the glass | up to +3.0 HCI | Only when the sun actually reaches the glass, scaled by how far the covers are closed |
-| Still air | +1.0 HCI | No fan, and the air conditioner not running |
+| Still air | +1.0 HCI | Always, unless an air-movement entity you configured, such as a ceiling fan, is on. The air conditioner's own state never counts (DR-055) |
 | Heat load in the room | +1.0 HCI | A configured heat-source entity is on |
 
 **Eaves are checked before anything else.** A window under a soffit is fully
@@ -210,3 +210,14 @@ Wind is not applied indoors. Air movement is a boolean penalty
 (`STILL_AIR_HCI`) rather than a speed, because no household has an indoor
 anemometer and a fan's effect on a person depends on where they are sitting.
 That is a coarser treatment than the outdoor one and deliberately so.
+
+**The air conditioner's own air never moves the index.** Until 0.9.1, with no
+air-movement entity configured, the index counted the air as moving whenever the
+unit was in any mode but off. The index then fell by a whole point the moment the
+unit started and rose by a whole point the moment it stopped, with the room
+sensor unchanged, so the controller was deciding from a number its own action had
+just moved. On 4 October 2026 that turned the Office's unit off and on every 37
+minutes. A sensor out of the unit's airflow, as a sensor should be, does not feel
+the unit's wind at all. The component cannot change the index by acting: only a fan
+you configured counts, and with none, air is assumed still, which errs toward
+comfort. (DR-055)

@@ -30,7 +30,7 @@ Dry mode can be chosen on the room's own measured behaviour (DR-029).
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `thermal.py:307` - `_observe_sensible` - sensible
 - `thermal.py:308` - `_observe_latent` - latent

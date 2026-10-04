@@ -36,7 +36,7 @@ for it. Until the rates converge at all, the threshold (DR-027) decides.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `modes.py:228` - `_latent_route` - both routes projected
 - `modes.py:203` - `DRY_MODE_ADVANTAGE` - 1.25

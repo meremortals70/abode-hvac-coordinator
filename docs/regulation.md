@@ -53,6 +53,23 @@ had a target of 23.2 °C, a heat demand and a commanded setpoint of 22.8 °C,
 because a trim of −0.4 °C learned while cooling was applied to heating. Each
 direction now has its own, and the trace publishes the one in force.
 
+**The loop never asks for more than the unit can deliver.** The learned rate
+against approach flattens once the unit is doing the most it does. Asking for a
+larger approach beyond that buys no more cooling and only lowers the setpoint, so
+the loop asks for the smallest approach at which the unit reaches its best rate.
+On 4 October 2026 the Office had learned a nearly flat curve, the loop asked for
+4 °C below the room for an error of 0.3 °C, and the unit sat at 19 °C for hours.
+(DR-056)
+
+**A running unit in band is walked back.** Inside the band the decision is to
+leave the unit alone, which used to leave a setpoint put there by a pull-down
+where it was until the room overshot. A unit that is running against a setpoint
+in cool, heat, heat-cool or auto, with the room in band, is now sent the loop's
+setpoint whenever it differs from the unit's own by at least a step and at least
+half a degree. Only the setpoint is sent, never a mode, never to a unit that is
+off, on its fan or drying, and never while an opening is being held for its
+grace. (DR-056)
+
 **Where the room has not learned enough, nothing changes.** Until the drift and
 the rate against approach have both converged the loop sends the solved target
 plus the trim for the direction, which is exactly what it sent before. An

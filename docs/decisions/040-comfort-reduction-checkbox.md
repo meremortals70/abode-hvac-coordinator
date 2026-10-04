@@ -34,7 +34,7 @@ complete gate. DR-041 removed it.
 
 ## In the code
 
-Checked against: 0.9.0. **Superseded.** The stored key is unchanged; a stored true reads as
+Checked against: 0.9.1. **Superseded.** The stored key is unchanged; a stored true reads as
 "enforced" and false as "off".
 
 - `forms.py:60` - `power_management_from_raw` - old booleans mapped

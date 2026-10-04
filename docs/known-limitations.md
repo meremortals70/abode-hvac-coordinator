@@ -7,7 +7,7 @@ you were told about.
 
 Every build runs continuously against a live air conditioner in Jason's own
 office, used as the test room. Faults found there and reported back are what
-has driven every real-world fix in this project's history. The 631 tests and
+has driven every real-world fix in this project's history. The 644 tests and
 the clean install/unload are what an automated pass can confirm on their
 own — they do not, by themselves, prove a compressor, blind or fan did the
 right thing on real equipment; that proof comes from the office room, not
@@ -123,6 +123,16 @@ warm, not a room abandoned, and the limit (the compressor's own estimated time
 plus ten minutes) bounds it. Humidity is held at its current reading across the
 hour when the band is turned into dry-bulb limits.
 
+## The loop still asks the unit for what it learned, not for what it can do
+
+DR-056 stops the loop asking for a rate beyond the unit's best learned rate. It
+does not make the learned rate right. The Office's unit shows a return-air
+temperature about 3 °C below the room's, so the unit's own thermostat can be
+satisfied while the room is not, and the learned curve there is nearly flat
+(1.2 to 1.7 °C per hour from the smallest approach to the largest). Until more of
+the pull-down range has been seen the loop is working from a curve it has little
+evidence for, and it says so only by the size of the numbers in its reasons.
+
 ## A slow sensor limits what the room loop can do
 
 The derivative term works on the room's own reading, and a sensor that reports
@@ -149,8 +159,8 @@ room until it does. The room's trace says it is waiting. It is not turned off.
 
 ## Test coverage is 92%, not the 95% the silver tier asks for
 
-The whole suite covers 92% of the integration's lines at 0.9.0. The gaps are in
-the actuator (77%), the integration setup and unload (76%) and the coordinator
+The whole suite covers 92% of the integration's lines at 0.9.1. The gaps are in
+the actuator (79%), the integration setup and unload (76%) and the coordinator
 (84%), mostly failure paths: a service call that raises, a feed that goes stale
 mid-evaluation. The pure decision modules are at 98% or better.
 

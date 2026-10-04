@@ -41,7 +41,7 @@ trim pins at its limit, the trace says the unit is not keeping up.
 
 ## In the code
 
-Checked against: 0.9.0. **Superseded by DR-054.** The integrator, its deadband and its anti-windup remain as the integral term of the loop; the proportional and derivative terms this record refused now exist, and the trim is kept per direction.
+Checked against: 0.9.1. **Superseded by DR-054.** The integrator, its deadband and its anti-windup remain as the integral term of the loop; the proportional and derivative terms this record refused now exist, and the trim is kept per direction.
 
 - `regulate.py:74` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
 - `regulate.py:79` - `DEADBAND_C` - 0.3 C

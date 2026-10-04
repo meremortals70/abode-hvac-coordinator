@@ -42,7 +42,7 @@ lost on restart; the Home Assistant log is not.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.**
+Checked against: 0.9.1. **Conforms.**
 
 - `actuator.py:305` - `def _record_command` - the log line and the bounded list
 - `actuator.py:128` - `COMMAND_LOG_SIZE` - 200

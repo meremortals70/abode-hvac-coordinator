@@ -35,15 +35,15 @@ every cycle.
 
 ## In the code
 
-Checked against: 0.9.0. **Conforms.** At 0.8.13 this was **Partly**: four
+Checked against: 0.9.1. **Conforms.** At 0.8.13 this was **Partly**: four
 decisions had grown inside `coordinator.py`. In 0.8.14 each moved into a pure
 module with its behaviour unchanged, and each has core tests with hand-worked
 expected values. What the coordinator keeps is gathering inputs, writing the
 trace and carrying out the result.
 
-- `modes.py:597` - `evaluate_room` - the pure decision entry point
+- `modes.py:620` - `evaluate_room` - the pure decision entry point
 - `power.py:163` - `budget_allowance_kw` - the power allowance arithmetic
 - `power.py:216` - `held_setpoint` - the setpoint clamp under the ceiling
 - `regulate.py:569` - `arbitrate_cycling` - compressor arbitration across rooms on one outdoor unit
 - `tariff.py:341` - `hours_until_cheaper_interval` - the tariff half of the cheaper-window test
-- `coordinator.py:2667` - `_power_ceiling` - gathers the inputs, calls the above, writes the trace
+- `coordinator.py:2672` - `_power_ceiling` - gathers the inputs, calls the above, writes the trace
