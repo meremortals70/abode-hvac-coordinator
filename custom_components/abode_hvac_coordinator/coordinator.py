@@ -1779,20 +1779,24 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         )
 
     def _air_moving(self, room: RoomConfig) -> bool:
-        """Whether the room's air is moving.
+        """Whether the room's air is moving, from a fan the user configured.
 
-        A configured fan entity answers it directly. Otherwise the air
-        conditioner itself counts: any mode other than off moves air.
+        DR-055. Only an air-movement entity the user chose counts, a ceiling
+        fan for instance. Until 0.9.1 the air conditioner's own state counted
+        when none was configured: any mode other than off moved air. That
+        made the comfort index depend on whether the controller's own actuator
+        was running. Running the unit dropped the index by a full point, the
+        room looked too cool, the unit was stopped, the index rose by a point,
+        and the loop repeated. The index is a measurement of the room, taken
+        where the sensor is, and the component must not change it by acting.
+        With nothing configured the air is assumed still, which fails toward
+        comfort.
         """
         if room.air_movement_entity_id and (
             moving := self._bool(room.air_movement_entity_id)
         ) is not None:
             return moving
-        return any(
-            (state := self.hass.states.get(entity_id)) is not None
-            and state.state not in ("off", "unavailable", "unknown")
-            for entity_id in room.climate_entity_ids
-        )
+        return False
 
     def _sleeping(self, room: RoomConfig) -> bool:
         """Whether the room's sleep schedule is currently on."""
@@ -2080,7 +2084,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     # refusal is in none of those modes and projected a full
                     # horizon of draw it was never going to take.
                     will_run=trace is not None
-                    and trace.actuator is not ActuatorStep.OFF,
+                    and trace.actuator is not ActuatorStep.OFF
+                    and trace.mode is not Mode.COAST,
                     can_heat=capabilities["can_heat"],
                     can_cool=capabilities["can_cool"],
                     rated_kw=self._rated_kw_for(room),
@@ -2706,8 +2711,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # Power management does not touch this room. Comfort wins
             # unconditionally; nothing below this line applies.
             return
-        if trace.actuator is ActuatorStep.OFF:
-            # Lockout, unoccupied, coasting, or already stopped for another
+        if trace.actuator is ActuatorStep.OFF or trace.mode is Mode.COAST:
+            # Lockout, unoccupied, coasting (the compressor is stopped and the
+            # unit is on its fan, DR-057), or already stopped for another
             # reason. Nothing running to throttle, and nothing to hold a
             # ceiling against.
             return

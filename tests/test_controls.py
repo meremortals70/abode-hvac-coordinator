@@ -169,18 +169,24 @@ async def test_a_setpoint_the_unit_holds_is_not_sent_again(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
     """The loop that was the incident: sent, reverted, noticed, sent again.
-    Once what is sent is what the unit can hold, it stays sent."""
-    coordinator = await _setup(hass, mock_config_entry)
-    commanded = hass.states.get("sensor.test_room_commanded_setpoint")
-    assert commanded is not None
-    held = float(commanded.state)
-    assert held == round(held)
+    Once what is sent is what the unit can hold, it stays sent.
 
-    _publish(hass, temperature=held)
-    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
-    temperature_calls = async_mock_service(hass, "climate", "set_temperature")
-    for seconds in (30, 60, 90):
-        with freeze_time(dt_util.utcnow() + timedelta(seconds=seconds)):
+    The integrator moves the trim a little every cycle, and a trim can carry a
+    commanded setpoint across a rounding boundary, so the unit is first
+    brought up to date and the refreshes that follow are made at one instant,
+    where no time has passed for the trim to move in.
+    """
+    coordinator = await _setup(hass, mock_config_entry)
+    instant = dt_util.utcnow() + timedelta(seconds=30)
+    with freeze_time(instant):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        held = float(hass.states.get("sensor.test_room_commanded_setpoint").state)  # type: ignore[union-attr]
+        assert held == round(held)
+        _publish(hass, temperature=held)
+        mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+        temperature_calls = async_mock_service(hass, "climate", "set_temperature")
+        for _ in range(3):
             await coordinator.async_refresh()
             await hass.async_block_till_done()
     assert not mode_calls and not temperature_calls, (
@@ -868,7 +874,7 @@ async def test_a_cold_room_on_a_hot_day_coasts_instead_of_heating(
     coordinator = await _setup(
         hass,
         mock_config_entry,
-        temperature="23.5",
+        temperature="22.5",
         humidity="50.0",
         options_extra=_outdoor(hass, "33.0"),
     )
@@ -881,7 +887,7 @@ async def test_a_cold_room_on_a_hot_day_coasts_instead_of_heating(
     assert state.state == "coast", state.attributes
     shown = {k: state.attributes.get(k) for k in ("mode","base_mode","demand","actuator","hci","band_low","band_high","unaided_return_minutes","reasons","rejected")}
     assert state.attributes["demand"] == "heat", shown
-    assert state.attributes["actuator"] == "off"
+    assert state.attributes["actuator"] == "fan"
     assert state.attributes["unaided_return_minutes"] is not None
     assert any("weather brings the room back" in r for r in state.attributes["reasons"])
     assert not [c for c in mode_calls if c.data["hvac_mode"] == "heat"], mode_calls
@@ -893,7 +899,7 @@ async def test_the_same_cold_room_on_a_cold_day_is_heated(
     coordinator = await _setup(
         hass,
         mock_config_entry,
-        temperature="23.5",
+        temperature="22.5",
         humidity="50.0",
         options_extra=_outdoor(hass, "8.0", "60.0"),
     )
@@ -913,7 +919,7 @@ async def test_without_a_learned_model_a_cold_room_on_a_hot_day_still_does_not_h
     coordinator = await _setup(
         hass,
         mock_config_entry,
-        temperature="23.5",
+        temperature="22.5",
         humidity="50.0",
         options_extra=_outdoor(hass, "33.0"),
     )
@@ -983,5 +989,218 @@ async def test_a_cooling_trim_is_not_carried_into_heating(
     assert state.attributes["demand"] == "heat", state.attributes
     target = state.attributes["target_dry_bulb_c"]
     commanded = state.attributes["commanded_dry_bulb_c"]
-    assert commanded == round(target), (target, commanded)
+    import math
+
+    assert commanded == math.floor(target + 0.5), (target, commanded)
     assert state.attributes["regulation_trim_c"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# DR-055 - the unit's own air movement never moves the comfort index
+# ---------------------------------------------------------------------------
+
+
+async def _index(hass: HomeAssistant, coordinator, *, minutes: int = 1) -> float:
+    await _settle(hass, coordinator, minutes=minutes)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    return float(state.attributes["hci"])
+
+
+async def test_the_index_is_the_same_whether_the_unit_is_running_or_not(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The Office's index moved by exactly 1.0 every time the unit started or
+    stopped, with the room reading unchanged, and that drove the switching."""
+    coordinator = await _setup(hass, mock_config_entry, temperature="25.0", humidity="50.0")
+    running = await _index(hass, coordinator)
+    _publish(hass, state="off")
+    stopped = await _index(hass, coordinator, minutes=2)
+    _publish(hass, state="fan_only")
+    on_fan = await _index(hass, coordinator, minutes=3)
+    assert running == stopped == on_fan, (running, stopped, on_fan)
+
+
+async def test_the_index_assumes_still_air_when_no_air_movement_is_configured(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry, temperature="25.0", humidity="50.0")
+    await _settle(hass, coordinator, minutes=1)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    # The still-air correction is applied, in full, whatever the unit is doing.
+    assert float(state.attributes["hci"]) - float(
+        state.attributes["hci_air_only"]
+    ) == pytest.approx(1.0, abs=0.01)
+    assert float(state.attributes["hci"]) == pytest.approx(27.21, abs=0.05)
+
+
+async def test_a_fan_the_user_configured_still_counts(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """A ceiling fan the user named is air movement the room really has."""
+    hass.states.async_set("switch.office_fan", "off")
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        temperature="25.0",
+        humidity="50.0",
+        room_extra={"air_movement_entity_id": "switch.office_fan"},
+    )
+    still = await _index(hass, coordinator)
+    hass.states.async_set("switch.office_fan", "on")
+    moving = await _index(hass, coordinator, minutes=2)
+    assert still - moving == pytest.approx(1.0, abs=0.01), (still, moving)
+
+
+# ---------------------------------------------------------------------------
+# DR-057 - coasting is the compressor off and the unit on its fan
+# ---------------------------------------------------------------------------
+
+
+async def test_a_coasting_room_is_left_on_its_fan_not_turned_off(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        temperature="22.5",
+        humidity="50.0",
+        options_extra=_outdoor(hass, "33.0"),
+    )
+    _learn(coordinator)
+    _publish(hass, state="cool", fan_mode="high")
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    fan_calls = async_mock_service(hass, "climate", "set_fan_mode")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.state == "coast", state.attributes
+    sent = [c.data["hvac_mode"] for c in mode_calls]
+    assert sent and set(sent) == {"fan_only"}, sent
+    assert "off" not in sent
+    assert [c.data["fan_mode"] for c in fan_calls][-1] == "low"
+
+
+async def test_a_unit_with_no_fan_only_mode_coasts_off(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_temperature", "22.5")
+    hass.states.async_set("sensor.test_humidity", "50.0")
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    hass.states.async_set(
+        "climate.test", "cool", _unit(hvac_modes=["off", "cool", "heat"])
+    )
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={**mock_config_entry.options, **_outdoor(hass, "33.0")},
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = mock_config_entry.runtime_data
+    await _settle(hass, coordinator, minutes=5)
+    _learn(coordinator)
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.state == "coast", state.attributes
+    assert {c.data["hvac_mode"] for c in mode_calls} == {"off"}
+
+
+async def test_a_coasting_room_projects_no_compressor_energy(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        temperature="22.5",
+        humidity="50.0",
+        options_extra=_outdoor(hass, "33.0"),
+    )
+    _learn(coordinator)
+    await _settle(hass, coordinator, minutes=1)
+    assert hass.states.get("sensor.test_room_mode").state == "coast"  # type: ignore[union-attr]
+    assert coordinator.forecast is not None
+    projection = next(
+        room
+        for room in coordinator.forecast.as_attributes()["rooms"]
+        if room["room_id"] == "test_room"
+    )
+    assert projection["kwh"] == 0.0, projection
+
+
+# ---------------------------------------------------------------------------
+# DR-056 - the loop does not leave a pull-down setpoint on a unit that has arrived
+# ---------------------------------------------------------------------------
+
+
+async def test_a_unit_left_at_a_pull_down_setpoint_is_walked_back_once_the_room_is_in_band(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The Office unit sat at 19.0 C for hours: the loop asked for the most it
+    could, and the in-band step sent nothing, so it was never walked back."""
+    coordinator = await _setup(hass, mock_config_entry, temperature="24.0", humidity="50.0")
+    _publish(hass, state="cool", temperature=19.0)
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    temperature_calls = async_mock_service(hass, "climate", "set_temperature")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert state.attributes["actuator"] == "none", state.attributes
+    assert not mode_calls, [c.data for c in mode_calls]
+    assert len(temperature_calls) == 1, [c.data for c in temperature_calls]
+    sent = temperature_calls[0].data["temperature"]
+    assert sent > 19.0
+    assert any("walked" in r for r in state.attributes["reasons"])
+
+    # Once the unit holds it, it is not sent again.
+    _publish(hass, state="cool", temperature=sent)
+    again = async_mock_service(hass, "climate", "set_temperature")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=20)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert not again, [c.data for c in again]
+
+
+async def test_a_unit_that_is_not_running_against_a_setpoint_is_not_sent_one(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry, temperature="24.0", humidity="50.0")
+    for state in ("off", "fan_only", "dry"):
+        _publish(hass, state=state, temperature=19.0)
+        temperature_calls = async_mock_service(hass, "climate", "set_temperature")
+        with freeze_time(dt_util.utcnow() + timedelta(minutes=30)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+        assert not temperature_calls, (state, [c.data for c in temperature_calls])
+
+
+async def test_nothing_is_walked_while_a_window_is_held_open_inside_its_grace(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Nothing new is actuated into an open room, so the setpoint stays put."""
+    hass.states.async_set("binary_sensor.test_window", "off")
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        temperature="24.0",
+        humidity="50.0",
+        room_extra=_with_window(),
+    )
+    _publish(hass, state="cool", temperature=19.0)
+    temperature_calls = async_mock_service(hass, "climate", "set_temperature")
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    await _open_window_for(hass, coordinator, 2)
+    assert not temperature_calls and not mode_calls, (
+        [c.data for c in temperature_calls],
+        [c.data for c in mode_calls],
+    )
+

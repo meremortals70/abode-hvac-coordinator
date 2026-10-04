@@ -374,6 +374,14 @@ class Actuator:
             # and which leave it alone is decided in `modes.py`, not inferred
             # from the mode here — inferring it caught two of five stop paths
             # and silently missed the other three.
+            #
+            # DR-056. The one exception is a room inside its band, where the
+            # unit is left running: the room loop's setpoint is still walked
+            # onto it. Leaving the setpoint where a pull-down put it kept the
+            # unit working flat out after the room had arrived, until the
+            # room overshot.
+            if trace.hold_setpoint and not trace.hold_compressor:
+                await self._async_hold_setpoint(room, trace)
             return
 
         if trace.actuator is ActuatorStep.FAN:
@@ -399,6 +407,55 @@ class Actuator:
             else trace.target_dry_bulb_c,
             active=True,
         )
+
+    async def _async_hold_setpoint(self, room: RoomConfig, trace: DecisionTrace) -> None:
+        """Walk the loop's setpoint onto a unit that is running and in band.
+
+        Only the setpoint is sent, never a mode, and only to a unit that is in
+        a mode that works against a setpoint. It is sent only when the unit's
+        own setpoint differs by at least a step (and at least half a degree),
+        so a setpoint that has landed is not sent again. DR-056.
+        """
+        target = trace.commanded_dry_bulb_c
+        if target is None:
+            return
+        profile = room.capabilities
+        step = max((profile.target_temp_step or 0.0) if profile else 0.0, 0.5)
+        for entity_id in room.climate_entity_ids:
+            state = self.hass.states.get(entity_id)
+            live_mode = _hvac_mode_of(state)
+            if state is None or live_mode not in (
+                HVACMode.COOL,
+                HVACMode.HEAT,
+                HVACMode.HEAT_COOL,
+                HVACMode.AUTO,
+            ):
+                continue
+            try:
+                live = float(state.attributes.get(ATTR_TEMPERATURE))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if abs(target - live) < step:
+                continue
+            try:
+                await self._async_set_temperature(
+                    entity_id, trace.rejected, state, live_mode, target
+                )
+            except HomeAssistantError as err:
+                LOGGER.warning(
+                    "Setting %s to %s for %s failed: %s",
+                    entity_id,
+                    target,
+                    room.room_id,
+                    err,
+                )
+                continue
+            self._last_climate[entity_id] = (str(live_mode), target)
+            self._record_command(room, entity_id, str(live_mode), target, trace)
+            trace.reasons.append(
+                f"setpoint walked from {live:.1f} to {target:.1f} C on {entity_id}, "
+                "room in band and the unit running"
+            )
 
     async def _async_command(
         self,

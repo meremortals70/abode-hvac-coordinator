@@ -6,6 +6,49 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.1 - 2026-10-04
+
+### Fixed
+
+- **The unit switched off and on every 37 minutes.** With no air-movement sensor
+  configured, the comfort index counted the room's air as moving whenever the
+  air conditioner was in any mode but off, and still air adds a full point. The
+  index fell by 1.0 when the unit started and rose by 1.0 when it stopped, with
+  the room sensor unchanged, so the controller decided from a number its own
+  action had just moved: running dropped the index below the band's floor, the
+  room asked for heat and coasted, the unit was stopped, the index rose, and the
+  room warmed until the fan and compressor started again. The air
+  conditioner's own state no longer counts. Only an air-movement entity you
+  configured does, and with none, air is assumed still. (DR-055)
+- **The unit sat at 19 °C for hours.** The room loop asked for 4 °C below the
+  room, the most it could, for errors as small as 0.3 °C, because the Office's
+  learned rate curve is nearly flat and any wanted rate above its best read as
+  "ask for the most". It now asks for the smallest approach at which the unit
+  reaches its best rate. And a unit that is running, with the room in band, is
+  now sent the loop's setpoint when it differs from the unit's by a step, so a
+  pull-down setpoint no longer stays on a unit that has arrived. (DR-056)
+- **A coast turned the unit off.** Coasting now stops the compressor and leaves
+  the unit in fan-only mode on its quietest fan. A unit with no fan-only mode
+  still coasts off, and its trace says so. Off is kept for lockout, an empty
+  room, an opening held past its grace, a direction the unit cannot deliver and
+  a deferred precondition. (DR-057, superseding part of DR-032)
+- A line in `behaviour.md` still said a coasting room can never drift out of
+  band, which stopped being true in 0.9.0 when the weather coast was added. It
+  now says so.
+
+### Changed
+
+- A coasting room projects no compressor energy and is not throttled by the power
+  ceiling.
+- The mode sensor's attributes carry `hold_setpoint`, true for a room inside its
+  band whose unit is left running.
+- Tests: 631 became 644 (491 pure, 153 against Home Assistant). Every new
+  decision was checked by putting the defect back. The 0.9.0 tests of the room loop
+  assumed a steep, even learned curve, which the Office does not have; one test
+  now uses the Office's real figures.
+- Decision records: DR-055, DR-056 and DR-057 added; DR-010, DR-017, DR-032,
+  DR-053 and DR-054 amended; all re-checked against this build.
+
 ## 0.9.0 - 2026-10-03
 
 ### Fixed

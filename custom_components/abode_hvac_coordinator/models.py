@@ -363,6 +363,12 @@ class DecisionTrace:
     #: that would stop it. Without this the guard, which exists to protect the
     #: compressor, silently replaced cover and fan decisions with COMPRESSOR.
     hold_compressor: bool = False
+    #: DR-056. The room is inside its band and the step is "none": the unit is
+    #: left running, and the room loop's setpoint is still walked onto it, so a
+    #: setpoint set for a pull-down does not stay on a unit that has arrived.
+    #: Set only for that decision, never for an opening held for its grace or a
+    #: reading that is missing, where nothing may be sent.
+    hold_setpoint: bool = False
     #: Feeds that answered with a value too old to act on, and how old. A room
     #: holding because its sensor died must say so, not simply hold.
     stale_feeds: list[str] = field(default_factory=list)
@@ -448,6 +454,7 @@ class DecisionTrace:
             "demand": self.demand,
             "actuator": str(self.actuator),
             "hold_compressor": self.hold_compressor,
+            "hold_setpoint": self.hold_setpoint,
             "reasons": list(self.reasons),
             "rejected": list(self.rejected),
             "model": dict(self.model),

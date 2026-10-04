@@ -192,7 +192,7 @@ class TestModePrecedence(unittest.TestCase):
         self.assertIs(trace.mode, Mode.COAST)
         self.assertIs(trace.base_mode, Mode.OCCUPIED)
         self.assertEqual(trace.band_low, 25.0)
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertIs(trace.actuator, ActuatorStep.FAN)
 
     def test_cheap_window_does_not_coast_even_when_it_would_hold(self):
         trace = evaluate_room(
@@ -231,7 +231,7 @@ class TestModePrecedence(unittest.TestCase):
         )
         self.assertIs(trace.mode, Mode.COAST)
         self.assertIs(trace.base_mode, Mode.OCCUPIED)
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertIs(trace.actuator, ActuatorStep.FAN)
 
     def test_a_window_that_forbids_coasting_also_forbids_the_price_defer(self):
         trace = evaluate_room(
@@ -3449,9 +3449,8 @@ class TestStoppingTheCompressor(unittest.TestCase):
     catching lockout and unoccupied and silently missing the other three.
     """
 
-    def test_coasting_stops_the_unit(self):
-        """Coasting held by running is not coasting."""
-        trace = evaluate_room(
+    def _coasting(self, **overrides):
+        return evaluate_room(
             room(),
             RoomInputs(
                 now=NOW,
@@ -3459,10 +3458,56 @@ class TestStoppingTheCompressor(unittest.TestCase):
                 relative_humidity=50.0,
                 presence=True,
                 predicted_to_hold=True,
+                **overrides,
             ),
         )
+
+    def test_coasting_stops_the_compressor_and_leaves_the_unit_on_its_fan(self):
+        """DR-057. Coasting held by running is not coasting, and neither is a
+        unit that has been turned off: the compressor stops and the fan stays."""
+        trace = self._coasting()
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertIs(trace.actuator, ActuatorStep.FAN)
+        self.assertTrue(
+            any("stays on its fan" in r for r in trace.rejected), trace.rejected
+        )
+
+    def test_a_unit_with_no_fan_only_mode_coasts_off_and_says_so(self):
+        trace = self._coasting(can_fan_only=False)
         self.assertIs(trace.mode, Mode.COAST)
         self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertTrue(
+            any("no fan-only mode" in r for r in trace.rejected), trace.rejected
+        )
+
+    def test_off_is_kept_for_the_stops_that_mean_off(self):
+        """DR-057. A coasting room is not off; lockout, an empty room and an
+        opening held past its grace still are."""
+        self.assertIs(
+            evaluate_room(
+                room(lockout_reason="away"),
+                RoomInputs(now=NOW, temperature_c=26.0, relative_humidity=50.0,
+                           presence=True),
+            ).actuator,
+            ActuatorStep.OFF,
+        )
+        self.assertIs(
+            evaluate_room(
+                room(),
+                RoomInputs(now=NOW, temperature_c=26.0, relative_humidity=50.0,
+                           presence=False),
+            ).actuator,
+            ActuatorStep.OFF,
+        )
+        self.assertIs(
+            evaluate_room(
+                room(),
+                RoomInputs(now=NOW, temperature_c=26.0, relative_humidity=50.0,
+                           presence=True, opening_open=True,
+                           opening_open_since=NOW - timedelta(minutes=30)),
+            ).actuator,
+            ActuatorStep.OFF,
+        )
 
     def test_a_deferred_precondition_stops_the_unit(self):
         """The deferral is the feature. Leaving it on is starting."""
@@ -4399,6 +4444,31 @@ class TestApproachForRate(unittest.TestCase):
         # Halfway between 2.0 (approach 1.0) and 4.5 (approach 2.25).
         self.assertAlmostEqual(model.approach_for_rate(3.25), 1.625)
 
+    def test_more_than_the_unit_does_is_asked_at_the_smallest_approach_that_gets_it(self):
+        """DR-056. The curve is flat beyond the point where the rate stops
+        rising, so asking for more approach buys nothing and only lowers the
+        setpoint. Here the rate stops rising at the third bin."""
+        model = _learned_model(bins=(0.5, 2.0, 4.5, 4.5))
+        self.assertEqual(model.approach_for_rate(50.0), 2.25)
+
+    def test_the_offices_real_curve_never_asks_for_more_than_two_and_a_quarter_degrees(self):
+        """The Office learned 1.22, 1.00, 1.73 and an unconverged pulldown bin
+        that falls back to the pooled 1.01. Asked for 4 C below the room for a
+        0.3 C error, the unit sat at 19.0 C for hours."""
+        model = _thermal.ThermalModel()
+        model.k_loss = _converged(0.0234)
+        model.k_solar = _converged(0.88)
+        model.k_sensible = _converged(1.0142)
+        model.k_sensible_bins = [
+            _converged(1.2213),
+            _converged(0.9995),
+            _converged(1.7282),
+            _thermal.Coefficient(4.4928),
+        ]
+        for wanted in (1.8, 2.5, 6.0, 40.0):
+            self.assertAlmostEqual(model.approach_for_rate(wanted), 2.25, msg=str(wanted))
+        self.assertLess(model.approach_for_rate(0.8), 0.25)
+
     def test_below_the_first_bin_it_runs_from_zero(self):
         model = _learned_model()
         self.assertAlmostEqual(model.approach_for_rate(0.25), 0.125)
@@ -4696,7 +4766,7 @@ class TestWeatherCoast(unittest.TestCase):
             ),
         )
         self.assertIs(trace.mode, Mode.COAST)
-        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertIs(trace.actuator, ActuatorStep.FAN)
         self.assertIs(trace.base_mode, Mode.OCCUPIED)
         self.assertTrue(any("weather brings" in r for r in trace.reasons), trace.reasons)
         self.assertEqual(trace.unaided_return_minutes, 8.0)

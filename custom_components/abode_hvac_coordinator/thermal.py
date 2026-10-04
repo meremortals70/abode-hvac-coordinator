@@ -453,7 +453,8 @@ class ThermalModel:
         lower rate than the bin below it is held at the lower bin's rate, so
         the curve can be inverted), and read between the bins' representative
         approaches by straight lines. A rate above the curve's top asks for the
-        most the unit does. None where a bin and the pooled coefficient have
+        smallest approach at which the unit does the most it does: the curve is
+        flat beyond that, so more approach would buy nothing. None where a bin and the pooled coefficient have
         both not converged, or where the unit's top rate is not positive: the
         room has not learned enough to say.
         """
@@ -467,18 +468,24 @@ class ThermalModel:
                 return None
             best = max(best, rate)
             points.append((representative, best))
-        top_approach, top_rate = points[-1]
+        top_rate = points[-1][1]
         if top_rate <= 0:
             return None
         if rate_c_per_hour >= top_rate:
-            return top_approach
+            # The most the unit does, asked for at the smallest approach that
+            # gets it. The learned curve is flat beyond that point, so asking
+            # for more approach buys no more cooling and only lowers the
+            # setpoint further (DR-056).
+            return next(
+                approach for approach, rate in points if rate >= top_rate - 1e-9
+            )
         for (low_a, low_r), (high_a, high_r) in pairwise(points):
             if low_r <= rate_c_per_hour <= high_r:
                 if high_r - low_r < 1e-9:
                     return low_a
                 share = (rate_c_per_hour - low_r) / (high_r - low_r)
                 return low_a + share * (high_a - low_a)
-        return top_approach
+        return points[-1][0]
 
     def project_unaided(
         self,

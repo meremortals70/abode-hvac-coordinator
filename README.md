@@ -5,8 +5,8 @@ doing, room by room, and tells you exactly why.
 
 **It never writes to your battery.**
 
-> ### Status: v0.9.0 — beta
-> The architecture is built, 631 tests pass, and every build runs
+> ### Status: v0.9.1 — beta
+> The architecture is built, 644 tests pass, and every build runs
 > continuously against a live air conditioner in a real office, used as the
 > test room — that is where real compressor, blind and fan behaviour is
 > actually proven, not from the test suite alone. What that one room has not
@@ -94,6 +94,10 @@ to sign for a delivery does not stop the compressor; the room waits, and only a
 sustained absence shuts it down. Coming back cancels it.
 
 **Cheapest actuator first.** Blinds, then fan, then dry, then compressor.
+
+**The index is a measurement, not a result of what it does.** The air
+conditioner's own fan never changes the comfort index. Only a fan you tell it
+about does.
 
 **The weather does the work when it can.** A room a little out of band on a
 day the weather will bring it back is left to come back, not heated into a warm

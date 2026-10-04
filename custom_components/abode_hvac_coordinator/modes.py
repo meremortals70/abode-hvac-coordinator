@@ -400,11 +400,13 @@ def select_actuator(
         return ActuatorStep.OFF
 
     if mode is Mode.COAST:
-        # Coasting means the band holds with nothing running. Leaving the unit
-        # on would have the thermostat hold the band by running, which is the
-        # opposite of coasting and makes the mode change nothing.
-        trace.rejected.append("compressor: coasting, model predicts the band holds")
-        return ActuatorStep.OFF
+        # Coasting means the compressor is not running and the room is left to
+        # the weather. It does not mean the unit is off (DR-057): the unit
+        # stays on its fan at the quietest speed so the room's air is kept
+        # mixed, and off is kept for the stops that mean off. Leaving the unit
+        # cooling would have the thermostat hold the band by running, which is
+        # the opposite of coasting.
+        return coast_step(inputs, trace)
 
     if mode is Mode.PRECONDITION and not inputs.precondition_ready:
         # The request stands and the room is in PRECONDITION. The model simply
@@ -447,6 +449,7 @@ def select_actuator(
     trace.demand = demand
     if demand is None:
         trace.reasons.append("within band")
+        trace.hold_setpoint = True
         return ActuatorStep.NONE
 
     # --- 1. Covers. Free, and they work in both directions: block gain when
@@ -533,6 +536,26 @@ def select_actuator(
         return ActuatorStep.OFF
     trace.reasons.append("compressor: cooling")
     return ActuatorStep.COMPRESSOR
+
+
+def coast_step(inputs: RoomInputs, trace: DecisionTrace) -> ActuatorStep:
+    """What a coasting room's unit is asked to do (DR-057).
+
+    The compressor is stopped and the unit is left on its fan, where it offers
+    a fan-only mode. A unit that does not has nothing gentler to be left in,
+    and coasts off. Either way the compressor is not running: the difference is
+    whether the room's air keeps moving.
+    """
+    if inputs.can_fan_only:
+        trace.rejected.append(
+            "compressor: coasting, model predicts the band holds; the unit stays on its fan"
+        )
+        return ActuatorStep.FAN
+    trace.rejected.append(
+        "compressor: coasting, model predicts the band holds; this unit has no "
+        "fan-only mode, so it is off"
+    )
+    return ActuatorStep.OFF
 
 
 def _weather_coast(
@@ -698,7 +721,7 @@ def evaluate_room(
             trace.reasons.append(coast_reason)
             trace.base_mode = mode
             trace.mode = Mode.COAST
-            trace.actuator = ActuatorStep.OFF
+            trace.actuator = coast_step(inputs, trace)
 
     # The felt comparison uses the room's own comfort index, corrections and
     # all. A sunlit room feels hotter than its air temperature, which makes
