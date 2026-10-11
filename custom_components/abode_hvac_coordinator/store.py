@@ -65,6 +65,7 @@ class ModelStore:
             "switched_off": [],
             "manual_vanes": [],
             "profiles": {},
+            "comfort_modes": {},
         }
 
     async def async_load(self) -> None:
@@ -89,6 +90,10 @@ class ModelStore:
         """Drop a removed room's learned state."""
         removed = self._data.get("rooms", {}).pop(room_id, None) is not None
         removed = self._data.get("profiles", {}).pop(room_id, None) is not None or removed
+        removed = (
+            self._data.get("comfort_modes", {}).pop(room_id, None) is not None
+            or removed
+        )
         if removed:
             self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
 
@@ -130,6 +135,29 @@ class ModelStore:
         else:
             rooms.discard(room_id)
         self._data["manual_vanes"] = sorted(rooms)
+        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+
+    def comfort_modes(self) -> dict[str, str]:
+        """Each room's Comfort mode, where it is not Schedule (DR-058).
+
+        A choice the user made, kept the way `switched_off` is: a room put on
+        Sleep must still be on Sleep in the first evaluation after a restart,
+        not dropped onto the day band until someone notices.
+        """
+        found = self._data.get("comfort_modes", {})
+        if not isinstance(found, dict):
+            return {}
+        return {str(room): str(mode) for room, mode in found.items()}
+
+    def set_comfort_mode(self, room_id: str, mode: str | None) -> None:
+        """Record one room's Comfort mode, written out soon. None is Schedule."""
+        modes = self.comfort_modes()
+        if mode is None:
+            if modes.pop(room_id, None) is None:
+                return
+        else:
+            modes[room_id] = mode
+        self._data["comfort_modes"] = modes
         self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
 
     def profile(self, room_id: str) -> dict[str, Any] | None:

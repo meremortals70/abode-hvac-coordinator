@@ -29,6 +29,23 @@ class Mode(StrEnum):
     COAST = "coast"
 
 
+class ComfortMode(StrEnum):
+    """What the user has chosen for the room's sleep, per room (DR-058).
+
+    Not a room mode, and nothing to do with whether the coordinator runs the
+    room - that is the Automatic control switch. This only decides whether
+    the room counts as sleeping, which decides whether the sleep band or the
+    occupied band is the one it aims for.
+    """
+
+    #: The room's sleep schedule decides, as it always has.
+    SCHEDULE = "schedule"
+    #: Sleeping now, whatever the schedule says.
+    SLEEP = "sleep"
+    #: Awake now, whatever the schedule says.
+    AWAKE = "awake"
+
+
 #: Modes that carry a comfort band of their own.
 #:
 #: UNOCCUPIED is not among them. An unoccupied room is off, not held to a wider
@@ -208,6 +225,9 @@ class RoomInputs:
     opening_open_since: datetime | None = None
     #: Sleep schedule is active for this room right now.
     sleep_schedule_active: bool = False
+    #: DR-058. The room's Comfort mode. Schedule leaves the decision to the
+    #: schedule above; Sleep and Awake replace it.
+    comfort_mode: ComfortMode = ComfortMode.SCHEDULE
     #: When a heading-home request needs the room to be at comfort by. The
     #: target itself is never supplied: it is always the room's comfort band.
     precondition_deadline: datetime | None = None
@@ -409,6 +429,9 @@ class DecisionTrace:
     #: 0.9.0, DR-051. The unit's step and range the commanded setpoint was
     #: rounded to, where it advertised them.
     setpoint_step_c: float | None = None
+    #: DR-058. The room's Comfort mode this cycle, after any return to
+    #: Schedule, so a room on the sleep band says whether a person chose it.
+    comfort_mode: str = ComfortMode.SCHEDULE.value
 
     def as_attributes(self) -> dict[str, Any]:
         """Flatten for publication as entity attributes."""
@@ -479,4 +502,5 @@ class DecisionTrace:
                 else round(self.unaided_return_limit_minutes, 1)
             ),
             "setpoint_step_c": self.setpoint_step_c,
+            "comfort_mode": self.comfort_mode,
         }

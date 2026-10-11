@@ -272,6 +272,14 @@
       }
     },
     "select": {
+      "comfort_mode": {
+        "name": "Comfort mode",
+        "state": {
+          "schedule": "Schedule",
+          "sleep": "Sleep",
+          "awake": "Awake"
+        }
+      },
       "unit_mode": {
         "name": "Mode"
       },
@@ -332,6 +340,9 @@
     },
     "control_profile_not_read": {
       "message": "{room} has not yet read what its air conditioning can do, so its controls cannot be used yet."
+    },
+    "comfort_mode_room_empty": {
+      "message": "{room} reads empty, so it cannot be set to {mode}. Sleep and Awake go back to Schedule when a room is empty; choose it once someone is in the room."
     }
   },
   "issues": {

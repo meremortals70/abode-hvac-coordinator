@@ -945,6 +945,147 @@ class TestSleepSchedule(unittest.TestCase):
         self.assertEqual(asleep.band_low, 24.0)
 
 
+ComfortMode = _models.ComfortMode
+
+
+def _comfort_inputs(**overrides: object) -> RoomInputs:
+    values: dict[str, object] = {
+        "now": NOW,
+        "temperature_c": 24.0,
+        "relative_humidity": 55.0,
+        "presence": True,
+    }
+    values.update(overrides)
+    return RoomInputs(**values)  # type: ignore[arg-type]
+
+
+class TestComfortModeDecidesSleep(unittest.TestCase):
+    """DR-058. Comfort mode replaces the schedule's answer; Schedule keeps it."""
+
+    def test_sleep_puts_the_room_on_the_sleep_band_with_no_schedule(self):
+        trace = evaluate_room(
+            room(), _comfort_inputs(comfort_mode=ComfortMode.SLEEP)
+        )
+        self.assertIs(trace.mode, Mode.SLEEP)
+        self.assertEqual(trace.band_low, 24.0)
+        self.assertIn("presence and comfort mode set to sleep", trace.reasons)
+        self.assertEqual(trace.comfort_mode, "sleep")
+
+    def test_awake_keeps_the_day_band_while_the_schedule_says_sleep(self):
+        trace = evaluate_room(
+            room(),
+            _comfort_inputs(
+                comfort_mode=ComfortMode.AWAKE, sleep_schedule_active=True
+            ),
+        )
+        self.assertIs(trace.mode, Mode.OCCUPIED)
+        self.assertEqual(trace.band_low, 25.0)
+        self.assertIn(
+            "comfort mode set to awake over the sleep schedule", trace.reasons
+        )
+
+    def test_schedule_is_exactly_the_old_behaviour(self):
+        for active, expected in ((True, Mode.SLEEP), (False, Mode.OCCUPIED)):
+            trace = evaluate_room(
+                room(), _comfort_inputs(sleep_schedule_active=active)
+            )
+            self.assertIs(trace.mode, expected)
+            self.assertEqual(trace.comfort_mode, "schedule")
+
+    def test_sleep_holds_with_presence_unknown(self):
+        trace = evaluate_room(
+            room(),
+            _comfort_inputs(presence=None, comfort_mode=ComfortMode.SLEEP),
+        )
+        self.assertIs(trace.mode, Mode.SLEEP)
+
+    def test_an_empty_room_is_off_whatever_the_comfort_mode(self):
+        trace = evaluate_room(
+            room(),
+            _comfort_inputs(presence=False, comfort_mode=ComfortMode.SLEEP),
+        )
+        self.assertIs(trace.mode, Mode.UNOCCUPIED)
+
+    def test_comfort_mode_does_not_outrank_lockout_or_heading_home(self):
+        locked = evaluate_room(
+            room(lockout_reason="renovation"),
+            _comfort_inputs(comfort_mode=ComfortMode.SLEEP),
+        )
+        self.assertIs(locked.mode, Mode.LOCKOUT)
+        heading = evaluate_room(
+            room(),
+            _comfort_inputs(comfort_mode=ComfortMode.SLEEP, heading_home=True),
+        )
+        self.assertIs(heading.mode, Mode.PRECONDITION)
+
+    def test_sleeping_is_the_one_answer(self):
+        sleeping = _modes.sleeping
+        self.assertTrue(sleeping(ComfortMode.SLEEP, False))
+        self.assertFalse(sleeping(ComfortMode.AWAKE, True))
+        self.assertTrue(sleeping(ComfortMode.SCHEDULE, True))
+        self.assertFalse(sleeping(ComfortMode.SCHEDULE, False))
+
+
+class TestComfortModeEnds(unittest.TestCase):
+    """DR-058. When a chosen Comfort mode goes back to Schedule."""
+
+    def _after(self, mode, **kwargs):
+        values = {"empty": False, "schedule_active": False, "schedule_was_active": False}
+        values.update(kwargs)
+        return _modes.comfort_mode_after(mode, **values)
+
+    def test_sleep_and_awake_end_when_the_room_is_empty(self):
+        for mode in (ComfortMode.SLEEP, ComfortMode.AWAKE):
+            after, reason = self._after(mode, empty=True)
+            self.assertIs(after, ComfortMode.SCHEDULE)
+            self.assertIn("the room is empty", reason)
+
+    def test_sleep_outlasts_the_schedule(self):
+        after, reason = self._after(
+            ComfortMode.SLEEP, schedule_active=False, schedule_was_active=True
+        )
+        self.assertEqual((after, reason), (ComfortMode.SLEEP, None))
+
+    def test_awake_ends_when_the_schedule_goes_off(self):
+        after, reason = self._after(
+            ComfortMode.AWAKE, schedule_active=False, schedule_was_active=True
+        )
+        self.assertIs(after, ComfortMode.SCHEDULE)
+        self.assertIn("sleep schedule has finished", reason)
+
+    def test_awake_chosen_in_the_day_does_not_undo_itself(self):
+        for was in (False, None):
+            self.assertEqual(
+                self._after(ComfortMode.AWAKE, schedule_was_active=was),
+                (ComfortMode.AWAKE, None),
+            )
+
+    def test_schedule_never_changes(self):
+        self.assertEqual(
+            self._after(ComfortMode.SCHEDULE, empty=True),
+            (ComfortMode.SCHEDULE, None),
+        )
+
+    def test_empty_needs_both_readings(self):
+        empty = _modes.room_reads_empty
+        self.assertTrue(empty(False, False))
+        # Someone has just walked in, or Home Assistant has just started: the
+        # start grace is running, but the sensor sees them.
+        self.assertFalse(empty(False, True))
+        # Stepped out: the stop grace is still holding the room occupied.
+        self.assertFalse(empty(True, False))
+        # Unknown is not absence, and no presence sensor is never empty.
+        self.assertFalse(empty(False, None))
+        self.assertFalse(empty(None, None))
+
+    def test_a_choice_in_an_empty_room_is_refused_and_only_then(self):
+        refused = _modes.comfort_mode_refused
+        self.assertTrue(refused(ComfortMode.SLEEP, True))
+        self.assertTrue(refused(ComfortMode.AWAKE, True))
+        self.assertFalse(refused(ComfortMode.SCHEDULE, True))
+        self.assertFalse(refused(ComfortMode.SLEEP, False))
+
+
 _forms = importlib.import_module("hvac_core.forms")
 _const = importlib.import_module("hvac_core.const")
 

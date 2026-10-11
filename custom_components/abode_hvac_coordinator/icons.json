@@ -74,6 +74,14 @@
       }
     },
     "select": {
+      "comfort_mode": {
+        "default": "mdi:bed-clock",
+        "state": {
+          "schedule": "mdi:calendar-clock",
+          "sleep": "mdi:sleep",
+          "awake": "mdi:white-balance-sunny"
+        }
+      },
       "unit_mode": {
         "default": "mdi:air-conditioner"
       },

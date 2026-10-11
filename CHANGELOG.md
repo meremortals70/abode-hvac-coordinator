@@ -6,6 +6,31 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.2 - 2026-10-11
+
+### Added
+
+- **A Comfort mode for every room: Schedule, Sleep or Awake.**
+  `select.<room>_comfort_mode`. Schedule is the default and is exactly the old
+  behaviour: the room's sleep schedule decides. Sleep puts the room on its sleep
+  band now, with or without a schedule. Awake keeps it on its occupied band
+  while the schedule says sleep. Sleep and Awake go back to Schedule once the
+  room is empty (presence sensor off and the stop grace run out), and Awake also
+  when the sleep schedule turns off. Choosing Sleep or Awake in an empty room is
+  refused with a reason. The choice survives a restart, is writable whether
+  Automatic control is on or off, and never turns the automation off - only the
+  band changes. The mode sensor carries a `comfort_mode` attribute, the reasons
+  say when a choice is in force or has ended, and the diagnostics download
+  includes it. (DR-058)
+
+### Changed
+
+- **Every place that asks whether a room is asleep now gets the same answer.**
+  The unaided-return projection behind coasting and the cheaper-tariff wait
+  read the sleep schedule directly. They now ask the same question the mode
+  decision does, so a room put on Sleep by hand is projected against its sleep
+  band, not its day band. (DR-058)
+
 ## 0.9.1 - 2026-10-04
 
 ### Fixed

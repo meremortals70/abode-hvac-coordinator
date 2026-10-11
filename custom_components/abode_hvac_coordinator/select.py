@@ -1,6 +1,12 @@
-"""Select platform: the room's mode, fan speed and vane positions.
+"""Select platform: the room's Comfort mode, and its mode, fan speed and vanes.
 
-DR-049. Built from the room's stored capability profile (DR-048), so a control
+**Comfort mode** (DR-058) is Schedule, Sleep or Awake: whether the room counts
+as sleeping, which decides the band it aims for. It is always available and
+always writable, whatever Automatic control is set to, because it states the
+user's intent rather than commanding the unit. It never turns the automation
+off; only the Automatic control switch does that.
+
+The rest are DR-049. Built from the room's stored capability profile (DR-048), so a control
 exists only where the room's units offered the choice when the room was set
 up, and offers exactly what they offered. Each shows the live state of the
 room's units. While Automatic control is on, mode and fan speed refuse changes;
@@ -20,13 +26,15 @@ from homeassistant.components.climate.const import (
 )
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HvacConfigEntry
 from .capabilities import RoomCapabilities
+from .const import DOMAIN
 from .coordinator import HvacCoordinator
-from .entity import HvacRoomControl
-from .models import RoomConfig
+from .entity import HvacRoomControl, HvacRoomEntity
+from .models import ComfortMode, RoomConfig
 
 # A change goes to the unit through the actuator, which awaits each service
 # call. One at a time per platform keeps two quick taps from interleaving.
@@ -98,8 +106,13 @@ async def async_setup_entry(
 
     @callback
     def _add_new_controls() -> None:
-        new: list[RoomSelect] = []
+        new: list[SelectEntity] = []
         for room_id, room in coordinator.rooms.items():
+            # Every room has a Comfort mode, whether or not its units have
+            # reported what they can do: it is not a control of the unit.
+            if (room_id, _COMFORT_MODE_KEY) not in known:
+                known.add((room_id, _COMFORT_MODE_KEY))
+                new.append(RoomComfortModeSelect(coordinator, room))
             profile = room.capabilities
             if profile is None:
                 continue
@@ -113,6 +126,50 @@ async def async_setup_entry(
 
     _add_new_controls()
     entry.async_on_unload(coordinator.async_add_listener(_add_new_controls))
+
+
+_COMFORT_MODE_KEY = "comfort_mode"
+
+
+class RoomComfortModeSelect(HvacRoomEntity, SelectEntity):
+    """Whether the room is sleeping: by its schedule, or by the user's choice."""
+
+    _attr_translation_key = _COMFORT_MODE_KEY
+    _attr_options = [mode.value for mode in ComfortMode]
+
+    def __init__(self, coordinator: HvacCoordinator, room: RoomConfig) -> None:
+        """Initialize the select."""
+        super().__init__(coordinator, room)
+        self._attr_unique_id = f"{room.room_id}_{_COMFORT_MODE_KEY}"
+
+    @property
+    def available(self) -> bool:
+        """Usable whether or not the room has been evaluated yet.
+
+        The choice is held by the coordinator, the same as Automatic control,
+        so it has something true to say before the first decision exists.
+        """
+        return self.coordinator.last_update_success
+
+    @property
+    def current_option(self) -> str:
+        """The room's Comfort mode."""
+        return self.coordinator.comfort_mode(self._room_id).value
+
+    async def async_select_option(self, option: str) -> None:
+        """Set the Comfort mode, unless the room reads empty."""
+        mode = ComfortMode(option)
+        if self.coordinator.comfort_mode_refused(self._room_id, mode):
+            room = self.coordinator.rooms.get(self._room_id)
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="comfort_mode_room_empty",
+                translation_placeholders={
+                    "room": room.name if room is not None else self._room_id,
+                    "mode": option,
+                },
+            )
+        await self.coordinator.async_set_comfort_mode(self._room_id, mode)
 
 
 class RoomSelect(HvacRoomControl, SelectEntity):

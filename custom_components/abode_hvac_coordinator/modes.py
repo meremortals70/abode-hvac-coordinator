@@ -11,7 +11,8 @@ PRECEDENCE — architecture proposal v0.3, section 4
                    heading-home request, and driven to the occupied band
     PRECOOL        free/cheap window plus forecast heat ahead
     COAST          model says the band holds unaided, and the window permits it
-    SLEEP          sleep schedule and presence
+    SLEEP          presence, and the sleep schedule or the room's Comfort
+                   mode (DR-058)
     OCCUPIED       presence
     UNOCCUPIED     no presence
 
@@ -37,6 +38,7 @@ from .hci import (
 from .models import (
     BAND_MODES,
     ActuatorStep,
+    ComfortMode,
     DecisionTrace,
     Mode,
     RoomConfig,
@@ -51,15 +53,107 @@ from .psychro import (
 from .scheduling import ramped_band
 
 
+def sleeping(comfort_mode: ComfortMode, schedule_active: bool) -> bool:
+    """Whether a room counts as sleeping right now (DR-058).
+
+    The one answer to the question, used wherever it is asked: by the mode
+    decision below, and by the coordinator wherever it picks a band to project
+    the room against. Sleep and Awake are the user's choice and replace the
+    schedule; Schedule leaves it to the schedule, as before 0.9.2.
+    """
+    if comfort_mode is ComfortMode.SLEEP:
+        return True
+    if comfort_mode is ComfortMode.AWAKE:
+        return False
+    return schedule_active
+
+
+def room_reads_empty(presence: bool | None, raw_presence: bool | None) -> bool:
+    """Whether a room is empty for the purposes of its Comfort mode (DR-058).
+
+    Both readings have to say so. `presence` is after the grace periods, so a
+    person stepping out for a minute does not empty the room. `raw_presence`
+    is the sensor itself: graced presence also reads False for the first
+    minutes after someone walks in, and after a restart, while the start
+    grace runs - a room with a person in it is not empty. An unknown sensor
+    is not absence.
+    """
+    return presence is False and raw_presence is False
+
+
+def comfort_mode_after(
+    comfort_mode: ComfortMode,
+    *,
+    empty: bool,
+    schedule_active: bool,
+    schedule_was_active: bool | None,
+) -> tuple[ComfortMode, str | None]:
+    """Whether a chosen Comfort mode still stands, and why not (DR-058).
+
+    Returns the mode to use and, where it has just gone back to Schedule, the
+    reason. Sleep and Awake both end when the room is empty, as
+    `room_reads_empty` decides; a room with no presence sensor is never empty
+    and keeps the choice until it is changed. Awake also ends when the sleep
+    schedule goes from on to off, because what it was overriding has
+    finished; a schedule that is simply off ends nothing, or choosing Awake
+    during the day would undo itself.
+    """
+    if comfort_mode is ComfortMode.SCHEDULE:
+        return comfort_mode, None
+    if empty:
+        return ComfortMode.SCHEDULE, (
+            f"comfort mode {comfort_mode.value} ended: the room is empty, "
+            "back to the schedule"
+        )
+    if (
+        comfort_mode is ComfortMode.AWAKE
+        and schedule_was_active is True
+        and not schedule_active
+    ):
+        return ComfortMode.SCHEDULE, (
+            "comfort mode awake ended: the sleep schedule has finished, back "
+            "to the schedule"
+        )
+    return comfort_mode, None
+
+
+def comfort_mode_refused(requested: ComfortMode, empty: bool) -> bool:
+    """Whether choosing this Comfort mode now is refused (DR-058).
+
+    Sleep or Awake in a room that reads empty would end on the next
+    evaluation. Refused, with a reason, instead.
+    """
+    return requested is not ComfortMode.SCHEDULE and empty
+
+
+def _sleep_source(inputs: RoomInputs) -> str:
+    """What made the room sleep, for the trace."""
+    if inputs.comfort_mode is ComfortMode.SLEEP:
+        return "comfort mode set to sleep"
+    return "sleep schedule active"
+
+
 def _occupancy_mode(inputs: RoomInputs, trace: DecisionTrace) -> Mode:
     """Resolve the presence-driven mode. Never returns LOCKOUT."""
+    asleep = sleeping(inputs.comfort_mode, inputs.sleep_schedule_active)
+    if (
+        inputs.comfort_mode is ComfortMode.AWAKE
+        and inputs.sleep_schedule_active
+    ):
+        trace.reasons.append("comfort mode set to awake over the sleep schedule")
+
     if inputs.presence is None:
         # Unknown presence is not absence. A failed sensor must not turn the
         # room off, so hold an occupied mode and say so. The sleep schedule
         # still applies: a dead presence sensor at 2am should not put the room
         # on the day band.
-        if inputs.sleep_schedule_active:
-            trace.reasons.append("presence unknown, holding sleep")
+        if asleep:
+            if inputs.comfort_mode is ComfortMode.SLEEP:
+                trace.reasons.append(
+                    "presence unknown, holding sleep, comfort mode set to sleep"
+                )
+            else:
+                trace.reasons.append("presence unknown, holding sleep")
             return Mode.SLEEP
         trace.reasons.append("presence unknown, holding occupied")
         return Mode.OCCUPIED
@@ -68,8 +162,8 @@ def _occupancy_mode(inputs: RoomInputs, trace: DecisionTrace) -> Mode:
         trace.reasons.append("no presence")
         return Mode.UNOCCUPIED
 
-    if inputs.sleep_schedule_active:
-        trace.reasons.append("presence and sleep schedule active")
+    if asleep:
+        trace.reasons.append(f"presence and {_sleep_source(inputs)}")
         return Mode.SLEEP
 
     trace.reasons.append("presence")
@@ -627,6 +721,7 @@ def evaluate_room(
     trace.mode = mode
     trace.base_mode = base
     trace.room_c = inputs.temperature_c
+    trace.comfort_mode = inputs.comfort_mode.value
 
     # Sun through glass, still air and equipment heat all change how hot a
     # person is without moving the air temperature much. A wall sensor cannot

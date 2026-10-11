@@ -48,6 +48,7 @@ async def async_get_config_entry_diagnostics(
                 "automatic_vane_control": not coordinator.is_room_vanes_manual(
                     room_id
                 ),
+                "comfort_mode": coordinator.comfort_mode(room_id).value,
                 "capabilities": (
                     None if room.capabilities is None else room.capabilities.to_dict()
                 ),

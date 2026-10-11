@@ -145,12 +145,23 @@ from .grace import (
     evaluate_opening_warnings,
 )
 from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index, radiant_load
-from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig, RoomInputs
+from .models import (
+    ActuatorStep,
+    ComfortMode,
+    DecisionTrace,
+    Mode,
+    RoomConfig,
+    RoomInputs,
+)
 from .modes import (
     DEFAULT_OPENING_GRACE_MINUTES,
     UNAIDED_RETURN_FALLBACK_MINUTES,
     UNAIDED_RETURN_MARGIN_MINUTES,
+    comfort_mode_after,
+    comfort_mode_refused,
     evaluate_room,
+    room_reads_empty,
+    sleeping,
 )
 from .power import (
     GRID_SIGN_IMPORTING,
@@ -499,6 +510,25 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: coordinator never sends a vane command to them. Read from the store
         #: for the same reason as the line above. DR-049.
         self._manual_vanes: set[str] = store.manual_vanes() & set(self.rooms)
+        #: Each room's Comfort mode where it is not Schedule (DR-058). Read
+        #: from the store for the same reason as the two lines above: a room
+        #: put on Sleep must already be on Sleep in the first evaluation.
+        self._comfort_modes: dict[str, ComfortMode] = _comfort_modes_from_store(
+            store.comfort_modes(), set(self.rooms)
+        )
+        #: Whether each room's sleep schedule was on at the last evaluation,
+        #: so Awake ends when the schedule goes off rather than whenever it
+        #: happens to be off. Unknown until a room has been read once.
+        self._schedule_was_on: dict[str, bool] = {}
+        #: Whether each room read empty at the last evaluation, so a Comfort
+        #: mode chosen for an empty room can be refused.
+        self._room_empty: dict[str, bool] = {}
+        #: The raw presence reading behind each room's graced presence, read
+        #: once per evaluation by `_graced_presence`.
+        self._raw_presence: dict[str, bool | None] = {}
+        #: Why a room's Comfort mode has just gone back to Schedule, for the
+        #: trace of the evaluation in which it happened.
+        self._comfort_mode_reason: dict[str, str] = {}
         #: Opening warnings already spoken for each room's current opening.
         #: DR-050.
         self._opening_warnings: dict[str, OpeningWarningState] = {}
@@ -969,6 +999,54 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.store.set_manual_vanes(room_id, manual)
         await self.async_request_refresh()
 
+    def comfort_mode(self, room_id: str) -> ComfortMode:
+        """The room's Comfort mode: Schedule unless the user chose otherwise."""
+        return self._comfort_modes.get(room_id, ComfortMode.SCHEDULE)
+
+    def comfort_mode_refused(self, room_id: str, mode: ComfortMode) -> bool:
+        """Whether choosing this Comfort mode now is refused (DR-058)."""
+        return comfort_mode_refused(mode, self._room_empty.get(room_id, False))
+
+    async def async_set_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
+        """Set a room's Comfort mode, keep it, and act on it now (DR-058)."""
+        self._remember_comfort_mode(room_id, mode)
+        self._comfort_mode_reason.pop(room_id, None)
+        await self.async_request_refresh()
+
+    def _remember_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
+        """Hold a room's Comfort mode in memory and in the store."""
+        if mode is ComfortMode.SCHEDULE:
+            self._comfort_modes.pop(room_id, None)
+            self.store.set_comfort_mode(room_id, None)
+        else:
+            self._comfort_modes[room_id] = mode
+            self.store.set_comfort_mode(room_id, mode.value)
+
+    def _update_comfort_mode(self, room: RoomConfig, presence: bool | None) -> None:
+        """End a chosen Comfort mode whose reason has gone (DR-058).
+
+        Run once per evaluation, after presence is read and before anything
+        asks whether the room is sleeping, so every answer in the cycle is the
+        same one. The decision is `modes.comfort_mode_after`.
+        """
+        room_id = room.room_id
+        schedule_active = self._bool(room.sleep_schedule_entity_id) is True
+        current = self.comfort_mode(room_id)
+        empty = room_reads_empty(presence, self._raw_presence.get(room_id))
+        after, reason = comfort_mode_after(
+            current,
+            empty=empty,
+            schedule_active=schedule_active,
+            schedule_was_active=self._schedule_was_on.get(room_id),
+        )
+        self._schedule_was_on[room_id] = schedule_active
+        self._room_empty[room_id] = empty
+        if after is not current:
+            self._remember_comfort_mode(room_id, after)
+            if reason is not None:
+                self._comfort_mode_reason[room_id] = reason
+                LOGGER.info("%s: %s", room.name, reason)
+
     def last_mode(self, room_id: str) -> Mode:
         """The mode a room was last evaluated in."""
         return self._last_modes.get(room_id, Mode.LOCKOUT)
@@ -1040,6 +1118,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             if trace.target_dry_bulb_c is not None:
                 self._last_target[room.room_id] = trace.target_dry_bulb_c
             if reason := self._grace_reason.get(room.room_id):
+                trace.reasons.append(reason)
+            if reason := self._comfort_mode_reason.pop(room.room_id, None):
                 trace.reasons.append(reason)
             if reason := self._precondition_reason.get(room.room_id):
                 trace.rejected.append(reason)
@@ -1587,15 +1667,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         stays a pure read of state.
         """
         if room.presence_entity_id is None:
+            self._raw_presence.pop(room.room_id, None)
             return None
 
         state = self._grace.setdefault(room.room_id, GraceState())
-        result = evaluate_grace(
-            state,
-            self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id),
-            now,
-            room.grace,
-        )
+        raw = self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
+        self._raw_presence[room.room_id] = raw
+        result = evaluate_grace(state, raw, now, room.grace)
         self._grace_reason[room.room_id] = result.reason
         if result.announcement is not Announcement.NONE:
             self._pending_announcements.append((room, result.announcement))
@@ -1799,8 +1877,17 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         return False
 
     def _sleeping(self, room: RoomConfig) -> bool:
-        """Whether the room's sleep schedule is currently on."""
-        return self._bool(room.sleep_schedule_entity_id) is True
+        """Whether the room counts as sleeping: its Comfort mode, or where that
+        is Schedule, its sleep schedule (DR-058).
+
+        Every place that picks a band by whether the room is asleep asks here,
+        so a room put on Sleep by hand is projected against the same band its
+        mode decision uses.
+        """
+        return sleeping(
+            self.comfort_mode(room.room_id),
+            self._bool(room.sleep_schedule_entity_id) is True,
+        )
 
     async def _async_announce(self) -> None:
         """Speak any warnings raised this evaluation."""
@@ -2133,6 +2220,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._precondition_reason.pop(room_id, None)
                 self._demand_reason.pop(room_id, None)
                 self._previous.pop(room_id, None)
+                self._comfort_modes.pop(room_id, None)
+                self._schedule_was_on.pop(room_id, None)
+                self._room_empty.pop(room_id, None)
+                self._raw_presence.pop(room_id, None)
+                self._comfort_mode_reason.pop(room_id, None)
                 self.store.forget_room(room_id)
                 if device := registry.async_get_device(
                     identifiers={(DOMAIN, room_id)}
@@ -2153,6 +2245,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             self._precondition_reason.pop(room.room_id, None)
 
+        # Presence first, and the Comfort mode settled against it, before
+        # anything below asks whether the room is sleeping (DR-058).
+        presence = self._graced_presence(room, now)
+        self._update_comfort_mode(room, presence)
+
         capabilities = self._capabilities(room)
         unaided = self._unaided_inputs(room, now)
 
@@ -2167,7 +2264,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             temperature_entity_id=room.temperature_entity_id,
             humidity_entity_id=room.humidity_entity_id,
             k_rh_cooling_per_hour=self._learned(room.room_id, "k_rh_cooling"),
-            presence=self._graced_presence(room, now),
+            presence=presence,
             direct_sun=self._direct_sun(room),
             heat_load=self._bool(room.heat_load_entity_id) is True,
             air_moving=self._air_moving(room),
@@ -2202,6 +2299,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             forecast_demand_ahead=self._demand_ahead(room, now),
             sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
             is True,
+            comfort_mode=self.comfort_mode(room.room_id),
         )
 
     def _async_ensure_profiles(self) -> None:
@@ -2970,6 +3068,27 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             return None
         self._note_availability(entity_id, available=True)
         return state.state == "on"
+
+
+def _comfort_modes_from_store(
+    stored: Mapping[str, str], rooms: set[str]
+) -> dict[str, ComfortMode]:
+    """The kept Comfort modes for rooms that still exist (DR-058).
+
+    A value this build does not know, or a kept Schedule, is dropped: the
+    room is on Schedule, which is what it would be with nothing kept.
+    """
+    modes: dict[str, ComfortMode] = {}
+    for room_id, value in stored.items():
+        if room_id not in rooms:
+            continue
+        try:
+            mode = ComfortMode(value)
+        except ValueError:
+            continue
+        if mode is not ComfortMode.SCHEDULE:
+            modes[room_id] = mode
+    return modes
 
 
 def _watched_entities(rooms: dict[str, RoomConfig]) -> set[str]:
