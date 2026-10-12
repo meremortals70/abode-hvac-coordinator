@@ -165,8 +165,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:
-    """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a config entry, writing learned state and choices out first.
+
+    A reload builds a new store and reads the file straight away, so anything
+    this store has not yet written would be lost to it (DR-064).
+    """
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await entry.runtime_data.store.async_flush()
+    return unloaded
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> None:

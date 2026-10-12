@@ -88,6 +88,16 @@ CONF_RESERVE_MARGIN_KWH: Final = "reserve_margin_kwh"
 #: the inverter cannot physically deliver.
 CONF_BATTERY_MAX_DISCHARGE_KW: Final = "battery_max_discharge_kw"
 
+#: 0.9.3, DR-061. Which solar forecasts the power budget reads: config entry
+#: ids of integrations that publish a solar forecast to the Energy dashboard.
+#: House-level, more than one allowed (one per array is common). Absent means
+#: the ones the Energy dashboard uses; an empty list means none.
+CONF_SOLAR_FORECAST_ENTRIES: Final = "solar_forecast_entry_ids"
+
+#: How often the solar forecast is re-read. The integrations that publish it
+#: refresh hourly or less often.
+SOLAR_FORECAST_REFRESH_INTERVAL: Final = timedelta(minutes=15)
+
 #: 0.8.10, finding 11. One signed power entity in watts. Optional like the
 #: other five, and joins them: whoever configures power management is
 #: configuring a rule about grid flow, and without a grid reading the
@@ -119,8 +129,9 @@ POWER_MANAGEMENT_OFF: Final = "off"
 #: conceding comfort to it.
 POWER_MANAGEMENT_GUIDANCE: Final = "guidance"
 #: The setpoint ceiling keeps applying even once the room needs correction,
-#: rather than lifting there — the room runs gently rather than at full
-#: output, and never stops.
+#: rather than lifting there, so the room runs gently rather than at full
+#: output. Where the budget cannot afford even holding the room, the unit is
+#: turned off until it can (0.9.3, DR-063).
 POWER_MANAGEMENT_ENFORCED: Final = "enforced"
 
 # --- tariff, read from Abode Power Tariffs ------------------------------
@@ -274,3 +285,6 @@ ISSUE_GRID_SIGN_CONTRADICTED: Final = "grid_sign_contradicted"
 #: anyway — true under `off` and `guidance` alike, since neither ever holds
 #: comfort down). 0.8.10, findings 15 and 16.
 ISSUE_POWER_SHORTFALL: Final = "power_shortfall"
+#: A selected solar forecast could not be read. The power budget falls back to
+#: the solar being produced now. 0.9.3, DR-061.
+ISSUE_SOLAR_FORECAST_UNAVAILABLE: Final = "solar_forecast_unavailable"

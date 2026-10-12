@@ -6,6 +6,79 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.3 - 2026-10-12
+
+From the living room's first night on Sleep, 11/12 October.
+
+### Fixed
+
+- **A choice made in Home Assistant was lost on reload.** Sleep set at 20:27 was
+  gone after a reload at 21:40, and Automatic control off was lost the next
+  morning. Nothing reached disk while the integration ran: every evaluation
+  re-armed the five-minute save, and Home Assistant moves a pending save to the
+  latest time asked for, so the write never came. Learned state now has one
+  pending save at a time, a choice is written within five seconds, and
+  everything is written when the integration unloads. (DR-064)
+- **Sleep did not cool.** The loop asked for 0.2 C below a 25.9 C room, and
+  rounding to the unit's whole degrees sent 26.0 C. Cooling now rounds down and
+  heating rounds up. (DR-065)
+- **A coast turned the unit off for a minute or two.** When the short-cycle
+  guard refused a restart, the unit was commanded off in the middle of its fan
+  coast (06:35 and 06:52). It now stays on its fan, or off where it has no fan
+  mode. (DR-059)
+- **The power ceiling flipped about twenty times in forty minutes.** It now
+  drops at once and rises only after ten minutes, and only to a bin the
+  allowance clears by 0.3 kW. (DR-062)
+- **A sensor reporting the same value could be judged stale.** Age is now
+  measured from the last report, not the last change. (DR-066)
+- **Heading home with a deadline stopped every room being evaluated.** The
+  date-time picker sends a time with no time zone, and comparing it with the
+  clock failed on every evaluation. It is now taken as local time.
+- **A removed room's last commands were never forgotten.** What was last sent
+  has been kept per air conditioner since 0.8.8, but removing a room cleared it
+  by room name, so nothing was cleared. Commands to units no remaining room
+  uses are now dropped.
+- **A learned rate far outside its range could stop the evaluation.** The
+  humidity calculation overflowed below the formula's range. It now keeps the
+  reading.
+- **A sensor stuck on a value that is not a number was logged every thirty
+  seconds.** It is now logged once, and once when it recovers, like any other
+  unavailable reading.
+
+### Changed
+
+- **A humid room dries when the compressor stops; a dry room stays on its fan.**
+  Judged by the same test that chooses dry over cool, at the humidity the room
+  will reach once the coil has given its water back. (DR-059, amending DR-057)
+- **A coast counts the coil's water.** The weather coast now projects the
+  comfort index, with the room's humidity rising for fifteen minutes after the
+  compressor stops at a rate each room learns. A cooling room is not coasted on
+  the weather until that rate is known. Those minutes are no longer learned as
+  the room's passive drift. (DR-060)
+- **Enforced power management may turn the unit off; guidance never does.**
+  Where even holding the room cannot be afforded, an enforced room is turned
+  off until the budget allows it, and the trace says so. A coasting room the
+  budget can afford is left alone. (DR-063)
+
+### Added
+
+- **The power budget counts the day's solar forecast.** A new field in the
+  power settings lists every solar production forecast the Energy dashboard can
+  use; choose one per array. Until the step is saved, the ones the Energy
+  dashboard uses are read. The forecast sun between now and the end of a
+  no-import window counts towards the budget. A forecast that cannot be read is
+  named in a repair issue and the budget falls back to the solar being produced
+  now. (DR-061)
+- Decision records DR-059 to DR-066, and DR-058 in the index. Every record's
+  code anchors re-checked against 0.9.3.
+- **Every module is tested to 98% or better, the config flow to 100%.** 920
+  tests. Every rule in the Home Assistant integration quality scale, bronze to
+  platinum, is now done, or exempt for the reason the rule itself gives.
+- A room that cannot be read now stops setup with a message saying which room
+  and what to fix, in the integration's own translations.
+- `docs/tariff.md` describes the power budget as it works now. It still
+  described the 0.8.5 refusal, which 0.8.10 replaced.
+
 ## 0.9.2 - 2026-10-11
 
 ### Added

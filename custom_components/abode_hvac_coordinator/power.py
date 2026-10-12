@@ -33,6 +33,11 @@ ceiling and states its own state in `reasons`.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, tzinfo
+from typing import Any
+
 #: A positive raw reading means the house is drawing from the grid.
 GRID_SIGN_IMPORTING = "importing"
 #: A positive raw reading means the house is feeding the grid.
@@ -233,3 +238,235 @@ def ceiling_is_binding(
 ) -> bool:
     """Whether the ceiling would move this setpoint."""
     return held_setpoint(uncapped_c, room_c, direction, ceiling_c) != uncapped_c
+
+
+# ---- forecast solar (0.9.3, DR-061) ----------------------------------------
+
+#: The longest period one forecast point is taken to cover, where the next
+#: point is further away than this or there is no next point. Every forecast
+#: integration this reads publishes hourly Wh.
+FORECAST_POINT_MAX = timedelta(hours=1)
+
+#: How finely the allowance is searched for, in kW. Well below any bin's draw.
+_ALLOWANCE_TOLERANCE_KW = 0.005
+
+
+def solar_points_from_forecast(
+    forecast: Mapping[str, Any] | None, default_tz: tzinfo
+) -> list[tuple[datetime, float]]:
+    """Points from one source's energy-platform answer, as (start, Wh).
+
+    The answer is `{"wh_hours": {iso timestamp: Wh}}`, the shape Home
+    Assistant's Energy dashboard reads (`energy/types.py`, SolarForecastType).
+    A timestamp without an offset is taken as local time. Anything that does
+    not parse is skipped, not guessed at; an answer with nothing usable is an
+    empty list.
+    """
+    if not isinstance(forecast, Mapping):
+        return []
+    raw = forecast.get("wh_hours")
+    if not isinstance(raw, Mapping):
+        return []
+    points: list[tuple[datetime, float]] = []
+    for stamp, value in raw.items():
+        try:
+            start = datetime.fromisoformat(str(stamp))
+            wh = float(value)
+        except (TypeError, ValueError):
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=default_tz)
+        if math.isfinite(wh):
+            points.append((start, wh))
+    return sorted(points)
+
+
+def energy_dashboard_solar_forecasts(data: Mapping[str, Any] | None) -> list[str]:
+    """The solar forecast config entries the Energy dashboard is set up with.
+
+    From the energy manager's data: every solar source's
+    `config_entry_solar_forecast` list, in order, without repeats.
+    """
+    if not isinstance(data, Mapping):
+        return []
+    found: list[str] = []
+    for source in data.get("energy_sources") or []:
+        if not isinstance(source, Mapping) or source.get("type") != "solar":
+            continue
+        for entry_id in source.get("config_entry_solar_forecast") or []:
+            if isinstance(entry_id, str) and entry_id not in found:
+                found.append(entry_id)
+    return found
+
+
+def forecast_slices(
+    points: Sequence[tuple[datetime, float]],
+    now: datetime,
+    until: datetime,
+) -> list[tuple[float, float]]:
+    """Forecast solar energy from now until `until`, as (hours, kWh) slices.
+
+    `points` are (period start, Wh produced in that period), as the Energy
+    dashboard's solar forecast publishes them, summed across sources by the
+    caller. A period runs to the next point's start, never longer than
+    `FORECAST_POINT_MAX`. Energy is taken as spread evenly through its period,
+    so the slice now is the part of the current period still to come.
+
+    Time from now to `until` that no point covers is a slice with no energy:
+    a forecast that does not reach is not a forecast of sun.
+    """
+    if until <= now:
+        return []
+    ordered = sorted(points, key=lambda point: point[0])
+    periods: list[tuple[datetime, datetime, float]] = []
+    for index, (start, wh) in enumerate(ordered):
+        end = start + FORECAST_POINT_MAX
+        if index + 1 < len(ordered):
+            end = min(end, ordered[index + 1][0])
+        if end > start:
+            periods.append((start, end, max(wh, 0.0)))
+
+    slices: list[tuple[float, float]] = []
+    cursor = now
+    for start, end, wh in periods:
+        if end <= cursor or start >= until:
+            continue
+        if start > cursor:
+            gap = (min(start, until) - cursor).total_seconds() / 3600.0
+            slices.append((gap, 0.0))
+            cursor = start
+        overlap_end = min(end, until)
+        share = (overlap_end - cursor) / (end - start)
+        hours = (overlap_end - cursor).total_seconds() / 3600.0
+        if hours > 0:
+            slices.append((hours, wh * share / 1000.0))
+        cursor = overlap_end
+        if cursor >= until:
+            break
+    if cursor < until:
+        slices.append(((until - cursor).total_seconds() / 3600.0, 0.0))
+    return slices
+
+
+def forecast_allowance_kw(
+    *,
+    available_kwh: float,
+    headroom_kwh: float,
+    slices: Sequence[tuple[float, float]],
+    other_house_kw: float,
+    plant_kw: float | None,
+) -> float:
+    """The steady kW one room may draw until the window clears, without import.
+
+    0.9.3, DR-061. Walks the window slice by slice with the battery's energy:
+    each slice adds the forecast solar and takes away the rest of the house
+    and the room. The battery may not fall below the reserve at any point —
+    that is the dawn case, where the battery has to carry the room until the
+    sun arrives — and cannot hold more than `headroom_kwh` above where it is
+    now, so solar the battery cannot store is not credited twice. The answer
+    is the largest steady draw that keeps the battery at or above the
+    reserve throughout, held to `plant_kw`, what the battery and the sun can
+    deliver right now. Found by bisection: the walk is not linear in the
+    draw once the battery fills.
+
+    `available_kwh` is the energy above the reserve now; negative is treated
+    as none. `plant_kw` None means no discharge limit is configured.
+    """
+    if not slices:
+        return 0.0
+    start = max(available_kwh, 0.0)
+    ceiling_kwh = start + max(headroom_kwh, 0.0)
+
+    def holds(draw_kw: float) -> bool:
+        level = start
+        for hours, solar_kwh in slices:
+            level = min(level + solar_kwh - (other_house_kw + draw_kw) * hours, ceiling_kwh)
+            if level < -1e-9:
+                return False
+        return True
+
+    upper = plant_kw if plant_kw is not None else math.inf
+    if upper <= 0 or not holds(0.0):
+        return 0.0
+    if math.isinf(upper):
+        hours_total = sum(hours for hours, _ in slices)
+        upper = (ceiling_kwh + sum(kwh for _, kwh in slices)) / max(hours_total, 1e-6)
+    if holds(upper):
+        return upper
+    low, high = 0.0, upper
+    while high - low > _ALLOWANCE_TOLERANCE_KW:
+        middle = (low + high) / 2.0
+        if holds(middle):
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+def plant_allowance_kw(
+    max_discharge_kw: float | None, solar_now_kw: float, other_house_kw: float
+) -> float | None:
+    """What the battery and the sun can deliver to one room right now.
+
+    The battery's rated discharge plus whatever solar is producing, less the
+    rest of the house. None where no discharge limit is configured.
+    """
+    if max_discharge_kw is None:
+        return None
+    return max(max_discharge_kw + solar_now_kw - other_house_kw, 0.0)
+
+
+# ---- hysteresis on the ceiling (0.9.3, DR-062) ------------------------------
+
+#: How far the allowance must clear a more permissive bin's draw, in kW,
+#: before the ceiling moves up to it. A judgement, not a measurement.
+BIN_RAISE_MARGIN_KW = 0.3
+
+#: How long the ceiling stays where it is before it may move up again. Moving
+#: down is never delayed: that protects the budget. A judgement, matching the
+#: compressor's minimum run.
+BIN_RAISE_HOLD = timedelta(minutes=10)
+
+#: `ceiling_bin` returns None when even the cheapest bin does not fit. Held
+#: here as -1 so bins can be compared.
+_NO_BIN = -1
+
+
+def held_ceiling_bin(
+    allowance_kw: float,
+    draw_kw_by_bin: list[float],
+    *,
+    previous: int | None,
+    previous_since: datetime | None,
+    now: datetime,
+) -> int | None:
+    """The ceiling bin with hysteresis: down at once, up only when it is clear.
+
+    0.9.3, DR-062. `ceiling_bin` alone flipped the setpoint between the room
+    and the bottom of the unit's range about twenty times in forty minutes as
+    the allowance crossed a bin's draw. A move to a less permissive bin, or
+    to no bin, happens the cycle it is needed. A move to a more permissive
+    bin needs the allowance to clear that bin's draw by `BIN_RAISE_MARGIN_KW`
+    and the ceiling to have stayed put for `BIN_RAISE_HOLD`; otherwise the
+    previous bin stands.
+
+    `previous` None with `previous_since` None means no earlier ceiling, and
+    the plain answer is taken.
+    """
+    candidate = ceiling_bin(allowance_kw, draw_kw_by_bin)
+    if previous_since is None:
+        return candidate
+    held = _NO_BIN if previous is None else previous
+    wanted = _NO_BIN if candidate is None else candidate
+    if wanted <= held:
+        return candidate
+    if now - previous_since < BIN_RAISE_HOLD:
+        return previous
+    clear = [
+        index
+        for index, kw in enumerate(draw_kw_by_bin)
+        if index > held and kw + BIN_RAISE_MARGIN_KW <= allowance_kw
+    ]
+    if not clear:
+        return previous
+    return max(clear)

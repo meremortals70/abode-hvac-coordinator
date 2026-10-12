@@ -307,11 +307,12 @@ async def test_a_projected_shortfall_no_longer_stops_the_compressor(
     assert state.attributes["power_ceiling_c"] is None
 
 
-async def test_comfort_reduction_throttles_a_room_that_needs_correction(
+async def test_enforced_turns_off_a_room_the_budget_cannot_hold(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """0.8.10, finding 15. With the checkbox on, the same shortfall throttles
-    rather than either stopping the room or ignoring the budget entirely.
+    """0.9.3, DR-063. Enforced, with a shortfall so deep that even holding at
+    setpoint cannot be afforded, turns the unit off. Until 0.9.3 it held the
+    setpoint at the room's own temperature and kept drawing.
     """
     rooms = list(mock_config_entry.options[CONF_ROOMS])
     rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED}
@@ -343,10 +344,12 @@ async def test_comfort_reduction_throttles_a_room_that_needs_correction(
 
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
-    # Never stopped — the compressor is still commanded, just capped.
-    assert state.attributes["actuator"] == "compressor"
+    assert state.attributes["actuator"] == "off"
     assert state.attributes["comfort_reduction_active"] is True
-    assert state.attributes["power_ceiling_c"] is not None
+    assert any(
+        "enforced, so the unit is off" in reason
+        for reason in state.attributes["reasons"]
+    ), state.attributes["reasons"]
 
 
 async def test_guidance_reports_the_ceiling_without_ever_throttling(
@@ -446,8 +449,9 @@ async def test_precool_is_never_rationed_even_when_enforced(
         coordinator._power_ceiling(room, inputs, trace, now, capabilities)
         return trace
 
-    # Control: the same budget does cap an occupied room.
-    assert _ceiling_for(Mode.OCCUPIED).power_ceiling_c is not None
+    # Control: the same budget does act on an occupied room — here it is
+    # deep enough that enforced turns it off (DR-063).
+    assert _ceiling_for(Mode.OCCUPIED).actuator is ActuatorStep.OFF
 
     precool = _ceiling_for(Mode.PRECOOL)
     assert precool.power_ceiling_c is None

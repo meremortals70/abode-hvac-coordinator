@@ -294,8 +294,9 @@ class Actuator:
         """Initialize the actuator."""
         self.hass = hass
         self.coordinator = coordinator
-        #: Last command sent per room, so an unchanged decision is not re-sent
-        #: every evaluation. Keyed by room, holding (hvac_mode, temperature).
+        #: Last command sent per climate entity, so an unchanged decision is not
+        #: re-sent every evaluation. Keyed by entity since 0.8.8, when a room
+        #: could have two heads; holding (hvac_mode, temperature).
         self._last_climate: dict[str, tuple[str, float | None]] = {}
         self._last_cover: dict[str, int] = {}
         #: The last COMMAND_LOG_SIZE mode or setpoint commands sent, newest
@@ -818,7 +819,15 @@ class Actuator:
         self._last_cover[room.room_id] = position
         trace.reasons.append(f"moved covers to {position}%")
 
-    def forget(self, room_id: str) -> None:
-        """Drop remembered commands for a room that is no longer configured."""
-        self._last_climate.pop(room_id, None)
+    def forget(self, room_id: str, in_use: set[str]) -> None:
+        """Drop remembered commands for a room that is no longer configured.
+
+        `in_use` is every climate entity the remaining rooms still command.
+        The climate memory is keyed by entity, and the removed room's own
+        entities are no longer known by the time it is forgotten, so whatever
+        no remaining room uses is dropped. Until 0.9.3 this popped the room id
+        from the entity-keyed memory and so dropped nothing.
+        """
+        for entity_id in [e for e in self._last_climate if e not in in_use]:
+            del self._last_climate[entity_id]
         self._last_cover.pop(room_id, None)

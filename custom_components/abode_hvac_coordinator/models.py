@@ -319,6 +319,16 @@ class RoomInputs:
     #: the compressor itself would take plus ten, or fifteen where the model
     #: cannot estimate that.
     unaided_return_limit_minutes: float = 15.0
+    #: 0.9.3, DR-060. The relative humidity the room is expected to reach once
+    #: the compressor has stopped and the coil has given its water back, from
+    #: the room's learned rebound. None where the compressor is not running or
+    #: stopped long ago, or the rebound has not been learned.
+    rebound_relative_humidity: float | None = None
+    #: 0.9.3, DR-060. Why the weather coast may not be used this cycle, where
+    #: it may not. Set while the compressor is running or has just stopped and
+    #: the room has not yet learned how much moisture comes back off the coil:
+    #: a projection without it is the one that was wrong all night.
+    unaided_refused: str | None = None
     #: 0.9.0, DR-050. How long an opening may stay open before the unit stops,
     #: and the warning grace before that for the first announcement.
     opening_grace_minutes: float = 5.0

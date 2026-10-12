@@ -1915,6 +1915,7 @@ class TestThermalPersistence(unittest.TestCase):
                 "k_sensible",
                 "k_latent",
                 "k_rh_cooling",
+                "k_rh_rebound",
                 "k_sensible_bins",
             },
         )
@@ -5239,3 +5240,327 @@ class TestSolarPosition(unittest.TestCase):
     def test_an_afternoon_sun_is_on_a_west_window(self):
         azimuth, elevation = self._at(15, 30)
         self.assertTrue(_sun.sun_on_window(azimuth, elevation, 270.0))
+
+
+# ---------------------------------------------------------------------------
+# 0.9.3 - the living room night of 11/12 October 2026
+# ---------------------------------------------------------------------------
+
+
+class TestCoastStepFollowsHumidity(unittest.TestCase):
+    """0.9.3, DR-059. Coasting dries a humid room and fans a dry one."""
+
+    BAND = ComfortBand(23.5, 26.0)
+
+    def _inputs(self, rh, **overrides):
+        base = {"now": NOW, "temperature_c": 24.3, "relative_humidity": rh}
+        base.update(overrides)
+        return RoomInputs(**base)
+
+    def _step(self, inputs, hci=26.4):
+        trace = _models.DecisionTrace(room_id="living", at=NOW, mode=Mode.COAST)
+        return _modes.coast_step(inputs, trace, self.BAND, hci), trace
+
+    def test_a_humid_room_dries_rather_than_blowing_over_a_wet_coil(self):
+        step, trace = self._step(self._inputs(67.0))
+        self.assertIs(step, ActuatorStep.DRY)
+        self.assertTrue(any("humidity is high" in r for r in trace.rejected))
+
+    def test_a_dry_room_stays_on_its_fan(self):
+        step, _ = self._step(self._inputs(55.0))
+        self.assertIs(step, ActuatorStep.FAN)
+
+    def test_a_unit_without_dry_mode_stays_on_its_fan_even_when_humid(self):
+        step, _ = self._step(self._inputs(70.0, can_dry=False))
+        self.assertIs(step, ActuatorStep.FAN)
+
+    def test_a_unit_with_neither_coasts_off(self):
+        step, _ = self._step(self._inputs(55.0, can_fan_only=False))
+        self.assertIs(step, ActuatorStep.OFF)
+
+    def test_the_humidity_the_coil_will_give_back_counts(self):
+        """60% now, 68% once the coil has given its water back: dry."""
+        step, _ = self._step(self._inputs(60.0, rebound_relative_humidity=68.0))
+        self.assertIs(step, ActuatorStep.DRY)
+
+    def test_a_weather_coast_in_a_humid_room_dries(self):
+        """The night's case: the compressor is replaced by the weather, and
+        the coil would push the room over the threshold once stopped."""
+        trace = evaluate_room(
+            room(bands={Mode.OCCUPIED: self.BAND}),
+            RoomInputs(
+                now=NOW,
+                temperature_c=24.3,
+                relative_humidity=60.0,
+                presence=True,
+                outdoor_c=22.0,
+                outdoor_relative_humidity=90.0,
+                unaided_available=True,
+                unaided_return_minutes=30.0,
+                unaided_return_limit_minutes=90.0,
+                rebound_relative_humidity=67.0,
+            ),
+        )
+        self.assertIs(trace.mode, Mode.COAST)
+        self.assertIs(trace.actuator, ActuatorStep.DRY)
+
+
+class TestWeatherCoastWaitsForTheRebound(unittest.TestCase):
+    """0.9.3, DR-060. No weather coast after cooling until the room has
+    learned how much moisture comes back off the coil."""
+
+    def _trace(self, temperature_c, refused, **overrides):
+        base = {
+            "now": NOW,
+            "temperature_c": temperature_c,
+            "relative_humidity": 50.0,
+            "presence": True,
+            "outdoor_c": 20.0,
+            "outdoor_relative_humidity": 60.0,
+            "unaided_available": True,
+            "unaided_return_minutes": 30.0,
+            "unaided_return_limit_minutes": 90.0,
+            "unaided_refused": refused,
+        }
+        base.update(overrides)
+        return evaluate_room(room(), RoomInputs(**base))
+
+    def test_an_unlearned_rebound_keeps_the_compressor(self):
+        trace = self._trace(31.0, "not learned yet")
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+        self.assertIn("coast: not learned yet", trace.rejected)
+
+    def test_the_floor_comparison_is_not_used_instead(self):
+        trace = self._trace(31.0, "not learned yet", unaided_available=False)
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_a_room_that_needs_heat_is_not_held_up_by_a_cold_coil(self):
+        trace = self._trace(21.0, "not learned yet", outdoor_c=30.0)
+        self.assertIs(trace.mode, Mode.COAST)
+
+    def test_without_a_refusal_the_coast_goes_ahead(self):
+        trace = self._trace(31.0, None)
+        self.assertIs(trace.mode, Mode.COAST)
+
+
+class TestReboundLearning(unittest.TestCase):
+    """0.9.3, DR-060. The minutes after a stop teach the rebound, not the
+    room's drift."""
+
+    def _obs(self, since_stop, **overrides):
+        base = {
+            "elapsed_hours": 2.0 / 60.0,
+            "indoor_start_c": 22.0,
+            "indoor_end_c": 22.3,
+            "humidity_start": 60.0,
+            "humidity_end": 61.0,
+            "outdoor_c": 24.0,
+            "direct_sun": False,
+            "compressor": 0,
+            "drying": False,
+            "since_stop_hours": since_stop,
+        }
+        base.update(overrides)
+        return _thermal.Observation(**base)
+
+    def test_an_interval_just_after_a_stop_teaches_the_rebound(self):
+        model = _thermal.ThermalModel()
+        model.observe(self._obs(0.05))
+        self.assertEqual(model.k_rh_rebound.samples, 1)
+        self.assertAlmostEqual(model.k_rh_rebound.value, 20.0, places=2)
+        self.assertEqual(model.k_loss.samples, 0)
+
+    def test_an_interval_after_the_rebound_teaches_the_drift(self):
+        model = _thermal.ThermalModel()
+        model.observe(self._obs(0.5))
+        self.assertEqual(model.k_rh_rebound.samples, 0)
+        self.assertEqual(model.k_loss.samples, 1)
+
+    def test_no_recorded_stop_is_ordinary_drift(self):
+        model = _thermal.ThermalModel()
+        model.observe(self._obs(None))
+        self.assertEqual(model.k_loss.samples, 1)
+
+    def test_the_rise_still_to_come_is_unknown_until_learned(self):
+        model = _thermal.ThermalModel()
+        self.assertIsNone(model.rebound_rh_rise(None))
+        self.assertEqual(model.rebound_rh_rise(0.5), 0.0)
+
+    def test_the_rise_still_to_come_is_what_is_left_of_the_rebound(self):
+        model = _thermal.ThermalModel()
+        model.k_rh_rebound = _thermal.Coefficient(value=20.0, variance=0.01, samples=40)
+        self.assertAlmostEqual(model.rebound_rh_rise(None), 20.0 * 0.25)
+        self.assertAlmostEqual(model.rebound_rh_rise(0.15), 20.0 * 0.10)
+
+    def test_the_rebound_survives_a_restart(self):
+        model = _thermal.ThermalModel()
+        model.k_rh_rebound = _thermal.Coefficient(value=18.0, variance=0.02, samples=30)
+        restored = _thermal.ThermalModel.from_dict(model.as_dict())
+        self.assertEqual(restored.k_rh_rebound.samples, 30)
+        self.assertAlmostEqual(restored.k_rh_rebound.value, 18.0)
+
+
+AEST = timezone(timedelta(hours=10))
+
+
+class TestForecastSlices(unittest.TestCase):
+    """0.9.3, DR-061. Hourly forecast Wh turned into the window ahead."""
+
+    def _at(self, hour, minute=0):
+        return datetime(2026, 10, 12, hour, minute, tzinfo=AEST)
+
+    def test_the_current_hour_counts_only_what_is_left_of_it(self):
+        points = [(self._at(6), 600.0), (self._at(7), 1200.0)]
+        slices = _power.forecast_slices(points, self._at(6, 30), self._at(8))
+        self.assertEqual(len(slices), 2)
+        self.assertAlmostEqual(slices[0][0], 0.5)
+        self.assertAlmostEqual(slices[0][1], 0.3)
+        self.assertAlmostEqual(slices[1][1], 1.2)
+
+    def test_hours_before_the_first_point_carry_no_energy(self):
+        points = [(self._at(6), 600.0)]
+        slices = _power.forecast_slices(points, self._at(5), self._at(7))
+        self.assertAlmostEqual(slices[0][0], 1.0)
+        self.assertAlmostEqual(slices[0][1], 0.0)
+        self.assertAlmostEqual(sum(kwh for _, kwh in slices), 0.6)
+
+    def test_hours_past_the_last_point_carry_no_energy(self):
+        points = [(self._at(6), 600.0)]
+        slices = _power.forecast_slices(points, self._at(6), self._at(9))
+        self.assertAlmostEqual(sum(hours for hours, _ in slices), 3.0)
+        self.assertAlmostEqual(sum(kwh for _, kwh in slices), 0.6)
+
+    def test_the_window_end_cuts_the_last_period(self):
+        points = [(self._at(10), 3000.0)]
+        slices = _power.forecast_slices(points, self._at(10), self._at(10, 20))
+        self.assertAlmostEqual(sum(kwh for _, kwh in slices), 1.0)
+
+
+class TestForecastAllowance(unittest.TestCase):
+    """0.9.3, DR-061. The morning of 12 October: 20% battery, sun rising."""
+
+    MORNING = [(0.42, 0.08), (1.0, 0.9), (1.0, 1.8), (1.0, 2.8), (1.0, 3.5)]
+
+    def test_the_morning_sun_carries_the_room(self):
+        allowance = _power.forecast_allowance_kw(
+            available_kwh=1.7,
+            headroom_kwh=10.8,
+            slices=self.MORNING,
+            other_house_kw=0.5,
+            plant_kw=_power.plant_allowance_kw(5.0, 0.1, 0.5),
+        )
+        # Counting only the 0.1 kW being produced at 06:35, as the budget did
+        # that morning, the same battery affords almost nothing.
+        instantaneous = _power.budget_allowance_kw(
+            available_kwh=1.7,
+            hours_until_clear=4.42,
+            max_discharge_kw=5.0,
+            house_load_w=500.0,
+            own_draw_kw=0.0,
+            sustained_solar_kw=0.1,
+        )
+        self.assertLess(instantaneous, 0.5)
+        self.assertGreater(allowance, 1.2)
+
+    def test_an_empty_battery_cannot_borrow_from_the_afternoon(self):
+        allowance = _power.forecast_allowance_kw(
+            available_kwh=0.0,
+            headroom_kwh=10.8,
+            slices=self.MORNING,
+            other_house_kw=0.5,
+            plant_kw=None,
+        )
+        self.assertEqual(allowance, 0.0)
+
+    def test_sun_a_full_battery_cannot_store_is_not_counted(self):
+        sunny = [(1.0, 5.0), (1.0, 0.0)]
+        roomy = _power.forecast_allowance_kw(
+            available_kwh=0.0, headroom_kwh=10.0, slices=sunny,
+            other_house_kw=0.0, plant_kw=None,
+        )
+        full = _power.forecast_allowance_kw(
+            available_kwh=0.0, headroom_kwh=0.0, slices=sunny,
+            other_house_kw=0.0, plant_kw=None,
+        )
+        self.assertAlmostEqual(roomy, 2.5, delta=0.01)
+        self.assertAlmostEqual(full, 0.0, delta=0.01)
+
+    def test_the_battery_and_the_sun_now_bound_it(self):
+        allowance = _power.forecast_allowance_kw(
+            available_kwh=10.0, headroom_kwh=0.0, slices=[(1.0, 0.0)],
+            other_house_kw=0.0, plant_kw=2.0,
+        )
+        self.assertAlmostEqual(allowance, 2.0)
+
+
+class TestSolarForecastParsing(unittest.TestCase):
+    """0.9.3, DR-061. The Energy dashboard's forecast shape."""
+
+    def test_wh_hours_are_read_and_sorted(self):
+        points = _power.solar_points_from_forecast(
+            {"wh_hours": {
+                "2026-10-12T07:00:00+10:00": 900,
+                "2026-10-12T06:00:00+10:00": 200,
+            }},
+            AEST,
+        )
+        self.assertEqual([wh for _, wh in points], [200.0, 900.0])
+
+    def test_a_timestamp_without_an_offset_is_local(self):
+        points = _power.solar_points_from_forecast(
+            {"wh_hours": {"2026-10-12T06:00:00": 200}}, AEST
+        )
+        self.assertEqual(points[0][0].utcoffset(), timedelta(hours=10))
+
+    def test_rubbish_is_skipped_not_guessed(self):
+        self.assertEqual(_power.solar_points_from_forecast(None, AEST), [])
+        self.assertEqual(
+            _power.solar_points_from_forecast(
+                {"wh_hours": {"later": 5, "2026-10-12T06:00:00+10:00": "x"}}, AEST
+            ),
+            [],
+        )
+
+    def test_the_energy_dashboards_forecasts_are_found(self):
+        data = {
+            "energy_sources": [
+                {"type": "grid"},
+                {"type": "solar", "config_entry_solar_forecast": ["north", "west"]},
+                {"type": "solar", "config_entry_solar_forecast": ["west"]},
+                {"type": "solar", "config_entry_solar_forecast": None},
+            ]
+        }
+        self.assertEqual(
+            _power.energy_dashboard_solar_forecasts(data), ["north", "west"]
+        )
+        self.assertEqual(_power.energy_dashboard_solar_forecasts(None), [])
+
+
+class TestCeilingHysteresis(unittest.TestCase):
+    """0.9.3, DR-062. Down at once; up only when clear, and not too soon."""
+
+    DRAW = [0.5, 0.8, 1.0, 1.2]
+
+    def _bin(self, allowance, previous, minutes_since):
+        since = None if minutes_since is None else NOW - timedelta(minutes=minutes_since)
+        return _power.held_ceiling_bin(
+            allowance, self.DRAW, previous=previous, previous_since=since, now=NOW
+        )
+
+    def test_with_no_history_it_is_the_plain_answer(self):
+        self.assertEqual(self._bin(1.0, None, None), 2)
+
+    def test_it_drops_at_once(self):
+        self.assertIsNone(self._bin(0.3, 3, 0.5))
+
+    def test_it_does_not_rise_inside_the_hold(self):
+        self.assertIsNone(self._bin(1.6, None, 2))
+
+    def test_it_rises_after_the_hold_only_as_far_as_is_clear(self):
+        # 1.25 kW clears 0.5, 0.8 by 0.3 but not 1.0 or 1.2.
+        self.assertEqual(self._bin(1.25, None, 15), 1)
+
+    def test_an_allowance_hovering_at_a_draw_does_not_flip_it(self):
+        """The 06:31-07:13 pattern: 0.41 kW then 0.56 kW against a 0.5 kW
+        at-setpoint draw."""
+        self.assertIsNone(self._bin(0.56, None, 15))

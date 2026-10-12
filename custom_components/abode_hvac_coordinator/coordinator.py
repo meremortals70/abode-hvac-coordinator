@@ -92,6 +92,7 @@ from .const import (
     CONF_ROOM_ID,
     CONF_ROOMS,
     CONF_SLEEP_SCHEDULE_ENTITY,
+    CONF_SOLAR_FORECAST_ENTRIES,
     CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     CONF_TEMPERATURE_ENTITY,
@@ -108,6 +109,7 @@ from .const import (
     ISSUE_NO_BANDS,
     ISSUE_POWER_SHORTFALL,
     ISSUE_SHARED_CLIMATE_ENTITY,
+    ISSUE_SOLAR_FORECAST_UNAVAILABLE,
     ISSUE_TARIFF_UNAVAILABLE,
     ISSUE_UNRECOGNISED_CONSTRAINT,
     LOGGER,
@@ -118,6 +120,7 @@ from .const import (
     STARTUP_FETCH_ATTEMPTS,
     STARTUP_FETCH_DELAY,
     PROFILE_UNREAD_REASON,
+    SOLAR_FORECAST_REFRESH_INTERVAL,
     SWITCHED_OFF_REASON,
     TARIFF_DOMAIN,
     TARIFF_HORIZON_HOURS,
@@ -144,7 +147,13 @@ from .grace import (
     evaluate_grace,
     evaluate_opening_warnings,
 )
-from .hci import ComfortBand, apparent_temperature, dry_bulb_for_index, radiant_load
+from .hci import (
+    ComfortBand,
+    apparent_temperature,
+    comfort_index,
+    dry_bulb_for_index,
+    radiant_load,
+)
 from .models import (
     ActuatorStep,
     ComfortMode,
@@ -167,13 +176,18 @@ from .power import (
     GRID_SIGN_IMPORTING,
     battery_available_kwh,
     budget_allowance_kw,
-    ceiling_bin,
     ceiling_is_binding,
     derive_battery_w,
+    energy_dashboard_solar_forecasts,
+    forecast_allowance_kw,
+    forecast_slices,
+    held_ceiling_bin,
     held_setpoint,
     implied_sign,
     normalise_grid_import_w,
+    plant_allowance_kw,
     setpoint_direction,
+    solar_points_from_forecast,
 )
 from .psychro import dew_point_c
 from .regulate import (
@@ -219,6 +233,7 @@ from .thermal import (
     DrawModel,
     Observation,
     PROJECTION_STEP_HOURS,
+    REBOUND_HOURS,
     ThermalModel,
     approach_bin,
     unaided_outlook,
@@ -426,6 +441,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.grid_sign: str | None = config_entry.options.get(
             CONF_GRID_SIGN, config_entry.data.get(CONF_GRID_SIGN)
         )
+        #: 0.9.3, DR-061. Which solar forecasts the budget reads. None means
+        #: whatever the Energy dashboard uses; an empty list means none.
+        raw_forecasts = config_entry.options.get(
+            CONF_SOLAR_FORECAST_ENTRIES,
+            config_entry.data.get(CONF_SOLAR_FORECAST_ENTRIES),
+        )
+        self.solar_forecast_entry_ids: list[str] | None = (
+            None if raw_forecasts is None else [str(item) for item in raw_forecasts]
+        )
+        #: The forecast read from them: (period start, Wh), summed across the
+        #: sources. None until read, or where nothing is selected.
+        self._solar_points: list[tuple[datetime, float]] | None = None
+        #: The sources actually read last time, for diagnostics.
+        self._solar_sources: list[str] = []
+        #: Each room's ceiling bin and when it last changed, for the
+        #: hysteresis in `power.held_ceiling_bin` (DR-062).
+        self._ceiling_bins: dict[str, tuple[int | None, datetime]] = {}
         #: How many consecutive evaluations the live grid reading has
         #: disagreed with the stored sign convention, and the repair issue
         #: this raises once persistent enough. Reset the moment the evidence
@@ -453,6 +485,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._previous: dict[
             str, tuple[datetime, float, float, int, bool, float | None]
         ] = {}
+        #: When each room's compressor last stopped cooling or drying, and
+        #: whether it was cooling or drying at the last evaluation. None while
+        #: it runs. 0.9.3, DR-060: the room takes heat and water back from the
+        #: coil for a while after a stop.
+        self._stopped_at: dict[str, datetime | None] = {}
+        self._was_cooling: dict[str, bool] = {}
         #: Learned per-outdoor-unit draw (0.8.9, finding 14), keyed by group —
         #: two rooms sharing a compressor share one model.
         self._draw: dict[str, DrawModel] = {}
@@ -498,6 +536,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Set when the sequence starts; an unconfigured feed is never pending.
         self._pending_tariff = False
         self._pending_forecast = False
+        self._pending_solar = False
         #: Heading-home requests, per room, with the deadline if one was given.
         #: There is no target: a heading-home room is driven to its comfort band.
         self._heading_home: dict[str, datetime | None] = {}
@@ -583,6 +622,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     TARIFF_REFRESH_INTERVAL,
                 )
             )
+        if self._power_configured():
+            self.config_entry.async_on_unload(
+                async_track_time_interval(
+                    self.hass,
+                    self._async_solar_tick,
+                    SOLAR_FORECAST_REFRESH_INTERVAL,
+                )
+            )
         self._async_check_configuration()
         self._load_models()
         self.previous_rooms = self._async_rooms_in_registry()
@@ -598,7 +645,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         self._pending_tariff = self.tariff_entry_id is not None
         self._pending_forecast = self.weather_entity_id is not None
-        if self._pending_tariff or self._pending_forecast:
+        self._pending_solar = self._power_configured()
+        if self._pending_tariff or self._pending_forecast or self._pending_solar:
             self._async_schedule_startup_fetch(1)
 
     @callback
@@ -643,10 +691,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._pending_forecast = False
             gained = True
 
+        if self._pending_solar and await self._async_refresh_solar_forecast(
+            quiet=not final
+        ):
+            self._pending_solar = False
+            gained = True
+
         if gained:
             await self.async_request_refresh()
 
-        if not final and (self._pending_tariff or self._pending_forecast):
+        if not final and (
+            self._pending_tariff or self._pending_forecast or self._pending_solar
+        ):
             self._async_schedule_startup_fetch(attempt + 1)
 
     async def _async_tariff_tick(self, now: datetime) -> None:
@@ -795,6 +851,139 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             translation_key=ISSUE_FORECAST_UNAVAILABLE,
             translation_placeholders={"reason": reason},
         )
+
+    def _power_configured(self) -> bool:
+        """Whether the power budget can engage at all (all five fields set)."""
+        return None not in (
+            self.battery_soc_entity_id,
+            self.battery_capacity_kwh,
+            self.solar_entity_id,
+            self.house_load_entity_id,
+            self.reserve_margin_kwh,
+        )
+
+    async def _async_solar_tick(self, now: datetime) -> None:
+        """Re-read the solar forecast on its timer."""
+        await self._async_refresh_solar_forecast()
+
+    async def _async_solar_forecast_entries(self) -> list[str]:
+        """The solar forecast config entries to read (DR-061).
+
+        The ones chosen in the power settings, or, where nothing has been
+        chosen there, the ones the Energy dashboard uses. Home Assistant's
+        energy manager is read for that; it is not a documented API, so a
+        failure to read it means no default rather than an error.
+        """
+        if self.solar_forecast_entry_ids is not None:
+            return list(self.solar_forecast_entry_ids)
+        try:
+            from homeassistant.components.energy.data import (  # noqa: PLC0415
+                async_get_manager,
+            )
+
+            manager = await async_get_manager(self.hass)
+        except (ImportError, HomeAssistantError, KeyError) as err:
+            LOGGER.debug("Energy dashboard settings could not be read: %s", err)
+            return []
+        return energy_dashboard_solar_forecasts(manager.data)
+
+    async def _async_refresh_solar_forecast(self, *, quiet: bool = False) -> bool:
+        """Read the selected solar forecasts and sum them, hour by hour.
+
+        0.9.3, DR-061. Through the same call the Energy dashboard uses: each
+        forecast integration's energy platform, `async_get_solar_forecast`,
+        which returns Wh per period. A source that cannot be read is named in
+        a repair issue and the rest are used; with none read, the budget falls
+        back to the solar being produced now, as before 0.9.3. The last
+        forecast read is kept until a read succeeds, and dropped once the
+        forecast no longer reaches the present.
+
+        Returns whether the read is settled, so the startup sequence stops
+        retrying.
+        """
+        entries = await self._async_solar_forecast_entries()
+        if not entries:
+            self._solar_points = None
+            self._solar_sources = []
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SOLAR_FORECAST_UNAVAILABLE)
+            return True
+        try:
+            from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
+                async_get_energy_platforms,
+            )
+
+            platforms = await async_get_energy_platforms(self.hass)
+        except (ImportError, HomeAssistantError) as err:
+            self._async_solar_issue(
+                f"Home Assistant's energy platforms could not be read: {err}", quiet
+            )
+            return False
+
+        totals: dict[datetime, float] = {}
+        read: list[str] = []
+        failed: list[str] = []
+        for entry_id in entries:
+            entry = self.hass.config_entries.async_get_entry(entry_id)
+            if entry is None or entry.domain not in platforms:
+                failed.append(entry.title if entry is not None else entry_id)
+                continue
+            try:
+                forecast = await platforms[entry.domain](self.hass, entry_id)
+            except HomeAssistantError as err:
+                LOGGER.debug("Solar forecast %s failed: %s", entry.title, err)
+                forecast = None
+            points = solar_points_from_forecast(forecast, dt_util.DEFAULT_TIME_ZONE)
+            if not points:
+                failed.append(entry.title)
+                continue
+            read.append(entry.title)
+            for start, wh in points:
+                totals[start] = totals.get(start, 0.0) + wh
+
+        if read:
+            self._solar_points = sorted(totals.items())
+            self._solar_sources = read
+        if failed:
+            self._async_solar_issue(
+                "these could not be read: " + ", ".join(failed), quiet
+            )
+            return bool(read) and not quiet
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SOLAR_FORECAST_UNAVAILABLE)
+        return True
+
+    @callback
+    def _async_solar_issue(self, reason: str, quiet: bool = False) -> None:
+        """Raise a repair issue naming the solar forecast that failed."""
+        if quiet:
+            LOGGER.debug("Solar forecast not available yet: %s", reason)
+            return
+        LOGGER.warning("Solar forecast could not be read: %s", reason)
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_SOLAR_FORECAST_UNAVAILABLE,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_SOLAR_FORECAST_UNAVAILABLE,
+            translation_placeholders={"reason": reason},
+        )
+
+    def _solar_forecast_slices(
+        self, now: datetime, hours: float
+    ) -> list[tuple[float, float]] | None:
+        """Forecast solar from now to the end of the window, or None.
+
+        None where no forecast is held, or the one held no longer reaches the
+        present: a forecast that has gone stale says nothing about the sun.
+        """
+        points = self._solar_points
+        if not points:
+            return None
+        # Hours before the first point carry no energy (forecast_slices), which
+        # is right before sunrise: some sources only publish daylight hours.
+        if points[-1][0] + timedelta(hours=1) <= now:
+            return None
+        return forecast_slices(points, now, now + timedelta(hours=hours))
 
     def _load_models(self) -> None:
         """Restore each room's learned behaviour from the store."""
@@ -970,8 +1159,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def async_request_heading_home(
         self, room_id: str, deadline: datetime | None = None
     ) -> None:
-        """Bring a room to its comfort band ahead of arrival."""
-        self._heading_home[room_id] = deadline
+        """Bring a room to its comfort band ahead of arrival.
+
+        A deadline with no time zone is taken as local time, which is what
+        Home Assistant's date-time picker sends. Until 0.9.3 it was kept
+        naive, and every evaluation then failed comparing it with the clock.
+        """
+        self._heading_home[room_id] = (
+            None if deadline is None else dt_util.as_utc(deadline)
+        )
 
     def is_room_switched_off(self, room_id: str) -> bool:
         """Whether the user has switched this room's automatic control off."""
@@ -1278,9 +1474,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # Last step, and the one that matters to the unit: what it is sent
             # has to be a value it can hold (DR-051). Where the power ceiling
             # has just bound, the rounding goes the way that stays inside it.
+            # Otherwise it goes the way the room is being driven (DR-065):
+            # cooling rounds down and heating rounds up, so a unit with whole
+            # degree steps is never sent a setpoint at or past the room it is
+            # meant to be moving. Rounding to the nearest sent 26 C to a 25.9 C
+            # room the loop wanted 0.2 C below, and the unit did nothing.
             toward = None
             if capped:
                 toward = "up" if direction == "cool" else "down"
+            elif direction == "cool":
+                toward = "down"
+            elif direction == "heat":
+                toward = "up"
             rounded = quantise_setpoint(commanded, limits, toward=toward)
             if abs(rounded - commanded) >= 0.05:
                 trace.reasons.append(
@@ -1420,10 +1625,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 # have nothing to do with it.
                 trace.hold_compressor = True
             else:
-                # A start was refused. Leave the unit off rather than
-                # commanding nothing: the room may have been stopped for a
-                # reason that still applies, and NONE would leave it running.
-                trace.actuator = ActuatorStep.OFF
+                # A start was refused. The compressor is not running and may
+                # not start yet. Until 0.9.3 the unit was commanded off here,
+                # which turned a coasting unit off for a minute or two in the
+                # middle of its fan-only coast (DR-059). It is now left on its
+                # fan where it has one, which is what it was already doing,
+                # and off where it has none. Not NONE: a unit that was moved
+                # into a running mode by something else would be left running.
+                trace.actuator = (
+                    ActuatorStep.FAN
+                    if self._capabilities(room)["can_fan_only"]
+                    else ActuatorStep.OFF
+                )
+                trace.hold_setpoint = False
             return
 
     def _track_mode(self, room_id: str, mode: Mode, now: datetime) -> None:
@@ -1464,6 +1678,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         humidity = inputs.relative_humidity
         compressor = self._compressor_direction(room)
         drying = self._is_drying(room)
+        self._track_stop(room.room_id, cooling=compressor == -1 or drying, now=now)
         commanded = commanded_setpoint(
             self._regulators.get(room.room_id, RegulatorState()),
             self._last_target.get(room.room_id),
@@ -1529,11 +1744,28 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 compressor=start_compressor,
                 drying=start_drying,
                 commanded_setpoint_c=start_setpoint,
+                since_stop_hours=self._hours_since_stop(room.room_id, started),
             )
         )
         self._previous[room.room_id] = (
             now, temperature, humidity, compressor, drying, commanded
         )
+
+    def _track_stop(self, room_id: str, *, cooling: bool, now: datetime) -> None:
+        """Note when the compressor stops cooling or drying (DR-060)."""
+        was = self._was_cooling.get(room_id)
+        self._was_cooling[room_id] = cooling
+        if cooling:
+            self._stopped_at[room_id] = None
+        elif was:
+            self._stopped_at[room_id] = now
+
+    def _hours_since_stop(self, room_id: str, at: datetime) -> float | None:
+        """Hours from the last cooling or drying stop to `at`, or None."""
+        stopped = self._stopped_at.get(room_id)
+        if stopped is None or at < stopped:
+            return None
+        return (at - stopped).total_seconds() / 3600.0
 
     @staticmethod
     def _predicted_to_hold(unaided: Mapping[str, Any]) -> bool | None:
@@ -2208,8 +2440,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """Drop devices for rooms that are no longer configured."""
         if stale := self.previous_rooms - current:
             registry = dr.async_get(self.hass)
+            in_use = {
+                entity_id
+                for room in self.rooms.values()
+                for entity_id in room.climate_entity_ids
+            }
             for room_id in stale:
-                self.actuator.forget(room_id)
+                self.actuator.forget(room_id, in_use)
                 self.models.pop(room_id, None)
                 self._grace.pop(room_id, None)
                 self._grace_reason.pop(room_id, None)
@@ -2271,7 +2508,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             has_covers=bool(room.cover_entity_ids),
             allow_cover_control=room.allow_cover_control,
             cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
-            **capabilities,
+            can_cool=capabilities["can_cool"],
+            can_heat=capabilities["can_heat"],
+            can_dry=capabilities["can_dry"],
+            can_fan_only=capabilities["can_fan_only"],
             opening_open=any(
                 self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is True
                 for entity_id in room.opening_entity_ids
@@ -2357,10 +2597,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         temperature, and the sun on this room's window at each step ahead.
         Returns the inputs the evaluator uses to decide whether to coast.
         """
-        none = {
+        none: dict[str, Any] = {
             "unaided_available": False,
             "unaided_return_minutes": None,
             "unaided_return_limit_minutes": UNAIDED_RETURN_FALLBACK_MINUTES,
+            "unaided_refused": None,
+            "rebound_relative_humidity": None,
         }
         indoor = self._number(room.temperature_entity_id)
         humidity = self._number(room.humidity_entity_id)
@@ -2393,9 +2635,37 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 heat_load=heat_load,
             )
 
-        lower_c = to_dry_bulb(band.low)
-        upper_c = to_dry_bulb(band.high)
         middle_c = to_dry_bulb(band.midpoint)
+
+        # 0.9.3, DR-060. The water the coil gives back once the compressor
+        # stops. While it is running, or for `REBOUND_HOURS` after it stops
+        # cooling or drying, the room's humidity is projected to rise at its
+        # learned rebound rate. Where the rebound has not been learned, the
+        # weather coast is refused; the in-band hold keeps the humidity flat,
+        # as it always did, so that stops still happen and the rebound can be
+        # learned.
+        cooling_now = self._was_cooling.get(room.room_id, False)
+        since_stop = None if cooling_now else self._hours_since_stop(room.room_id, now)
+        rebound_rate = 0.0
+        rebound_end = 0.0
+        refused: str | None = None
+        rebound_rh: float | None = None
+        if cooling_now or (since_stop is not None and since_stop < REBOUND_HOURS):
+            model_for_rise = self.model_for(room.room_id)
+            rise = model_for_rise.rebound_rh_rise(since_stop)
+            if rise is None:
+                refused = (
+                    "the unit has just been cooling and this room has not yet "
+                    "learned how much moisture comes back off the coil when it "
+                    "stops, so the weather is not relied on to bring it back"
+                )
+            else:
+                rebound_end = REBOUND_HOURS - (since_stop or 0.0)
+                rebound_rate = rise / rebound_end if rebound_end > 0 else 0.0
+                rebound_rh = min(100.0, humidity + rise)
+
+        def humidity_at(hours_ahead: float) -> float:
+            return min(100.0, humidity + rebound_rate * min(hours_ahead, rebound_end))
 
         outdoor_now = self.outdoor_reading()
         trajectory = self.trajectory
@@ -2441,8 +2711,20 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             step_hours=PROJECTION_STEP_HOURS,
         )
         if points is None:
-            return none
-        outlook = unaided_outlook(points, lower_c=lower_c, upper_c=upper_c)
+            return {**none, "unaided_refused": refused}
+        # Judged on the comfort index, step by step, so the humidity the room
+        # is heading for counts as much as its temperature.
+        indices = [
+            comfort_index(
+                temperature,
+                humidity_at(index * PROJECTION_STEP_HOURS),
+                radiant=radiant,
+                still_air=still_air,
+                heat_load=heat_load,
+            )
+            for index, temperature in enumerate(points)
+        ]
+        outlook = unaided_outlook(indices, lower_c=band.low, upper_c=band.high)
 
         compressor_hours = model.hours_to_reach(
             indoor, middle_c, outdoor_now, direct_sun=direct_sun is True
@@ -2456,6 +2738,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             "unaided_available": True,
             "unaided_return_minutes": outlook.return_minutes,
             "unaided_return_limit_minutes": limit,
+            "unaided_refused": refused,
+            "rebound_relative_humidity": rebound_rh,
         }
 
     def _sensible_rate_for(self, room: RoomConfig, now: datetime) -> float | None:
@@ -2780,22 +3064,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         0.8.10, findings 10 and 15. Replaces the pre-0.8.10 boolean veto.
         Extended to three states in 0.8.12.
 
-        **`power_management` is the single gate for the whole mechanism, not
-        just for the above-band case.** "off" (the default): power
-        management does not touch this room at all — comfort wins
-        unconditionally, and the room holds its band regardless of the
-        constraint, exactly as if power management were not configured.
-        "guidance": everything below this line still runs — the ceiling is
-        computed, `trace.power_ceiling_c`/`power_bin`/`power_budget_kw` are
-        still set, so the room's own sensor shows exactly what the budget
-        would do — but `_regulate` is told not to actually clamp the
-        commanded setpoint against it. "enforced": the constraint is
-        enforced for this room: when the band cannot be held within it, the
-        room is kept as close to the band as the budget allows, and the
-        ceiling applies whether the room is already inside its band or
-        calling for correction. **This never stops the compressor, under
-        "enforced" or "guidance" alike** — enforcing the constraint means
-        throttling toward it, never abandoning the room.
+        **`power_management` is the single gate for the whole mechanism.**
+        "off" (the default): power management does not touch this room at
+        all. "guidance": the ceiling is computed and reported — the trace and
+        reasons show what the budget would do — but `_regulate` never clamps
+        against it and nothing is stopped. "enforced": the ceiling applies
+        whether the room is inside its band or calling for correction, and
+        where the budget cannot afford even holding the room, the unit is
+        turned off until it can (0.9.3, DR-063; until then enforcement never
+        stopped the compressor). A coasting room is not throttled — it has no
+        setpoint to throttle — but under enforced it is turned off too when
+        nothing can be afforded, since dry mode runs the compressor and the
+        fan draws power.
 
         This was corrected after being built the other way around: the
         first version applied a gentle within-band ceiling regardless of the
@@ -2804,16 +3084,25 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         setting is the user's choice between comfort and power management
         being the more important thing for this room, full stop — not a
         magnitude knob on top of an always-on baseline.
+
+        **Solar forecast (0.9.3, DR-061).** Where a solar forecast is held,
+        the allowance is the largest steady draw that keeps the battery above
+        its reserve until the window clears, counting the forecast generation
+        hour by hour (`power.forecast_allowance_kw`). Without one, the solar
+        being produced now is used, derated by the weather forecast's
+        clear-sky fraction, as before.
+
+        **Hysteresis (0.9.3, DR-062).** The bin moves down at once and up only
+        when the allowance clears the next bin by a margin and has held for a
+        while (`power.held_ceiling_bin`).
         """
         if room.power_management == POWER_MANAGEMENT_OFF:
             # Power management does not touch this room. Comfort wins
             # unconditionally; nothing below this line applies.
             return
-        if trace.actuator is ActuatorStep.OFF or trace.mode is Mode.COAST:
-            # Lockout, unoccupied, coasting (the compressor is stopped and the
-            # unit is on its fan, DR-057), or already stopped for another
-            # reason. Nothing running to throttle, and nothing to hold a
-            # ceiling against.
+        if trace.actuator in (ActuatorStep.OFF, ActuatorStep.COVERS):
+            # Lockout, unoccupied, an opening past its grace, or already
+            # stopped for another reason. Nothing running to throttle.
             return
         if trace.mode is Mode.PRECOOL:
             # 0.8.13, DR-037. Precool runs in a window chosen because energy
@@ -2829,6 +3118,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             return
         interval = self.tariff.interval_at(now)
         if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
+            self._ceiling_bins.pop(room.room_id, None)
             return
 
         if (
@@ -2852,22 +3142,46 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
 
         running = self._compressor_direction(room) != 0 or self._is_drying(room)
         own_draw_kw = self._rated_kw_for(room) if running else 0.0
-
-        # 0.8.11, finding 18. Solar checked first, as a direct offset — the
-        # battery only binds where solar is insufficient. The arithmetic is in
-        # `power.budget_allowance_kw`.
         current_solar_kw = (context.solar_w or 0.0) / 1000.0
-        sustained_solar_kw = self._sustained_solar_kw(
-            now, hours_until_clear, current_solar_kw
-        )
-        allowance_kw = budget_allowance_kw(
-            available_kwh=available_kwh,
-            hours_until_clear=hours_until_clear,
-            max_discharge_kw=self.battery_max_discharge_kw,
-            house_load_w=context.house_load_w,
-            own_draw_kw=own_draw_kw,
-            sustained_solar_kw=sustained_solar_kw,
-        )
+
+        slices = self._solar_forecast_slices(now, hours_until_clear)
+        if slices is not None:
+            other_house_kw = 0.0
+            if context.house_load_w is not None:
+                other_house_kw = max(context.house_load_w / 1000.0 - own_draw_kw, 0.0)
+            headroom_kwh = context.battery_capacity_kwh * max(
+                0.0, 1.0 - context.battery_soc_percent / 100.0
+            )
+            allowance_kw = forecast_allowance_kw(
+                available_kwh=available_kwh,
+                headroom_kwh=headroom_kwh,
+                slices=slices,
+                other_house_kw=other_house_kw,
+                plant_kw=plant_allowance_kw(
+                    self.battery_max_discharge_kw, current_solar_kw, other_house_kw
+                ),
+            )
+            trace.reasons.append(
+                "power budget: "
+                f"{sum(kwh for _, kwh in slices):.1f} kWh of forecast solar "
+                f"counted over the {hours_until_clear:.1f} h until import is "
+                "allowed again"
+            )
+        else:
+            # 0.8.11, finding 18. Solar checked first, as a direct offset —
+            # the battery only binds where solar is insufficient. The
+            # arithmetic is in `power.budget_allowance_kw`.
+            sustained_solar_kw = self._sustained_solar_kw(
+                now, hours_until_clear, current_solar_kw
+            )
+            allowance_kw = budget_allowance_kw(
+                available_kwh=available_kwh,
+                hours_until_clear=hours_until_clear,
+                max_discharge_kw=self.battery_max_discharge_kw,
+                house_load_w=context.house_load_w,
+                own_draw_kw=own_draw_kw,
+                sustained_solar_kw=sustained_solar_kw,
+            )
 
         draw_by_bin = [
             sum(
@@ -2876,49 +3190,74 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
             for bin_index in range(len(BIN_NAMES))
         ]
-        bin_index = ceiling_bin(allowance_kw, draw_by_bin)
-
-        trace.power_budget_kw = round(allowance_kw, 3)
-        # Whether the room is actually being held back by this right now —
-        # not just whether the setting is enforced, which the room config
-        # already shows. True only when enforced, the room needs correction,
-        # and it is being throttled toward the ceiling rather than held
-        # there in full. "guidance" never actually holds the room back, so
-        # it is never active, no matter what the ceiling reports.
-        trace.comfort_reduction_active = (
-            room.power_management == POWER_MANAGEMENT_ENFORCED
-            and trace.demand is not None
+        previous = self._ceiling_bins.get(room.room_id)
+        bin_index = held_ceiling_bin(
+            allowance_kw,
+            draw_by_bin,
+            previous=previous[0] if previous else None,
+            previous_since=previous[1] if previous else None,
+            now=now,
         )
+        if previous is None or previous[0] != bin_index:
+            self._ceiling_bins[room.room_id] = (bin_index, now)
+
+        enforced = room.power_management == POWER_MANAGEMENT_ENFORCED
+        guidance_note = (
+            " (guidance only, not enforced)"
+            if room.power_management == POWER_MANAGEMENT_GUIDANCE
+            else ""
+        )
+        trace.power_budget_kw = round(allowance_kw, 3)
         trace.grid_importing_now = (
             None if context.grid_import_w is None else context.grid_import_w > 0
         )
+        coasting = trace.mode is Mode.COAST
+
         if bin_index is None:
-            # Even holding at setpoint would exceed the allowance. Never a
-            # refusal: the ceiling floors at "ask for nothing colder (or
-            # warmer) than the room already is", which throttles hard
-            # without ever commanding the unit off.
-            trace.power_ceiling_c = 0.0
+            # Even holding at setpoint would exceed the allowance.
             trace.power_bin = BIN_NAMES[0]
+            if enforced:
+                # 0.9.3, DR-063. Enforced means no grid import is the more
+                # important thing for this room, so it is stopped rather than
+                # held at the room's own temperature and still drawing.
+                trace.power_ceiling_c = None
+                trace.actuator = ActuatorStep.OFF
+                trace.hold_setpoint = False
+                trace.comfort_reduction_active = True
+                trace.reasons.append(
+                    "power budget: even holding at setpoint exceeds the "
+                    f"{allowance_kw:.2f} kW allowance; enforced, so the unit is "
+                    "off until the budget allows it"
+                )
+                return
+            trace.power_ceiling_c = 0.0
             trace.reasons.append(
                 "power budget: even holding at setpoint exceeds the "
                 f"{allowance_kw:.2f} kW allowance; ceiling held at 0.0 C"
-                + (
-                    " (guidance only, not enforced)"
-                    if room.power_management == POWER_MANAGEMENT_GUIDANCE
-                    else ""
-                )
+                + guidance_note
+            )
+            return
+
+        if coasting:
+            # Nothing to throttle: the coasting step has no setpoint.
+            trace.reasons.append(
+                f"power budget: {allowance_kw:.2f} kW allowance, enough for this "
+                "room while it coasts"
             )
             return
 
         trace.power_ceiling_c = self._BIN_CEILING_C[bin_index]
         trace.power_bin = BIN_NAMES[bin_index]
+        # Whether the room is actually being held back by this right now:
+        # enforced, and the room needs correction.
+        trace.comfort_reduction_active = enforced and trace.demand is not None
         trace.reasons.append(
             f"power budget: {allowance_kw:.2f} kW allowance, "
             f"{BIN_NAMES[bin_index]} bin, ceiling "
             f"{trace.power_ceiling_c:.1f} C approach"
             + (
-                " (guidance only, not enforced)"
-                if room.power_management == POWER_MANAGEMENT_GUIDANCE
+                guidance_note
+                if guidance_note
                 else ", comfort reduction in effect"
                 if trace.demand is not None
                 else ""
@@ -2971,8 +3310,17 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         Home Assistant keeps the last known state of a device that has fallen
         off the network for as long as it is configured, so a reading that is
         present is not the same as a reading that is current.
+
+        0.9.3, DR-066. Age is measured from `last_reported`, not
+        `last_updated`. `last_updated` only moves when the value or an
+        attribute changes, so a sensor reporting the same temperature for two
+        hours read as two hours stale, and the room held with no reading.
+        `last_reported` moves on every report, changed or not. A sensor that
+        reports nothing at all is still caught.
         """
-        verdict = assess(state.last_updated, dt_util.utcnow(), tolerance)
+        verdict = assess(
+            max(state.last_updated, state.last_reported), dt_util.utcnow(), tolerance
+        )
         if verdict.fresh:
             return True
         note = f"{entity_id}: {verdict.reason}"
@@ -3003,9 +3351,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         try:
             value = float(state.state)
         except ValueError:
-            LOGGER.warning(
-                "%s reported a non-numeric value: %s", entity_id, state.state
-            )
+            # Logged once, on the transition, like any other unavailable
+            # reading. Until 0.9.3 this warned on every evaluation, every
+            # thirty seconds, for as long as the sensor kept the value.
+            if entity_id not in self._unavailable:
+                LOGGER.warning(
+                    "%s reported a non-numeric value: %s", entity_id, state.state
+                )
             self._note_availability(entity_id, available=False)
             return None
         self._note_availability(entity_id, available=True)
@@ -3135,15 +3487,24 @@ def _rooms_from_entry(entry: HvacConfigEntry) -> dict[str, RoomConfig]:
             }
         except (KeyError, TypeError, ValueError) as err:
             raise ConfigEntryError(
-                f"Comfort bands for room {raw.get(CONF_ROOM_ID, '?')} are "
-                f"invalid: {err}"
+                translation_domain=DOMAIN,
+                translation_key="room_bands_invalid",
+                translation_placeholders={
+                    "room_id": str(raw.get(CONF_ROOM_ID, "?")),
+                    "error": str(err),
+                },
             ) from err
 
         try:
             room = _room_from_raw(raw, bands)
         except KeyError as err:
             raise ConfigEntryError(
-                f"Room configuration is missing {err}"
+                translation_domain=DOMAIN,
+                translation_key="room_setting_missing",
+                translation_placeholders={
+                    "room_id": str(raw.get(CONF_ROOM_ID, "?")),
+                    "setting": str(err),
+                },
             ) from err
         rooms[room.room_id] = room
     return _lock_out_shared_climate(rooms)

@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -16,6 +17,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.abode_hvac_coordinator.const import (
+    CONF_SOLAR_FORECAST_ENTRIES,
     CONF_ALLOW_COMFORT_REDUCTION,
     CONF_ALLOW_COVER_CONTROL,
     CONF_CAPABILITIES,
@@ -617,6 +619,7 @@ async def test_the_power_step_stores_all_five_fields(
         CONF_HOUSE_LOAD_ENTITY,
         CONF_RESERVE_MARGIN_KWH,
         CONF_GRID_ENTITY,
+        CONF_SOLAR_FORECAST_ENTRIES,
     }
 
     result = await hass.config_entries.options.async_configure(
@@ -1095,3 +1098,337 @@ async def test_editing_a_room_reads_the_air_conditioner_again(
     profile = result["data"][CONF_ROOMS][0][CONF_CAPABILITIES]
     assert profile["fan_modes"] == ["quiet", "powerful"]
     assert profile["target_temp_step"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# 0.9.3 - the solar forecast field (DR-061), and the remaining options steps
+# ---------------------------------------------------------------------------
+
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+
+
+_PLATFORMS = "homeassistant.components.energy.websocket_api.async_get_energy_platforms"
+_MANAGER = "homeassistant.components.energy.data.async_get_manager"
+
+
+async def _options_at(
+    hass: HomeAssistant, entry: MockConfigEntry, *steps: str
+) -> dict:
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    for step in steps:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    return result
+
+
+def _forecast_entries(hass: HomeAssistant) -> tuple[MockConfigEntry, MockConfigEntry]:
+    north = MockConfigEntry(domain="forecast_solar", title="North")
+    west = MockConfigEntry(domain="open_meteo_solar_forecast", title="West")
+    north.add_to_hass(hass)
+    west.add_to_hass(hass)
+    return north, west
+
+
+def _platforms() -> dict:
+    return {
+        "forecast_solar": AsyncMock(return_value=None),
+        "open_meteo_solar_forecast": AsyncMock(return_value=None),
+    }
+
+
+def _dashboard(*entry_ids: str) -> MagicMock:
+    manager = MagicMock()
+    manager.data = {
+        "energy_sources": [
+            {"type": "solar", "config_entry_solar_forecast": list(entry_ids)}
+        ]
+    }
+    return manager
+
+
+def _offered(result: dict) -> list[str]:
+    for key, value in result["data_schema"].schema.items():
+        if str(key) == CONF_SOLAR_FORECAST_ENTRIES:
+            return [option["value"] for option in value.config["options"]]
+    raise AssertionError("no solar forecast field")
+
+
+def _suggested(result: dict) -> object:
+    for key in result["data_schema"].schema:
+        if str(key) == CONF_SOLAR_FORECAST_ENTRIES:
+            return (key.description or {}).get("suggested_value")
+    raise AssertionError("no solar forecast field")
+
+
+async def test_the_power_step_offers_every_solar_forecast_and_the_dashboards_by_default(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    north, west = _forecast_entries(hass)
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value=_platforms())),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard(west.entry_id, "gone"))),
+    ):
+        result = await _options_at(hass, mock_config_entry, "global", "power")
+    assert set(_offered(result)) == {north.entry_id, west.entry_id}
+    # The dashboard's choice, limited to what is offered.
+    assert _suggested(result) == [west.entry_id]
+    assert "Solar forecast: West (open_meteo_solar_forecast)" in (
+        result["description_placeholders"]["power"]
+    )
+
+
+async def test_a_saved_choice_is_shown_rather_than_the_dashboards(
+    hass: HomeAssistant, room_config: dict
+) -> None:
+    north, west = _forecast_entries(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ROOMS: []},
+        options={CONF_ROOMS: [room_config], CONF_SOLAR_FORECAST_ENTRIES: [north.entry_id]},
+    )
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value=_platforms())),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard(west.entry_id))),
+    ):
+        result = await _options_at(hass, entry, "global", "power")
+    assert _suggested(result) == [north.entry_id]
+
+
+async def test_the_power_step_still_opens_when_energy_cannot_be_read(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    with (
+        patch(_PLATFORMS, AsyncMock(side_effect=RuntimeError("energy not loaded"))),
+        patch(_MANAGER, AsyncMock(side_effect=RuntimeError("energy not loaded"))),
+    ):
+        result = await _options_at(hass, mock_config_entry, "global", "power")
+    assert result["type"] is FlowResultType.FORM
+    assert _offered(result) == []
+    assert "Solar forecast: Nothing selected" in result["description_placeholders"]["power"]
+
+
+async def test_the_chosen_forecasts_are_saved_as_a_list(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    north, west = _forecast_entries(hass)
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value=_platforms())),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard())),
+    ):
+        result = await _options_at(hass, mock_config_entry, "global", "power")
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_SOLAR_FORECAST_ENTRIES: [north.entry_id, west.entry_id]},
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_SOLAR_FORECAST_ENTRIES] == [north.entry_id, west.entry_id]
+    assert result["data"][CONF_GRID_SIGN] is None
+
+
+async def test_saving_with_none_chosen_stores_an_empty_list_not_the_default(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value={})),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard())),
+    ):
+        result = await _options_at(hass, mock_config_entry, "global", "power")
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
+    assert result["data"][CONF_SOLAR_FORECAST_ENTRIES] == []
+
+
+async def test_keeping_the_same_grid_sensor_keeps_its_sign(
+    hass: HomeAssistant, room_config: dict
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ROOMS: []},
+        options={
+            CONF_ROOMS: [room_config],
+            CONF_GRID_ENTITY: "sensor.grid_power",
+            CONF_GRID_SIGN: GRID_SIGN_EXPORTING,
+        },
+    )
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value={})),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard())),
+    ):
+        result = await _options_at(hass, entry, "global", "power")
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_GRID_ENTITY: "sensor.grid_power"}
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_GRID_SIGN] == GRID_SIGN_EXPORTING
+
+
+@pytest.mark.parametrize(
+    ("readings", "evidence"),
+    [
+        ({}, "Ambiguous on this evidence"),
+        (
+            {
+                "sensor.house_load": "not a number",
+                "sensor.solar_power": "180",
+                "sensor.grid_power": "-2840",
+            },
+            "Ambiguous on this evidence",
+        ),
+        (
+            {
+                "sensor.house_load": "3120",
+                "sensor.solar_power": "180",
+                "sensor.grid_power": "2840",
+            },
+            "reads positive",
+        ),
+    ],
+)
+async def test_the_sign_step_says_what_the_evidence_shows(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    readings: dict,
+    evidence: str,
+) -> None:
+    for entity_id, value in readings.items():
+        hass.states.async_set(entity_id, value)
+    with (
+        patch(_PLATFORMS, AsyncMock(return_value={})),
+        patch(_MANAGER, AsyncMock(return_value=_dashboard())),
+    ):
+        result = await _options_at(hass, mock_config_entry, "global", "power")
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_SOLAR_POWER_ENTITY: "sensor.solar_power",
+                CONF_HOUSE_LOAD_ENTITY: "sensor.house_load",
+                CONF_GRID_ENTITY: "sensor.grid_power",
+            },
+        )
+    assert result["step_id"] == "power_grid_sign"
+    assert evidence in result["description_placeholders"]["evidence"]
+
+
+async def test_the_outdoor_step_saves_all_three_feeds(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    result = await _options_at(hass, mock_config_entry, "global", "outdoor")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "outdoor_temperature_entity_id": "sensor.out_t",
+            "outdoor_humidity_entity_id": "sensor.out_h",
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["outdoor_temperature_entity_id"] == "sensor.out_t"
+    assert result["data"]["outdoor_humidity_entity_id"] == "sensor.out_h"
+    assert result["data"]["outdoor_wind_entity_id"] is None
+    assert len(result["data"][CONF_ROOMS]) == 1
+
+
+async def test_removing_a_room_keeps_the_others(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    result = await _options_at(hass, mock_config_entry, "rooms", "remove_room")
+    assert result["step_id"] == "remove_room"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"room_id": "test_room"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ROOMS] == []
+
+
+async def test_with_no_rooms_the_options_go_straight_to_adding_one(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_ROOMS: []}, options={CONF_ROOMS: []})
+    result = await _options_at(hass, entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "room"
+
+
+async def test_a_tariff_entry_that_has_gone_is_named_by_its_id(
+    hass: HomeAssistant, room_config: dict
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ROOMS: []},
+        options={CONF_ROOMS: [room_config], CONF_TARIFF_ENTRY_ID: "deleted_entry"},
+    )
+    result = await _options_at(hass, entry)
+    assert "deleted_entry (missing)" in result["description_placeholders"]["configuration"]
+
+
+async def test_a_climate_entity_already_in_another_room_is_refused(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("climate.test", "off", _climate_attributes())
+    result = await _options_at(hass, mock_config_entry, "rooms", "room")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Second Room",
+            CONF_CLIMATE_ENTITIES: ["climate.test"],
+            **_REQUIRED_COMFORT_INPUTS,
+        },
+    )
+    assert result["step_id"] == "room"
+    assert result["errors"] == {CONF_CLIMATE_ENTITIES: "climate_entity_in_use"}
+
+
+async def test_heads_with_steps_that_do_not_divide_are_logged(
+    hass: HomeAssistant, mock_setup_entry: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    hass.states.async_set("climate.first", "off", _climate_attributes(target_temp_step=0.5))
+    hass.states.async_set("climate.second", "off", _climate_attributes(target_temp_step=0.3))
+    result = await _start(hass)
+    await _finish_room(
+        hass, result["flow_id"], **{CONF_CLIMATE_ENTITIES: ["climate.first", "climate.second"]}
+    )
+    assert "First Room:" in caplog.text
+
+
+def test_the_shared_room_steps_need_a_flow_to_save_into() -> None:
+    from custom_components.abode_hvac_coordinator.config_flow import _RoomSteps
+
+    with pytest.raises(NotImplementedError):
+        _RoomSteps._save_room(MagicMock())
+
+
+async def test_a_grid_sensor_without_house_readings_offers_no_guess(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """With no house load or solar chosen there is no evidence for the sign.
+
+    The step still asks, with no default, rather than guessing.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("sensor.grid_power", "-2840")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_GRID_ENTITY: "sensor.grid_power"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "power_grid_sign"
+    schema_field = next(iter(result["data_schema"].schema))
+    assert schema_field.default is vol.UNDEFINED
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_GRID_SIGN: GRID_SIGN_EXPORTING}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_GRID_SIGN] == GRID_SIGN_EXPORTING

@@ -104,6 +104,14 @@ BIN_REPRESENTATIVE_APPROACH_C: Final[tuple[float, ...]] = (0.25, 1.0, 2.25, 4.0)
 #: room's time constant is an hour or more, and a finer step buys nothing.
 PROJECTION_STEP_HOURS: Final = 5.0 / 60.0
 
+#: How long after the compressor stops cooling the room is still taking back
+#: heat and moisture from the coil, the drain pan and what the cold air
+#: chilled (0.9.3, DR-060). In the living room the humidity rise ran about
+#: fifteen minutes each time. Intervals starting inside it teach the rebound,
+#: not how the room drifts on its own. A judgement from one night's recorder
+#: data, not a measurement of every unit.
+REBOUND_HOURS: Final = 0.25
+
 
 def approach_bin(approach_c: float) -> int:
     """Which of the four operating-point bins an approach magnitude falls in.
@@ -257,6 +265,16 @@ class Observation:
     #: inverter modulates against. None for an interval with no commanded
     #: setpoint recorded, which updates the pooled coefficients only.
     commanded_setpoint_c: float | None = None
+    #: Hours from the compressor last stopped cooling or drying to the start
+    #: of this interval, or None where it has not stopped while being
+    #: watched. 0.9.3, DR-060: a passive interval starting inside
+    #: `REBOUND_HOURS` teaches the rebound, not the room's drift.
+    since_stop_hours: float | None = None
+
+    @property
+    def in_rebound(self) -> bool:
+        """Whether this interval starts while the coil is still giving back."""
+        return self.since_stop_hours is not None and self.since_stop_hours < REBOUND_HOURS
 
     @property
     def usable(self) -> bool:
@@ -290,6 +308,12 @@ class ThermalModel:
     #: binned: the dry-versus-cool comparison only ever asks whether this has
     #: converged, not which operating point it is at.
     k_rh_cooling: Coefficient = field(default_factory=lambda: Coefficient(0.0))
+    #: Percentage points of relative humidity per hour in the first
+    #: `REBOUND_HOURS` after the compressor stops cooling or drying, with
+    #: nothing removing moisture: the water on the coil and in the drain pan
+    #: coming back into the room. 0.9.3, DR-060. Seeded at zero and not
+    #: trusted until converged: an unknown rebound is not no rebound.
+    k_rh_rebound: Coefficient = field(default_factory=lambda: Coefficient(0.0))
 
     # ---- learning -----------------------------------------------------
 
@@ -314,7 +338,13 @@ class ThermalModel:
         # it was previously folded into `k_loss` and `k_solar` because
         # `compressor` reports direction and dry mode has none.
         if obs.compressor == 0 and not obs.drying:
-            self._observe_passive(obs)
+            if obs.in_rebound:
+                # 0.9.3, DR-060. The room is taking heat and water back from
+                # the coil. Folding that into the drift taught it a loss and
+                # a solar gain it does not have.
+                self._observe_rebound(obs)
+            else:
+                self._observe_passive(obs)
 
     def _observe_sensible(self, obs: Observation) -> None:
         """Compressor authority over dry bulb, from intervals where it ran.
@@ -371,6 +401,30 @@ class ThermalModel:
         if rate <= 0:
             return
         self.k_latent.update(rate, obs.elapsed_hours)
+
+    def _observe_rebound(self, obs: Observation) -> None:
+        """Humidity coming back off the coil after the compressor stops.
+
+        Signed and pooled, like `k_rh_cooling`. Measured on the room's own
+        sensor, so it is what the comfort index sees.
+        """
+        rate = (obs.humidity_end - obs.humidity_start) / obs.elapsed_hours
+        self.k_rh_rebound.update(rate, obs.elapsed_hours)
+
+    def rebound_rh_rise(self, since_stop_hours: float | None) -> float | None:
+        """Points of RH still to come back from the coil, or None if unknown.
+
+        `since_stop_hours` None means the compressor is running now and the
+        whole rebound is ahead. Zero once the rebound is over. None where the
+        rebound has not converged: not known is not zero.
+        """
+        elapsed = 0.0 if since_stop_hours is None else max(since_stop_hours, 0.0)
+        remaining = max(REBOUND_HOURS - elapsed, 0.0)
+        if remaining <= 0.0:
+            return 0.0
+        if not self.k_rh_rebound.converged:
+            return None
+        return max(self.k_rh_rebound.value, 0.0) * remaining
 
     def _observe_passive(self, obs: Observation) -> None:
         """Heat loss and solar gain, from intervals with no compressor."""
@@ -694,6 +748,7 @@ class ThermalModel:
             "k_latent": self.k_latent.as_dict(),
             "k_sensible_bins": [c.as_dict() for c in self.k_sensible_bins],
             "k_rh_cooling": self.k_rh_cooling.as_dict(),
+            "k_rh_rebound": self.k_rh_rebound.as_dict(),
         }
 
     @classmethod
@@ -723,6 +778,7 @@ class ThermalModel:
                 Coefficient.from_dict(entry, 2.0) for entry in raw_bins
             ]
         model.k_rh_cooling = Coefficient.from_dict(data.get("k_rh_cooling", {}), 0.0)
+        model.k_rh_rebound = Coefficient.from_dict(data.get("k_rh_rebound", {}), 0.0)
         return model
 
     def diagnostics(self) -> dict[str, Any]:
@@ -740,6 +796,7 @@ class ThermalModel:
                 ("k_sensible", self.k_sensible),
                 ("k_latent", self.k_latent),
                 ("k_rh_cooling", self.k_rh_cooling),
+                ("k_rh_rebound", self.k_rh_rebound),
             )
         }
         pooled["k_sensible_bins"] = {

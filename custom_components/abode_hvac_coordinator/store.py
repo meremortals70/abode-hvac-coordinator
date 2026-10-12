@@ -13,7 +13,18 @@ Verified against homeassistant/helpers/storage.py on the core dev branch:
 
   async_delay_save(data_func, delay=0)                            line 480
       Registers a final-write listener, so a pending delayed save is flushed
-      when Home Assistant stops rather than lost.
+      when Home Assistant stops rather than lost. A later call whose delay ends
+      after the pending one does not replace it: it raises `_next_write_time`
+      (line 501), and the pending timer, when it fires early, reschedules
+      itself to that time (lines 523-527). `_next_write_time` is never reset.
+
+0.9.3, DR-064. That last behaviour is why this store no longer calls
+`async_delay_save` on every evaluation. Calling it every thirty seconds with a
+five-minute delay pushed the write out for ever, and the five-second saves for
+a user's choice were pushed out with it: nothing reached disk while the
+integration ran, and a reload read a stale file. A delayed save is now
+scheduled only when none is pending, user choices are saved at once, and the
+coordinator flushes the store when the entry unloads.
 
   _async_migrate_func(old_major_version, old_minor_version, old_data)  line 620
       Called whenever the on-disk version is below ours.
@@ -59,6 +70,10 @@ class ModelStore:
             atomic_writes=True,
             minor_version=STORAGE_MINOR_VERSION,
         )
+        #: Whether a delayed save of learned state is already scheduled. While
+        #: one is, further changes are folded into it rather than scheduling
+        #: another, which would push the write out (DR-064).
+        self._save_pending = False
         self._data: dict[str, Any] = {
             "rooms": {},
             "groups": {},
@@ -84,7 +99,40 @@ class ModelStore:
     def update_room(self, room_id: str, state: dict[str, Any]) -> None:
         """Record learned state, written out on a delay."""
         self._data.setdefault("rooms", {})[room_id] = state
+        self._schedule_learned_save()
+
+    def _schedule_learned_save(self) -> None:
+        """Schedule one delayed save, unless one is already pending (DR-064).
+
+        The pending save writes whatever `_data` holds when it fires, so a
+        change made while it waits is written with it. Scheduling another on
+        every change is what kept the write from ever happening.
+        """
+        if self._save_pending:
+            return
+        self._save_pending = True
         self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
+
+    def _save_choice_soon(self) -> None:
+        """Write a choice the user made within a few seconds.
+
+        A pending learned-state save is folded into this one: it writes the
+        same `_data`, and `_data_for_save` clears the pending flag.
+        """
+        self._save_pending = True
+        self._store.async_delay_save(
+            self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS
+        )
+
+    async def async_flush(self) -> None:
+        """Write everything now. Called when the config entry unloads.
+
+        A reload builds a new store and reads the file at once. Without this
+        the file it reads would be whatever was last written, not what this
+        store holds (DR-064).
+        """
+        self._save_pending = False
+        await self._store.async_save(self._data)
 
     def forget_room(self, room_id: str) -> None:
         """Drop a removed room's learned state."""
@@ -95,7 +143,7 @@ class ModelStore:
             or removed
         )
         if removed:
-            self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
+            self._save_choice_soon()
 
     def switched_off(self) -> set[str]:
         """Rooms the user has switched off at their Automatic control switch.
@@ -116,7 +164,7 @@ class ModelStore:
         else:
             rooms.discard(room_id)
         self._data["switched_off"] = sorted(rooms)
-        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+        self._save_choice_soon()
 
     def manual_vanes(self) -> set[str]:
         """Rooms whose Automatic vane control the user has switched off.
@@ -135,7 +183,7 @@ class ModelStore:
         else:
             rooms.discard(room_id)
         self._data["manual_vanes"] = sorted(rooms)
-        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+        self._save_choice_soon()
 
     def comfort_modes(self) -> dict[str, str]:
         """Each room's Comfort mode, where it is not Schedule (DR-058).
@@ -158,7 +206,7 @@ class ModelStore:
         else:
             modes[room_id] = mode
         self._data["comfort_modes"] = modes
-        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+        self._save_choice_soon()
 
     def profile(self, room_id: str) -> dict[str, Any] | None:
         """The stored capability profile for a room read on first load.
@@ -174,12 +222,12 @@ class ModelStore:
     def set_profile(self, room_id: str, profile: dict[str, Any]) -> None:
         """Keep a room's profile, written out soon."""
         self._data.setdefault("profiles", {})[room_id] = profile
-        self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+        self._save_choice_soon()
 
     def forget_profile(self, room_id: str) -> None:
         """Drop a stored profile, so the next load reads the units again."""
         if self._data.get("profiles", {}).pop(room_id, None) is not None:
-            self._store.async_delay_save(self._data_for_save, USER_CHOICE_SAVE_DELAY_SECONDS)
+            self._save_choice_soon()
 
     def group(self, group_name: str) -> dict[str, Any]:
         """Learned state for one outdoor unit group (0.8.9, finding 14).
@@ -195,9 +243,12 @@ class ModelStore:
     def update_group(self, group_name: str, state: dict[str, Any]) -> None:
         """Record a group's learned state, written out on a delay."""
         self._data.setdefault("groups", {})[group_name] = state
-        self._store.async_delay_save(self._data_for_save, SAVE_DELAY_SECONDS)
+        self._schedule_learned_save()
 
     def _data_for_save(self) -> dict[str, Any]:
+        # Called by the store at the moment it writes. Anything changed after
+        # this point needs a save of its own.
+        self._save_pending = False
         return self._data
 
     async def async_remove(self) -> None:

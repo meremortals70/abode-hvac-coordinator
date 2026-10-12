@@ -173,7 +173,7 @@
       },
       "power": {
         "title": "Power-aware operation",
-        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's power management is set to guidance or enforced (set per room, on the room's comfort bands step). Guidance reports what the ceiling would be without applying it; enforced applies it. It never stops the compressor for this.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\n{power}",
+        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's power management is set to guidance or enforced (set per room, on the room's comfort bands step). Guidance reports what the ceiling would be without applying it and never stops the unit. Enforced applies it, and where even holding the room cannot be afforded, turns the unit off until it can.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\nThe solar forecast is the production forecast your Energy dashboard uses, from any integration that provides one. Choose one per array if you have more than one; they are added together. With one selected, the sun forecast between now and the end of a no-import window counts towards the budget, so the morning's generation is counted at sunrise. With none, only the solar being produced now is counted.\n\n{power}",
         "data": {
           "battery_soc_entity_id": "Battery charge sensor (percentage)",
           "battery_capacity_kwh": "Battery usable capacity (kWh)",
@@ -181,7 +181,11 @@
           "solar_power_entity_id": "Solar output sensor",
           "house_load_entity_id": "House load sensor (total current draw)",
           "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)",
-          "grid_power_entity_id": "Grid power sensor (signed, watts)"
+          "grid_power_entity_id": "Grid power sensor (signed, watts)",
+          "solar_forecast_entry_ids": "Solar production forecast"
+        },
+        "data_description": {
+          "solar_forecast_entry_ids": "The forecasts your Energy dashboard can use. Until you save this step, the ones the Energy dashboard is set up with are used."
         }
       },
       "room_outdoor": {
@@ -343,6 +347,12 @@
     },
     "comfort_mode_room_empty": {
       "message": "{room} reads empty, so it cannot be set to {mode}. Sleep and Awake go back to Schedule when a room is empty; choose it once someone is in the room."
+    },
+    "room_bands_invalid": {
+      "message": "The comfort bands for room {room_id} are not valid ({error}). Edit the room's comfort bands under Configure → Rooms."
+    },
+    "room_setting_missing": {
+      "message": "Room {room_id} is missing the setting {setting}. Edit the room under Configure → Rooms, or remove it and add it again."
     }
   },
   "issues": {
@@ -381,6 +391,10 @@
     "power_shortfall": {
       "title": "A no-import window imported {kwh} kWh from the grid",
       "description": "The window closed having measured {kwh} kWh of grid import against it. Rooms with power management set to off or guidance hold their comfort band regardless of the constraint, so any import they cause is expected. Rooms set to enforced run as gently as the battery allows but never stop, so import can still happen when the battery runs short. The figure is measured, not projected: check the reserve margin, the battery size, the tariff rule, and which rooms are set to enforced. This clears when a later no-import window closes without importing."
+    },
+    "solar_forecast_unavailable": {
+      "title": "A solar forecast could not be read",
+      "description": "The power budget could not read a solar production forecast: {reason}\n\nWhere no forecast could be read, the budget counts only the solar being produced now, as it did before solar forecasts were used, so a room may be held back at sunrise more than the day's sun justifies. The last forecast read is kept until it no longer reaches the present."
     }
   },
   "selector": {

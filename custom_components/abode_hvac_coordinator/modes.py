@@ -24,6 +24,7 @@ against.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 from .hci import (
@@ -500,7 +501,7 @@ def select_actuator(
         # mixed, and off is kept for the stops that mean off. Leaving the unit
         # cooling would have the thermostat hold the band by running, which is
         # the opposite of coasting.
-        return coast_step(inputs, trace)
+        return coast_step(inputs, trace, band, hci)
 
     if mode is Mode.PRECONDITION and not inputs.precondition_ready:
         # The request stands and the room is in PRECONDITION. The model simply
@@ -632,14 +633,59 @@ def select_actuator(
     return ActuatorStep.COMPRESSOR
 
 
-def coast_step(inputs: RoomInputs, trace: DecisionTrace) -> ActuatorStep:
-    """What a coasting room's unit is asked to do (DR-057).
+def coast_step(
+    inputs: RoomInputs,
+    trace: DecisionTrace,
+    band: ComfortBand | None = None,
+    hci: float | None = None,
+) -> ActuatorStep:
+    """What a coasting room's unit is asked to do (DR-057, DR-059).
 
-    The compressor is stopped and the unit is left on its fan, where it offers
-    a fan-only mode. A unit that does not has nothing gentler to be left in,
-    and coasts off. Either way the compressor is not running: the difference is
-    whether the room's air keeps moving.
+    Coasting stops cooling the room's air. What the unit is left in depends
+    on the room's humidity (DR-059):
+
+    - **High humidity: dry.** Leaving the unit on its fan blows over a wet
+      coil and puts the water it has just taken out back into the room; in
+      the living room the dew point rose 2.5 C in a quarter of an hour, every
+      time. "High" is decided by the same test the actuator ladder uses to
+      choose drying over cooling (`_latent_route`): the room's learned rates
+      once they have converged, and the 65% threshold until then. Going from
+      cooling to dry is not a compressor stop, so the short-cycle guard has
+      nothing to refuse.
+    - **Otherwise: fan only** where the unit offers it, so the room's air
+      keeps moving (DR-057).
+    - **No fan-only mode: off.**
+
+    A power constraint can still turn a coasting unit off; that is decided
+    with the budget in the coordinator (DR-063), not here.
     """
+    if inputs.can_dry and band is not None and hci is not None:
+        overshoot = max(0.0, hci - band.high)
+        # Judged at the humidity the room will reach once the coil has given
+        # its water back, where the room has learned that (DR-060): stopping
+        # the compressor is what raises it, so the reading now understates it.
+        judged = inputs
+        if (
+            inputs.rebound_relative_humidity is not None
+            and inputs.relative_humidity is not None
+            and inputs.rebound_relative_humidity > inputs.relative_humidity
+        ):
+            judged = replace(
+                inputs, relative_humidity=inputs.rebound_relative_humidity
+            )
+        scratch = DecisionTrace(room_id=trace.room_id, at=trace.at, mode=trace.mode)
+        route = _latent_route(judged, overshoot, scratch)
+        for note in scratch.rejected:
+            if note not in trace.rejected:
+                trace.rejected.append(note)
+        if route:
+            trace.rejected.append(
+                "compressor: coasting, the room's temperature will hold; "
+                "humidity is high, so the unit dries rather than blowing over "
+                "a wet coil"
+            )
+            trace.reasons.append(route)
+            return ActuatorStep.DRY
     if inputs.can_fan_only:
         trace.rejected.append(
             "compressor: coasting, model predicts the band holds; the unit stays on its fan"
@@ -676,6 +722,13 @@ def _weather_coast(
         return None
     demand = trace.demand
     if demand not in ("cool", "heat"):
+        return None
+
+    if inputs.unaided_refused is not None and demand == "cool":
+        # DR-060. Not the floor comparison either: the floor ignores the
+        # moisture the coil gives back just the same. Cooling only: a room
+        # that needs heat is not waiting on moisture from a cold coil.
+        trace.rejected.append(f"coast: {inputs.unaided_refused}")
         return None
 
     if inputs.unaided_available:
@@ -816,7 +869,7 @@ def evaluate_room(
             trace.reasons.append(coast_reason)
             trace.base_mode = mode
             trace.mode = Mode.COAST
-            trace.actuator = coast_step(inputs, trace)
+            trace.actuator = coast_step(inputs, trace, band, hci)
 
     # The felt comparison uses the room's own comfort index, corrections and
     # all. A sunlit room feels hotter than its air temperature, which makes

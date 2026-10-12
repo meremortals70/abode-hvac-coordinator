@@ -19,6 +19,14 @@ older than its feed's tolerance is treated as absent rather than as a value.
 Absent is already handled everywhere: the room holds, the trace says why, and
 no actuator moves on a guess.
 
+WHERE THE AGE COMES FROM
+------------------------
+0.9.3, DR-066. The coordinator passes the later of `State.last_updated` and
+`State.last_reported`. `last_updated` does not move while a sensor keeps
+reporting the same value, so a sensor reporting an unchanged reading every
+minute was judged stale on it alone. `last_reported` moves on every report.
+A sensor that has stopped reporting is still caught: neither time moves.
+
 TOLERANCES
 ----------
 One number per feed class, not per entity. A tolerance is a property of what

@@ -884,7 +884,7 @@ async def test_a_cold_room_on_a_hot_day_coasts_instead_of_heating(
 
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
-    assert state.state == "coast", state.attributes
+    assert state.state == "coast", (state.attributes["reasons"], state.attributes["rejected"])
     shown = {k: state.attributes.get(k) for k in ("mode","base_mode","demand","actuator","hci","band_low","band_high","unaided_return_minutes","reasons","rejected")}
     assert state.attributes["demand"] == "heat", shown
     assert state.attributes["actuator"] == "fan"
@@ -1470,3 +1470,82 @@ async def test_the_evaluation_that_ends_sleep_projects_against_the_day_band(
     assert coordinator.comfort_mode("test_room").value == "schedule"
     assert answers
     assert not any(answers)
+
+
+# ---------------------------------------------------------------------------
+# Controls and room sensors when their unit or room goes away
+# ---------------------------------------------------------------------------
+
+
+def _entity(hass: HomeAssistant, entity_id: str):
+    from homeassistant.helpers.entity_platform import async_get_platforms
+
+    for platform in async_get_platforms(hass, "abode_hvac_coordinator"):
+        if entity_id in platform.entities:
+            return platform.entities[entity_id]
+    raise AssertionError(f"{entity_id} not found")
+
+
+async def test_a_unit_that_stops_reporting_makes_its_controls_unavailable(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    await _setup(hass, mock_config_entry)
+    hass.states.async_set("climate.test", "unavailable", {})
+    await hass.async_block_till_done()
+    for entity_id in (_SETPOINT, _MODE, _FAN):
+        assert hass.states.get(entity_id).state == "unavailable", entity_id
+    assert _entity(hass, _SETPOINT).native_value is None
+    assert _entity(hass, _MODE).current_option is None
+
+
+async def test_a_setpoint_the_unit_reports_as_text_reads_as_unknown(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    await _setup(hass, mock_config_entry)
+    _publish(hass, temperature="n/a")
+    await hass.async_block_till_done()
+    assert hass.states.get(_SETPOINT).state == "unknown"
+
+
+async def test_controls_of_a_room_no_longer_configured_refuse_by_room(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    room = coordinator.rooms.pop("test_room")  # type: ignore[attr-defined]
+    try:
+        setpoint = _entity(hass, _SETPOINT)
+        mode = _entity(hass, _MODE)
+        assert setpoint.available is False
+        assert mode.options == []
+        with pytest.raises(ServiceValidationError) as raised:
+            await setpoint.async_set_native_value(24.0)
+        assert raised.value.translation_key == "unknown_room"
+        settings = _entity(hass, "sensor.test_room_settings")
+        assert settings.native_value is None
+        assert settings.extra_state_attributes is None
+    finally:
+        coordinator.rooms["test_room"] = room  # type: ignore[attr-defined]
+
+
+async def test_a_room_sensor_with_no_decision_yet_has_no_value(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    sensor = _entity(hass, "sensor.test_room_mode")
+    data = coordinator.data  # type: ignore[attr-defined]
+    coordinator.data = {}  # type: ignore[attr-defined]
+    try:
+        assert sensor.native_value is None
+    finally:
+        coordinator.data = data  # type: ignore[attr-defined]
+
+
+async def test_a_room_sensor_is_unavailable_when_the_coordinator_is(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    coordinator.last_update_success = False  # type: ignore[attr-defined]
+    try:
+        assert _entity(hass, "sensor.test_room_comfort_index").available is False
+    finally:
+        coordinator.last_update_success = True  # type: ignore[attr-defined]

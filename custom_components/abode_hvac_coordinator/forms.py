@@ -398,6 +398,7 @@ def describe_power(
     reserve_margin_kwh: str | None,
     grid_entity_id: str | None = None,
     battery_max_discharge_kw: str | None = None,
+    solar_forecasts: list[str] | None = None,
 ) -> str:
     """The power-aware settings, as readable lines.
 
@@ -432,13 +433,24 @@ def describe_power(
         + (f"{battery_max_discharge_kw} kW" if battery_max_discharge_kw else "Not set")
     )
     lines.append(f"  Grid power sensor: {grid_entity_id or 'Nothing selected'}")
+    lines.append(
+        "  Solar forecast: "
+        + (", ".join(solar_forecasts) if solar_forecasts else "Nothing selected")
+    )
     if all(fields.values()):
         lines.append(
-            "  Active: while the tariff forbids grid import, a room whose "
-            "occupant has permitted comfort reduction is throttled to what "
-            "the battery affords rather than stopped. It is never turned "
-            "off for this."
+            "  Active: while the tariff forbids grid import, a room set to "
+            "guidance is shown what the battery and the forecast sun can "
+            "afford, and a room set to enforced is held to it. Where even "
+            "holding an enforced room cannot be afforded, it is turned off "
+            "until it can."
         )
+        if not solar_forecasts:
+            lines.append(
+                "  Without a solar forecast, only the solar being produced "
+                "now is counted, so at sunrise the morning's generation is "
+                "not."
+            )
         if not battery_max_discharge_kw:
             lines.append(
                 "  Without the maximum discharge power, the throttle is "

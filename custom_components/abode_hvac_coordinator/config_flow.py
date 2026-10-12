@@ -62,6 +62,7 @@ from .const import (
     CONF_ROOM_ID,
     CONF_ROOMS,
     CONF_SLEEP_SCHEDULE_ENTITY,
+    CONF_SOLAR_FORECAST_ENTRIES,
     CONF_SOLAR_POWER_ENTITY,
     CONF_TARIFF_ENTRY_ID,
     CONF_TEMPERATURE_ENTITY,
@@ -97,7 +98,12 @@ from .forms import (
     power_management_from_raw,
     room_from_input,
 )
-from .power import GRID_SIGN_EXPORTING, GRID_SIGN_IMPORTING, implied_sign
+from .power import (
+    GRID_SIGN_EXPORTING,
+    GRID_SIGN_IMPORTING,
+    energy_dashboard_solar_forecasts,
+    implied_sign,
+)
 from .sun import WINDOW_DIRECTIONS
 
 ROOM_SCHEMA = vol.Schema(
@@ -184,6 +190,46 @@ def _reading_w(hass: Any, entity_id: str | None) -> float | None:
         return float(state.state)
     except ValueError:
         return None
+
+
+async def _solar_forecast_options(hass: Any) -> list[selector.SelectOptionDict]:
+    """Every config entry that publishes a solar forecast to the Energy dashboard.
+
+    0.9.3, DR-061. Found the way the Energy dashboard finds them: the
+    integrations whose energy platform offers `async_get_solar_forecast`.
+    That helper is not a documented API; if it cannot be read, nothing is
+    offered rather than the step failing.
+    """
+    try:
+        from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
+            async_get_energy_platforms,
+        )
+
+        platforms = await async_get_energy_platforms(hass)
+    except Exception as err:  # noqa: BLE001 - an options step must not fail on this
+        LOGGER.debug("Solar forecast platforms could not be read: %s", err)
+        return []
+    return [
+        selector.SelectOptionDict(
+            value=entry.entry_id, label=f"{entry.title} ({entry.domain})"
+        )
+        for domain in sorted(platforms)
+        for entry in hass.config_entries.async_entries(domain)
+    ]
+
+
+async def _energy_dashboard_forecasts(hass: Any) -> list[str]:
+    """The solar forecasts the Energy dashboard is set up with, or none."""
+    try:
+        from homeassistant.components.energy.data import (  # noqa: PLC0415
+            async_get_manager,
+        )
+
+        manager = await async_get_manager(hass)
+    except Exception as err:  # noqa: BLE001 - an options step must not fail on this
+        LOGGER.debug("Energy dashboard settings could not be read: %s", err)
+        return []
+    return energy_dashboard_solar_forecasts(manager.data)
 
 
 def _minutes_selector() -> selector.NumberSelector:
@@ -826,6 +872,23 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                     )
                 )
             }
+            # 0.9.3, DR-061. Absent means the Energy dashboard's choice, so
+            # that is what the form shows until something is saved here.
+            stored_forecasts = self.config_entry.options.get(
+                CONF_SOLAR_FORECAST_ENTRIES,
+                self.config_entry.data.get(CONF_SOLAR_FORECAST_ENTRIES),
+            )
+            forecast_options = await _solar_forecast_options(self.hass)
+            offered = {option["value"] for option in forecast_options}
+            suggested[CONF_SOLAR_FORECAST_ENTRIES] = [
+                entry_id
+                for entry_id in (
+                    stored_forecasts
+                    if stored_forecasts is not None
+                    else await _energy_dashboard_forecasts(self.hass)
+                )
+                if entry_id in offered
+            ]
             schema = vol.Schema(
                 {
                     vol.Optional(CONF_BATTERY_SOC_ENTITY): selector.EntitySelector(
@@ -851,6 +914,13 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                             domain="sensor", device_class="power"
                         )
                     ),
+                    vol.Optional(CONF_SOLAR_FORECAST_ENTRIES): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=forecast_options,
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    ),
                 }
             )
             return self.async_show_form(
@@ -867,6 +937,12 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
                         self._reserve_margin_kwh(),
                         self._grid_entity_id(),
                         self._battery_max_discharge_kw(),
+                        [
+                            str(option["label"])
+                            for option in forecast_options
+                            if option["value"]
+                            in suggested[CONF_SOLAR_FORECAST_ENTRIES]
+                        ],
                     )
                 },
             )
@@ -881,6 +957,9 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             CONF_HOUSE_LOAD_ENTITY: user_input.get(CONF_HOUSE_LOAD_ENTITY),
             CONF_RESERVE_MARGIN_KWH: user_input.get(CONF_RESERVE_MARGIN_KWH),
             CONF_GRID_ENTITY: user_input.get(CONF_GRID_ENTITY),
+            CONF_SOLAR_FORECAST_ENTRIES: list(
+                user_input.get(CONF_SOLAR_FORECAST_ENTRIES) or []
+            ),
         }
         new_grid_entity = user_input.get(CONF_GRID_ENTITY)
         if new_grid_entity is not None and new_grid_entity != self._grid_entity_id():

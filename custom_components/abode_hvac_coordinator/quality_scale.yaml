@@ -10,27 +10,22 @@ rules:
   # --- Bronze ---
   action-setup: done
   appropriate-polling:
-    status: exempt
+    status: done
     comment: |
-      Evaluation is driven by state changes on the entities each room reads,
-      with a 30 second interval as a backstop. Nothing is polled from a device
-      or service.
+      The coordinator refreshes every 30 seconds (EVALUATION_INTERVAL) as a
+      backstop, and at once when any entity a room reads changes state. Only
+      Home Assistant's own state machine is read; no device or service is
+      polled. The tariff and the solar forecast are fetched every 15 minutes
+      and the weather forecast every 30.
   brands: done
   common-modules: done
   config-flow-test-coverage:
-    status: todo
+    status: done
     comment: |
-      tests/test_config_flow.py covers the room, outdoor-unit, bands, global
-      menu, outdoor, tariff, forecast and power steps, and from 0.9.0 the new
-      read of what the air conditioner can do: refusing a room whose unit is
-      unavailable, missing or one of two heads, storing the profile, the
-      two-head intersection, the opening grace, and editing a room reading its
-      unit again. All 37 tests pass against Home Assistant 2026.8.3, the version
-      this integration targets, on Python 3.14.
-
-      Still todo because config_flow.py is covered at 90% by the whole suite, not
-      in full: the options flow's remove-room, tariff, forecast and several
-      power-step error paths have no test of their own.
+      config_flow.py is at 100% line coverage at 0.9.3 (pytest with coverage,
+      Home Assistant 2026.8.3, Python 3.14.6). 54 tests in
+      tests/test_config_flow.py cover every step of the config and options
+      flows, including the error and abort paths.
   config-flow: done
   dependency-transparency:
     status: exempt
@@ -76,17 +71,14 @@ rules:
     status: exempt
     comment: No authentication of any kind.
   test-coverage:
-    status: todo
+    status: done
     comment: |
-      The suite is 644 tests (491 over the pure modules) and passes
-      against Home Assistant 2026.8.3 on Python 3.14. Measured line coverage of
-      the integration at 0.9.1 is 92% overall. The pure decision modules are at
-      98% or better; the gaps are actuator.py (79%), __init__.py (76%) and
-      coordinator.py (84%), mostly failure paths. The silver tier asks for more
-      than 95% in every module, so this stays todo.
-
-      Every new decision in 0.9.0 was checked by putting the defect back and
-      watching its test fail; that is recorded in the changelog.
+      Every one of the 28 modules is at 98% line coverage or better at 0.9.3,
+      99% overall, measured with coverage.py over the whole suite against Home
+      Assistant 2026.8.3 on Python 3.14.6. 920 tests: 599 over the pure
+      modules and 7 static checks on the source, which also run without Home
+      Assistant, and 314 against a running Home Assistant. Every fix in 0.9.3 was checked by putting the
+      defect back and watching its test fail.
 
   # --- Gold ---
   devices: done
@@ -126,12 +118,10 @@ rules:
   reconfiguration-flow:
     status: exempt
     comment: |
-      The config entry itself holds no settings: it is created empty and every
-      setting lives in the options flow, which offers add, edit and remove for
-      rooms and is reachable from the same integration page. A reconfigure step
-      would have nothing to reconfigure. A reviewer may reasonably disagree; if
-      so, the fix is to move room configuration into entry data and implement
-      async_step_reconfigure over it.
+      The rule exempts "integrations that don't have settings in their
+      configuration flow". The config flow creates an empty entry with no
+      settings; every setting lives in the options flow, which offers add,
+      edit and remove for rooms and every house-level setting.
   repair-issues: done
   stale-devices: done
 
@@ -143,14 +133,10 @@ rules:
     status: exempt
     comment: No HTTP calls are made.
   strict-typing:
-    status: todo
+    status: done
     comment: |
-      mypy --strict runs clean on all 23 modules except 17 errors in
-      actuator.py and sensor.py, every one of them a symbol that moved between
-      Home Assistant 2025.1.4 (the newest this Python 3.12 build sandbox can
-      install) and the 2026.8.x targeted — ClimateEntityFeature, the climate
-      ATTR_* and SERVICE_* names, and AddConfigEntryEntitiesCallback. The
-      count is unchanged from 0.8.5, including through 0.8.11. Nothing in
-      shipped code depends on the older names. Not "done" until mypy has run
-      against the targeted
-      version with no errors at all.
+      mypy --strict reports no issues in all 28 modules against Home
+      Assistant 2026.8.3, and CI runs it on every push and pull request to
+      main. py.typed is shipped.
+      The typed HvacConfigEntry (ConfigEntry[HvacCoordinator]) is used
+      throughout for runtime_data.

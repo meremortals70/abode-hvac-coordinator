@@ -1,7 +1,7 @@
 {
   "domain": "abode_hvac_coordinator",
   "name": "Abode HVAC Coordinator",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "codeowners": [
     "@meremortals70"
   ],
@@ -17,6 +17,7 @@
   ],
   "after_dependencies": [
     "abode_power_tariffs",
+    "energy",
     "weather"
   ],
   "requirements": []

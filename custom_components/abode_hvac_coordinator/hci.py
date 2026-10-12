@@ -204,6 +204,10 @@ def relative_humidity_at_constant_vapour_pressure(
     derivative, so it does not need re-deriving if the index formula changes.
     """
     e = vapour_pressure_hpa(from_temp_c, from_relative_humidity)
+    if _VAPOUR_C + to_temp_c <= 0:
+        # Outside the Magnus formula's domain; the exponent would overflow and
+        # take the evaluation down. Only a diverged learned rate gets here.
+        return from_relative_humidity
     saturation_at_to = _VAPOUR_A * math.exp(
         (_VAPOUR_B * to_temp_c) / (_VAPOUR_C + to_temp_c)
     )
