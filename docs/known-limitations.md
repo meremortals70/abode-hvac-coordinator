@@ -157,13 +157,6 @@ conditioner has not reported by then, which happens when Home Assistant has just
 started and the unit's own integration has not connected, nothing is sent to the
 room until it does. The room's trace says it is waiting. It is not turned off.
 
-## Test coverage is 92%, not the 95% the silver tier asks for
-
-The whole suite covers 92% of the integration's lines at 0.9.1. The gaps are in
-the actuator (79%), the integration setup and unload (76%) and the coordinator
-(84%), mostly failure paths: a service call that raises, a feed that goes stale
-mid-evaluation. The pure decision modules are at 98% or better.
-
 ## The tariff is a separate integration
 
 Precool windows, the no-import rule and the costed forecast all require
@@ -204,6 +197,37 @@ yours.
 
 Confidence that the band table suits any particular household: **70%**. Adjust
 against how the room actually feels rather than trusting the numbers.
+
+## The solar forecast is read through calls Home Assistant does not document
+
+Since 0.9.3 the power budget reads solar production forecasts the way the Energy
+dashboard does: `energy.websocket_api.async_get_energy_platforms` for the
+forecast, and the energy manager for which forecasts the dashboard uses. Neither
+is a documented public API. Both were checked against Home Assistant 2026.8.3.
+A release that changes them stops the forecast being read: a repair issue says
+so, and the budget falls back to the solar being produced now, as before 0.9.3.
+
+## The forecast budget trusts the forecast
+
+The allowance is worked out from the forecast, read every fifteen minutes. Where
+cloud arrives that the forecast did not expect, the battery runs down faster than
+planned and an enforced room is turned off later in the window than it would
+have been. Sun beyond what the house uses and the battery can store is not
+counted: energy exported in one hour does not pay for a later one.
+
+## Four 0.9.3 figures are judgement, not measurement
+
+| Figure | Value | What it does |
+|---|---|---|
+| `REBOUND_HOURS` | 15 minutes | How long after the compressor stops the coil is taken to be giving water back (DR-060) |
+| `BIN_RAISE_HOLD` | 10 minutes | How long the power ceiling stands before it may rise (DR-062) |
+| `BIN_RAISE_MARGIN_KW` | 0.3 kW | How far the allowance must clear a bin's draw before the ceiling rises to it (DR-062) |
+| `FORECAST_POINT_MAX` | 1 hour | The longest period one forecast point is taken to cover (DR-061) |
+
+The rebound length is a judgement from one night in one room, where humidity
+rose four to six points in every fan phase (one, from 00:11 to 00:28 on 12
+October 2026, raised the dew point 2.5 C). Confidence that it suits other rooms and
+units: **60%**. The rate within it is learned per room; the length is not.
 
 ## It never writes to your battery
 

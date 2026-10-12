@@ -116,6 +116,19 @@ work. A unit with no fan-only mode is stopped instead. Off is kept for lockout, 
 empty room, an opening held past its grace, a direction the unit cannot deliver
 and a deferred precondition. (DR-057)
 
+**A humid room dries instead.** Since 0.9.3, where the room's humidity calls for
+drying, judged by the same test that chooses dry over cool, a coasting unit is
+put in dry mode rather than blowing the room's air over a wet coil. The humidity
+judged is the humidity the room will reach once the coil has given its water
+back, where the room has learned that. A restart the short-cycle guard refuses
+leaves the unit on its fan, not off. (DR-059)
+
+**The coil's water is counted before a coast.** For fifteen minutes after the
+compressor stops, the room's humidity rises as water comes back off the coil.
+Since 0.9.3 the weather coast projects the comfort index with that rise
+included, at a rate each room learns, and a cooling room is not coasted on the
+weather until that rate is known. (DR-060)
+
 ## Someone leaves the room briefly
 
 This is the case a raw presence sensor gets wrong, and it is handled with two

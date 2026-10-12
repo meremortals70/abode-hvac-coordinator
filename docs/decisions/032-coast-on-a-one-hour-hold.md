@@ -36,10 +36,10 @@ under investigation against this record.
 
 ## In the code
 
-Checked against: 0.9.1. **Partly.** A coasting unit is no longer commanded off: it is left on its fan (DR-057). The one-hour hold still decides COAST for a room inside its band, but `_predicted_to_hold` now reads the stepped projection of DR-053 and is true only for a room in band now and staying there. A room outside its band no longer coasts on a straight-line end point; DR-053's return limit decides it. `holds_through` remains, used only by the cheaper-window deferral (DR-035).
+Checked against: 0.9.3. **Partly.** A coasting unit is no longer commanded off: it is left on its fan (DR-057), or put in dry mode where its humidity calls for it (DR-059). The one-hour hold still decides COAST for a room inside its band, but `_predicted_to_hold` now reads the stepped projection of DR-053 and is true only for a room in band now and staying there. A room outside its band no longer coasts on a straight-line end point; DR-053's return limit decides it. `holds_through` remains, used only by the cheaper-window deferral (DR-035).
 
 - `const.py:26` - `COAST_HORIZON_HOURS` - one hour
-- `modes.py:108-110` - `Mode.COAST` - entered when the band holds and the window permits
-- `modes.py:402-407` - `Mode.COAST` - coast is off
-- `coordinator.py:1459` - `_predicted_to_hold` - the projection
-- `thermal.py:410` - `holds_through` - straight-line drift over the horizon
+- `modes.py:203-205` - `Mode.COAST` - entered when the band holds and the window permits
+- `modes.py:497-502` - `Mode.COAST` - coast is off
+- `coordinator.py:1771` - `_predicted_to_hold` - the projection
+- `thermal.py:464` - `holds_through` - straight-line drift over the horizon

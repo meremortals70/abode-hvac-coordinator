@@ -40,9 +40,9 @@ forever.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms.**
 
-- `modes.py:346` - `select_actuator` - the ordering
-- `modes.py:467-474` - `cover_position is None` - unknown position skips covers
-- `modes.py:491-499` - `demand == "heat"` - heating skips fan and dry
-- `modes.py:158` - `FAN_MARGIN_HCI` - 0.5
+- `modes.py:441` - `select_actuator` - the ordering
+- `modes.py:562-569` - `cover_position is None` - unknown position skips covers
+- `modes.py:586-594` - `demand == "heat"` - heating skips fan and dry
+- `modes.py:253` - `FAN_MARGIN_HCI` - 0.5

@@ -177,10 +177,11 @@ Wind is converted from whatever unit your sensor reports. See
 
 ### Power
 
-Five optional fields, all off by default: battery state-of-charge entity,
-battery capacity in kWh, solar output entity, house load entity, and a
-reserve margin in kWh. None of them is required, and this integration never
-writes to any of them — it only reads.
+Optional fields, all off by default: battery state-of-charge entity,
+battery capacity in kWh, solar output entity, house load entity and a
+reserve margin in kWh, then the battery's maximum discharge power, a grid
+power sensor and the solar production forecast. None of them is required,
+and this integration never writes to any of them — it only reads.
 
 | Field | Required | Without it |
 |---|---|---|
@@ -189,17 +190,34 @@ writes to any of them — it only reads.
 | Solar output | For power-aware operation | As above |
 | House load | For power-aware operation | As above |
 | Reserve margin (kWh) | For power-aware operation | As above |
+| Battery maximum discharge power (kW) | No | The budget is bounded by stored energy only |
+| Grid power sensor | No | No breach figure is measured afterwards |
+| Solar production forecast | No | The forecasts the Energy dashboard uses are read until this step is saved. Saved with none chosen, only the solar being produced now is counted |
 
-All five must be set together before any of it engages — a partial
+The first five must be set together before any of it engages — a partial
 configuration behaves exactly as no configuration. The reserve margin is the
 one global figure; each room otherwise assesses its own need against the
 shared live readings without reference to what any other room is doing.
 
-**Turning this on cannot cost you comfort on a guess.** A room is refused only
-when the arithmetic can be done and comes out short. Every case the controller
-cannot answer — a stale reading, an unconverged thermal model, a tariff series
-that does not reach the end of the window — leaves the room its comfort. See
-[Tariff](tariff.md#it-fails-open).
+**Turning this on cannot cost you comfort on a guess.** A room is held back,
+or under Enforced turned off, only when the budget can be worked out and comes
+out short. A budget that cannot be worked out — no battery reading, or a tariff
+series that does not reach the end of the window — leaves the room running as
+normal. See [Tariff](tariff.md#it-fails-open).
+
+**The solar production forecast (0.9.3, DR-061)** lists every forecast Home
+Assistant's Energy dashboard can use, from any integration that provides one
+(Forecast.Solar and Open-Meteo Solar Forecast both do). Choose one per array if
+you have more than one; their hourly forecasts are added together. The sun
+forecast between now and the end of a no-import window then counts towards the
+budget, so the morning's generation is counted at sunrise rather than only once
+it arrives. A forecast that cannot be read is named in a repair issue, the rest
+are used, and with none read the budget falls back to the solar being produced
+now. The forecasts are read every fifteen minutes.
+
+This is a house-level setting. Whether power management may hold a room back,
+or turn its unit off, is set per room: guidance never turns the unit off;
+enforced turns it off where even holding the room cannot be afforded (DR-063).
 
 ## What you do not configure, and why
 

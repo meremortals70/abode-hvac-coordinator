@@ -51,9 +51,9 @@ curve is still unconverged falls back to the target plus the trim, as before.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms.**
 
-- `thermal.py:456` - `smallest approach at which the unit does the most it does` - the cap
+- `thermal.py:510` - `smallest approach at which the unit does the most it does` - the cap
 - `actuator.py:411` - `async def _async_hold_setpoint` - walks the setpoint onto a running unit that is in band
-- `modes.py:452` - `trace.hold_setpoint = True` - set only for the within-band decision
-- `models.py:371` - `hold_setpoint` - the flag on the trace
+- `modes.py:547` - `trace.hold_setpoint = True` - set only for the within-band decision
+- `models.py:401` - `hold_setpoint` - the flag on the trace

@@ -18,6 +18,9 @@ Check `actuator` on the mode sensor. `rejected` says why.
 | `Automatic control is off, nothing is sent to this room` | The room's Automatic control switch is off. The unit is **not** off: it has been left exactly as it was |
 | `waiting for the air conditioner to report what it can do` | The room has not yet read what its air conditioner offers, so nothing is sent to it. It starts by itself as soon as the air conditioner reports. See [Configuration](configuration.md#what-the-air-conditioner-can-do) |
 | `coasting, model predicts the band holds; this unit has no fan-only mode, so it is off` | A unit with no fan-only mode coasts off. One that has it is left on its fan and is not in this list |
+| `humidity is high, so the unit dries rather than blowing over a wet coil` | The room is coasting in dry mode (DR-059). Working as designed |
+| `the unit has just been cooling and this room has not yet learned how much moisture comes back off the coil…` | The weather coast is held back until the room has learned its rebound (DR-060). It learns from the in-band coasts, which still happen |
+| `enforced, so the unit is off until the budget allows it` | The room's power management is enforced and the battery, with the forecast sun, cannot carry even holding the room (DR-063). Set the room to guidance to keep it running |
 | `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |
 | `this unit cannot cool` / `cannot heat` | The room needs a direction the unit does not have |
 | `no grid import permitted…` | The tariff forbids import and the battery cannot carry the room |

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-063 in 0.9.3 |
 | Since | 0.8.12 (2026-08-24) |
 | Origin | Instruction, 2026-08-24, superseding DR-040 |
 | Related | DR-034, DR-037, DR-040 |
@@ -41,11 +41,11 @@ report (DR-043) is how that shows.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.** The precool gap found at 0.8.12 was
+Checked against: 0.9.3. **Conforms**, as amended by DR-063. The precool gap found at 0.8.12 was
 closed in 0.8.13 (DR-037).
 
-- `config_flow.py:299-311` - `POWER_MANAGEMENT_OFF` - the three states
-- `coordinator.py:2705-2708` - `POWER_MANAGEMENT_OFF` - off returns before anything is computed
-- `coordinator.py:1106-1112` - `POWER_MANAGEMENT_ENFORCED` - anti-windup only when enforced
-- `coordinator.py:1106-1112` - `POWER_MANAGEMENT_ENFORCED` - clamp only when enforced
-- `coordinator.py:2790-2793` - `comfort_reduction_active` - true only when enforced and correcting
+- `config_flow.py:345-357` - `POWER_MANAGEMENT_OFF` - the three states
+- `coordinator.py:3094-3097` - `POWER_MANAGEMENT_OFF` - off returns before anything is computed
+- `coordinator.py:1375-1381` - `POWER_MANAGEMENT_ENFORCED` - anti-windup only when enforced
+- `coordinator.py:1375-1381` - `POWER_MANAGEMENT_ENFORCED` - clamp only when enforced
+- `coordinator.py:3253` - `comfort_reduction_active` - true only when enforced and correcting, or when enforced turns the unit off (DR-063)

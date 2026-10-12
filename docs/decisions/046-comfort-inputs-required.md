@@ -30,7 +30,7 @@ Stored fields stay nullable, so old rooms still load.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms.**
 
-- `config_flow.py:113-116` - `vol.Required(CONF_TEMPERATURE_ENTITY)` - required at setup
-- `coordinator.py:851` - `_rooms_missing_comfort_inputs` - repair issue for old rooms
+- `config_flow.py:119-122` - `vol.Required(CONF_TEMPERATURE_ENTITY)` - required at setup
+- `coordinator.py:1070` - `_rooms_missing_comfort_inputs` - repair issue for old rooms

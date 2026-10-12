@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; gated per room by DR-041 |
+| Status | Accepted; gated per room by DR-041; amended by DR-062 and DR-063 in 0.9.3 |
 | Since | 0.8.10 (2026-08-23) |
 | Origin | Finding 10, superseding DR-036 |
 | Related | DR-015, DR-028, DR-039, DR-041, DR-042, DR-044 |
@@ -45,12 +45,12 @@ commanded setpoint is held at the room's own reading.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.** Precool was rationed in 0.8.12; the
+Checked against: 0.9.3. **Conforms**, as amended by DR-062 and DR-063. Precool was rationed in 0.8.12; the
 exemption was added in 0.8.13.
 
-- `power.py:94` - `allowable_draw_kw` - the allowance
-- `power.py:121` - `ceiling_bin` - the most permissive bin that fits
-- `coordinator.py:2672` - `_power_ceiling` - the ceiling
-- `coordinator.py:2714-2720` - `Mode.PRECOOL` - precool is not rationed
-- `coordinator.py:2791-2807` - `bin_index is None` - floor at 0.0 C, never off
+- `power.py:99` - `allowable_draw_kw` - the allowance
+- `power.py:126` - `ceiling_bin` - the most permissive bin that fits
+- `coordinator.py:3054` - `_power_ceiling` - the ceiling
+- `coordinator.py:3101-3107` - `Mode.PRECOOL` - precool is not rationed
+- `coordinator.py:3198-3214` - `bin_index is None` - floor at 0.0 C under guidance; off under enforced (DR-063)
 - `power.py:216-229` - `held_setpoint` - the clamp

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-060 in 0.9.3 |
 | Since | Design v0.4; in the code from 0.6.0 (2026-08-16); compressor state from `hvac_action` and the solar-term fix in 0.8.6 |
 | Origin | Design v0.4, after RoomMind; findings 2 and 4 |
 | Related | DR-011, DR-026, DR-028, DR-031, DR-032 |
@@ -44,9 +44,9 @@ any change to the learning cadence has to be checked against that.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms**, as amended by DR-060.
 
-- `thermal.py:192` - `ThermalModel` - per room
+- `thermal.py:200` - `ThermalModel` - per room
 - `thermal.py:54` - `MIN_SAMPLES` - 20
-- `thermal.py:420-421` - `k_solar.converged` - unconverged solar returns None
-- `coordinator.py:1825` - `_compressor_direction` - `hvac_action` first
+- `thermal.py:474-475` - `k_solar.converged` - unconverged solar returns None
+- `coordinator.py:2144` - `_compressor_direction` - `hvac_action` first

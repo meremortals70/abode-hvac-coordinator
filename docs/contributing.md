@@ -6,7 +6,7 @@ The pure decision modules import nothing from Home Assistant, so they run with
 no dependencies at all:
 
 ```
-python3 -m unittest discover -s tests -p "test_core.py" -v
+python3 -m unittest tests.test_core tests.test_pure_edges -v
 ```
 
 Covering the comfort index and its inverse, mode precedence, the full actuator
@@ -14,8 +14,9 @@ ordering â€” including which conditions stop the unit and which leave it alone â
 tariff windows and constraint handling, setpoint clamping, the setup form
 helpers, the seeded band defaults and lockout reason handling.
 
-644 tests in total across the pure and Home Assistant suites at 0.9.1, run
-against Home Assistant 2026.8.3 on Python 3.14. That number is only meaningful
+920 tests in total across the pure and Home Assistant suites at 0.9.3, run
+against Home Assistant 2026.8.3 on Python 3.14.6. Every module is covered to
+98% or better, and the config flow to 100%, as the quality scale asks. That number is only meaningful
 alongside the version they ran against. Say which every time, and report a run
 against a different version as exactly that.
 
@@ -106,7 +107,7 @@ pure modules is how a three-argument `dict.get` shipped in 0.6.0 and crashed
 The pure suite alone will run without Home Assistant:
 
 ```
-python3 -m unittest discover -s tests -p "test_core.py"
+python3 -m unittest tests.test_core tests.test_pure_edges
 python3 -m unittest tests.test_attributes
 ```
 

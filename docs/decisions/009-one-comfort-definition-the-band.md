@@ -33,8 +33,8 @@ converted from ASHRAE 55, and the form explains the scale.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms.**
 
-- `const.py:221` - `DEFAULT_BANDS` - seeded bands, from ASHRAE 55
-- `modes.py:137` - `band_in_force` - one band per mode
-- `hci.py:239` - `dry_bulb_for_index` - the band becomes a temperature here
+- `const.py:232` - `DEFAULT_BANDS` - seeded bands, from ASHRAE 55
+- `modes.py:232` - `band_in_force` - one band per mode
+- `hci.py:243` - `dry_bulb_for_index` - the band becomes a temperature here

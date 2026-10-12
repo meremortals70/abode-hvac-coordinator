@@ -53,7 +53,7 @@ Three are acted on here:
 | Constraint | What this controller does |
 |---|---|
 | `precool_opportunity` | may enter PRECOOL, if the forecast shows demand ahead |
-| `no_grid_import` | assessed per room against battery and solar — see below |
+| `no_grid_import` | a per-room power budget from the battery, the sun and the solar forecast — see below |
 | `grid_charge_battery` | recognised, and deliberately ignored — batteries are not this controller's actuator |
 
 Anything else is carried through into the decision trace and reported as a
@@ -63,68 +63,80 @@ needs no code change here.
 
 ### `no_grid_import`: what it actually does
 
-This controller has no control over where household power comes from — it
-never writes to a battery or an inverter, only ever reads. `no_grid_import`
-does not switch anything off by itself. It is one more input to the same
-per-room decision that comfort already goes through, checked inline
-alongside whether the unit can physically heat or cool, in `select_actuator`
-— not a separate override applied after the fact.
+This controller has no control over where household power comes from. It never
+writes to a battery or an inverter; it only reads. What it controls is how hard
+each room's air conditioner works, and, for a room set to do so, whether it
+runs at all.
 
-Optional. Configure a battery state-of-charge entity, a battery capacity, a
-solar output entity, a house load entity and a reserve margin (Settings →
-Devices & Services → Abode HVAC Coordinator → Configure → House
-configuration → Power), and every one of the following runs; leave any one
-of the five unset and the constraint is still read and reported, exactly as
-before, but nothing acts on it.
+**It is optional, and it is set per room.** The house needs five readings,
+configured once under Settings → Devices & Services → Abode HVAC Coordinator →
+Configure → House configuration → Power-aware operation: battery state of charge, battery
+capacity, solar output, house load and a reserve margin. Leave any one unset
+and the constraint is still read and shown, but nothing acts on it. Each room
+then has its own Power management setting:
 
-When `no_grid_import` is in force for a room's interval, that room is
-permitted to run its compressor when:
+| Setting | What happens in a no-import window |
+|---|---|
+| Off (the default) | Nothing. The room holds its band as if the constraint were not there |
+| Guidance | The budget is worked out and shown on the room's trace. It is never applied, and the unit is never turned off for power |
+| Enforced | The budget is applied. Where even holding the room cannot be afforded, the unit is turned off until it can be (DR-063) |
 
-- solar output alone already covers the house load plus this unit, or
-- the battery holds enough energy above the reserve margin to carry this
-  room's own projected need until the constraint clears, using the same
-  thermal model that drives the demand forecast.
+**The budget.** The battery's energy above the reserve margin has to last
+until the window ends. Where a solar production forecast is read (DR-061), the
+forecast sun is counted hour by hour until then, and the allowance is the
+highest steady draw for this room that keeps the battery above the reserve the
+whole way, with the battery unable to store more than it has room for. Without
+a forecast, the solar being produced now is counted, cut back by the cloud the
+weather forecast expects later in the window (DR-039). The rest of the house's
+draw is taken off first. Where the battery's maximum discharge power is set,
+the allowance never exceeds what the battery can deliver on top of the sun.
 
-A room is refused only when that arithmetic can actually be done and comes out
-short. Then it holds, and `select_actuator` records why in the decision trace,
-the same as any other rejected step.
+**What the budget buys.** Each room's air conditioner has a learned draw at
+four operating points, from holding at setpoint to pulling the room down
+(finding 14). Until it has learned them it assumes 1.2 kW. The most
+demanding operating point the allowance covers sets a ceiling on how far from
+the room's own temperature the setpoint may be asked to go: 0.5 C, 1.5 C,
+3.0 C or no limit. Under Enforced, the room loop's setpoint is held inside that
+ceiling, and rounded towards the room rather than away from it so it stays
+inside (DR-051). If the allowance covers no operating point at all, Enforced
+turns the unit off.
 
-**Solar headroom depends on whether the unit is already running.** A running
-compressor's draw is already inside the house load figure, so only a unit that
-is currently off has its rating added on top. Adding it either way counted the
-draw twice and made a room read as unaffordable the moment it started — the
-reading that justified starting it became the reading that stopped it. Fixed
-in 0.8.6.
+**It does not flap.** The ceiling drops the moment the allowance falls. It
+rises only after it has stood for ten minutes, and only to an operating point
+the allowance covers with 0.3 kW to spare (DR-062). Outside a no-import window
+the held ceiling is let go.
 
-Each room assesses its own need independently against the shared live
-readings. Rooms do not negotiate with each other or reserve capacity for one
-another; the reserve margin is the one global figure that exists to leave
-headroom for the rest of the house.
+**What is never rationed.** Precool runs in a window chosen because energy is
+free and is never throttled (DR-037). A coasting room the budget can afford is
+left on its fan or drying; under Enforced it is turned off only when nothing
+can be afforded.
+
+**What you see.** The room's mode sensor carries `power_budget_kw`,
+`power_bin` and `power_ceiling_c`, and its reasons say what the budget is,
+how much forecast solar it counted, and what it did. Where a grid sensor is
+configured, any import that happens in a window anyway is measured and reported
+afterwards as a repair issue (DR-043).
 
 ### It fails open
 
-**Comfort is a hard constraint, and a projection the controller cannot make is
-not grounds for withdrawing it.** Four cases cannot be answered, and every one
-of them leaves the room its comfort and writes a debug line rather than
-refusing:
+**A budget the controller cannot work out never holds a room back** (DR-044).
 
 | Case | Result |
 |---|---|
-| A reading is missing, or older than fifteen minutes | Comfort held |
-| The tariff series does not reach the end of the no-import window | Comfort held |
-| The room has no solved target yet — its first cycle | Comfort held |
-| The thermal model has not converged enough to project | Comfort held |
+| Any of the five power fields not configured | Power management does not run |
+| The battery charge reading is missing, or older than fifteen minutes | No ceiling; the room runs as normal |
+| The tariff series does not reach the end of the no-import window | No ceiling; the room runs as normal |
+| A solar production forecast cannot be read | The budget uses the solar being produced now, and a repair issue names the forecast |
 
-Before 0.8.6 all four returned a refusal. An unconverged thermal model is the
-state every fresh install sits in for its first days, so switching power
-management on stopped the compressor in occupied rooms for the entire
-no-import window, with a trace line blaming the battery. That is exactly
-backwards: the controller was withdrawing comfort on the strength of a number
-it had never measured.
+A missing solar or house-load reading is not a missing budget. Solar counts as
+none and the house's other load as nothing, and the budget is worked out from
+the battery. That is the cautious reading of solar and the generous reading of
+the house, and a sensor that has failed is logged as unavailable.
 
-Where the readings and the model do exist, a shortfall is still a refusal.
-Failing open applies to what the controller cannot answer, never to what it
-can.
+Before 0.8.6 an unconverged thermal model also refused the compressor, which
+stopped occupied rooms for whole windows on a fresh install. The budget has not
+used the thermal model since 0.8.10: it uses the learned draw, which falls back
+to the assumed figure until it is known.
 
 ## Refresh and failure
 

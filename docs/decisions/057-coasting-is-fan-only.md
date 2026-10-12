@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; supersedes the "commands the unit off" part of DR-032; amends DR-017 and DR-053 |
+| Status | Accepted; supersedes the "commands the unit off" part of DR-032; amends DR-017 and DR-053; amended by DR-059 in 0.9.3 |
 | Since | 0.9.1 (2026-10-04) |
 | Origin | Instruction, 2026-10-04: "changing the definition of coast to fan only is better and making off actually be off" |
 | Related | DR-017, DR-022, DR-032, DR-053, DR-055 |
@@ -43,9 +43,9 @@ the one-hour hold of DR-032 both coast this way.
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms**, as amended by DR-059.
 
-- `modes.py:541` - `def coast_step` - fan where the unit has fan-only, otherwise off
-- `modes.py:409` - `return coast_step(inputs, trace)` - the in-band coast
-- `modes.py:724` - `trace.actuator = coast_step(inputs, trace)` - the weather coast
-- `coordinator.py:2088` - `and trace.mode is not Mode.COAST,` - a coasting room projects no compressor energy
+- `modes.py:636` - `def coast_step` - fan where the unit has fan-only, otherwise off
+- `modes.py:504` - `return coast_step(inputs, trace, band, hci)` - the in-band coast
+- `modes.py:872` - `trace.actuator = coast_step(inputs, trace, band, hci)` - the weather coast
+- `coordinator.py:2407` - `and trace.mode is not Mode.COAST,` - a coasting room projects no compressor energy

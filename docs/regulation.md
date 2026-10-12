@@ -93,7 +93,10 @@ whole degrees. The integration sent 22.8, then 22.9, then 22.2; the unit kept
 with no end. Across the recorder's history every fractional setpoint lasted at
 most 24 seconds and whole degrees lasted for hours.
 
-- Rounding is to the nearest step, counted from the unit's minimum.
+- Rounding is in steps counted from the unit's minimum. Since 0.9.3 it goes
+  the way the room is being driven: cooling rounds down, heating rounds up
+  (DR-065). Rounding to the nearest step sent 26.0 C to a 25.9 C room the loop
+  wanted 0.2 C below, and the unit did nothing.
 - Where the power ceiling is binding, rounding goes the way that stays inside
   it: cooling rounds up, heating rounds down.
 - A room with two heads uses the coarser step and the narrower range, provided

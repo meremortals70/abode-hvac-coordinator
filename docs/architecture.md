@@ -208,11 +208,13 @@ occupant can see what the budget would do before ever living with it.
 Enforced applies the constraint for that room — the ceiling holds whether
 the room is already inside its band or calling for correction, holding it as
 close to the band as the remaining energy allows rather than running it flat
-out or refusing it. **No state of this feature, in any configuration, ever
-commands the compressor off for a power reason** — enforcing the constraint
-means throttling toward it, never abandoning the room. Where the budget
-cannot even afford holding at setpoint, the ceiling floors at "ask for
-nothing colder than the room already is" rather than becoming a stop.
+out or refusing it. **Since 0.9.3, whether power management may turn the unit
+off depends on that setting (DR-063).** Where the budget cannot even afford
+holding at setpoint, an enforced room is turned off until the budget allows
+it, and the trace says so. A guidance room is never turned off or throttled
+for power: its ceiling floors at "ask for nothing colder than the room
+already is" and is reported only. A coasting room the budget can afford is
+left alone.
 
 **Since 0.8.11, solar is checked first, as a direct offset — the battery
 only becomes a binding constraint at all where solar is insufficient.**
@@ -226,6 +228,18 @@ window, so a window that runs past sunset, or into cloud the forecast
 already expects, is not credited with the current moment's solar persisting
 for hours it will not; a house with no weather entity configured sees the
 instantaneous reading unchanged, exactly as before this finding.
+
+**Since 0.9.3, the budget counts the day's forecast solar (DR-061).** The
+power settings offer every solar production forecast Home Assistant has, and
+any number can be chosen; with none chosen, the ones the Energy dashboard
+uses are read. Their hourly forecasts are summed and walked through the
+no-import window against the battery: the allowance is the highest steady
+draw that keeps the battery above empty until the window clears, with the
+battery unable to store more than it has room for. Where no forecast can be
+read, the budget falls back to the solar being produced now, derated as
+above, and a repair issue names the source that failed. The ceiling drops at
+once and rises only after it has stood for ten minutes and the allowance
+clears the next bin by 0.3 kW (DR-062).
 
 **Since 0.8.7 the actuation reaches the hardware; since 0.8.10 a grid sensor
 lets the controller measure rather than only project.** One signed power
@@ -373,7 +387,7 @@ than run the compressor.
 | Sleep band ramp | Built, tested |
 | Decision trace | Built, tested |
 | Config flow, devices, entities, diagnostics | Built, untested |
-| Learned state persistence | Built, unused |
+| Learned state persistence | Built, tested. Since 0.9.3 saved on one pending timer, choices within five seconds, and flushed on unload (DR-064); before it, nothing reached disk while the integration ran |
 | Thermal model | Built, tested |
 | Demand forecast | Built, tested |
 | Actuation | Built, tested |
@@ -402,9 +416,17 @@ than run the compressor.
 | The comfort index never changes with the unit's own air | Built, tested. New in 0.9.1 (DR-055). Only an air-movement entity the user configured counts |
 | The room loop asks for what the unit can deliver, and walks its setpoint back in band | Built, tested. New in 0.9.1 (DR-056) |
 | Coasting is the compressor off and the unit on its fan | Built, tested. New in 0.9.1 (DR-057). Replaces coast commanding the unit off |
+| Each room has a Comfort mode: Schedule, Sleep or Awake | Built, tested. New in 0.9.2 (DR-058) |
+| A humid room dries when the compressor stops; a refused restart stays on the fan | Built, tested. New in 0.9.3 (DR-059) |
+| The coast counts the moisture the coil gives back; passive learning skips it | Built, tested. New in 0.9.3 (DR-060) |
+| The power budget counts forecast solar, from house-level forecast sources | Built, tested. New in 0.9.3 (DR-061) |
+| Hysteresis on the power ceiling | Built, tested. New in 0.9.3 (DR-062) |
+| Enforced power management may turn the unit off; guidance never does | Built, tested. New in 0.9.3 (DR-063) |
+| Cooling rounds the setpoint down, heating rounds up | Built, tested. New in 0.9.3 (DR-065) |
+| A reading's age is measured from when it was last reported | Built, tested. New in 0.9.3 (DR-066) |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.1 it is 644 tests (491 over the pure modules),
+pure modules. At 0.9.3 it is 920 tests (599 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two
@@ -430,8 +452,9 @@ room's compressor group can afford, and that bin's approach becomes a
 ceiling on how far below (heating: above) the room's own reading the
 commanded setpoint may go.
 
-**The ceiling never stops the compressor, and the per-room setting is a
-three-state gate on the whole mechanism, not a single on/off.**
+**The per-room setting is a three-state gate on the whole mechanism, not a
+single on/off, and since 0.9.3 it also decides whether the unit may be turned
+off (DR-063).**
 `allow_comfort_reduction` (stored key unchanged for back-compatibility) is
 `off` by default, per room; the other two states are `guidance` and
 `enforced`. Off, power management does not touch the room at all — comfort
@@ -443,10 +466,11 @@ applies the constraint: the ceiling holds whether the room is inside its
 band or calling for correction, holding it as close to the band as the
 remaining energy allows — running at the largest output the budget
 affords, spread across the hours until the constraint clears, degrading
-gradually as the battery depletes rather than either running flat out or
-being abandoned. Where even holding
-at setpoint cannot be afforded, the ceiling floors at zero further
-correction — never at an actuator state that turns the unit off.
+gradually as the battery depletes rather than running flat out. Where even
+holding at setpoint cannot be afforded, an enforced room is turned off until
+the budget allows it; a guidance room's ceiling floors at zero further
+correction and is reported only. Until 0.9.3 no setting ever turned the unit
+off for power.
 
 Anti-windup follows the same rule finding 7 (0.8.6) established for a
 guard-refused start: the regulation integrator does not wind against a
@@ -625,6 +649,7 @@ remains after that goes straight to the room being throttled, free of both
 of the battery's own limits. The battery only becomes a binding constraint
 at all where solar is insufficient to cover the house.
 
+Where no solar forecast is read (DR-061),
 `coordinator._sustained_solar_kw` derates the instantaneous reading using
 the weather forecast's clear-sky fraction — the same figure the thermal
 model already uses for solar gain — across the remaining hours of the

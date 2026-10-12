@@ -7,10 +7,11 @@ rather than needing a training period before it does anything.
 
 | Coefficient | Meaning | Learned from |
 |---|---|---|
-| `k_loss` | How fast the room drifts toward outdoor conditions, per °C of difference per hour | Intervals with the compressor off and dry mode off |
-| `k_solar` | How much the sun raises the room while it is on the glass, °C/hour | Sunlit intervals with the compressor off and dry mode off |
+| `k_loss` | How fast the room drifts toward outdoor conditions, per °C of difference per hour | Intervals with the compressor off and dry mode off, outside the fifteen minutes after a stop |
+| `k_solar` | How much the sun raises the room while it is on the glass, °C/hour | Sunlit intervals with the compressor off and dry mode off, outside the fifteen minutes after a stop |
 | `k_sensible` | How fast the compressor moves dry bulb, °C/hour | Intervals with the compressor running |
 | `k_latent` | How fast dry mode moves humidity, percentage points/hour | Intervals with dry mode running |
+| `k_rh_rebound` | How fast the room's humidity rises as the coil gives its water back after the compressor stops, percentage points/hour | The fifteen minutes after cooling or drying stops (0.9.3, DR-060) |
 
 ## Why sensible and latent are separate
 
@@ -60,6 +61,12 @@ drying interval was folded into `k_loss` and `k_solar` as though nothing had
 been driving the room. Since 0.8.6 a drying interval teaches the latent
 coefficient and nothing else.
 
+**Nor are the minutes after a stop.** For fifteen minutes after cooling or
+drying stops, the coil, drain pan and furniture give heat and water back to the
+room. Until 0.9.3 those minutes were learned as passive drift, the likely cause
+of the negative `k_solar` the living room converged to. They now teach `k_rh_rebound` and nothing
+else. (DR-060)
+
 Full matrix estimation is not used. Over short intervals the coefficients are
 near-independent — heat loss acts when the compressor is off, compressor
 authority when it is on — so the cross terms a matrix filter would estimate are
@@ -88,7 +95,7 @@ process noise eventually stops learning.
 | Consumer | What it asks |
 |---|---|
 | `COAST` | Does the band hold unaided over the next hour? For a room already in band |
-| Weather coast | With nothing running, does the room come back into band, for good, within the limit? A stepped projection from `k_loss`, `k_solar`, the forecast and the sun at each step |
+| Weather coast | With nothing running, does the room come back into band, for good, within the limit? A stepped projection from `k_loss`, `k_solar`, the forecast and the sun at each step, judged on the comfort index with the humidity rising at `k_rh_rebound` after a stop (0.9.3, DR-060) |
 | The room loop | How far from the room's own reading must the unit work to move the room at a given rate? The learned rate against approach, read backwards |
 | `PRECOOL` | How far to overshoot. Whether a load is coming is the weather forecast's answer, not the model's |
 | Heading home | How long to reach comfort, and therefore when to start |

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-066 in 0.9.3 |
 | Since | Design v0.8; in the code from 0.6.0 (2026-08-16) |
 | Origin | Design v0.8 |
 | Related | DR-018, DR-044 |
@@ -32,8 +32,8 @@ Tolerances are constants: indoor 2 h, outdoor 3 h, presence 6 h, contacts
 
 ## In the code
 
-Checked against: 0.9.1. **Conforms.**
+Checked against: 0.9.3. **Conforms**, as amended by DR-066.
 
-- `staleness.py:39-58` - `INDOOR_TOLERANCE` - the tolerances
-- `staleness.py:70` - `assess` - the test
-- `coordinator.py:2868` - `_fresh` - applied to every read
+- `staleness.py:47-66` - `INDOOR_TOLERANCE` - the tolerances
+- `staleness.py:78` - `assess` - the test
+- `coordinator.py:3305` - `_fresh` - applied to every read

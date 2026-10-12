@@ -19,6 +19,11 @@ nothing is faulty.
 Every reading this controller acts on carries an age. A reading older than its
 feed's tolerance is treated as **absent**, not as a value.
 
+The age is measured from when the sensor last reported, changed or not (since
+0.9.3, DR-066). Before that it was measured from the last change, so a sensor
+reporting the same value every minute could be judged stale. A sensor that has
+stopped reporting is still caught.
+
 Absent is already handled everywhere in this project: the room holds, the trace
 says why, the comfort index is not computed, and no actuator moves on a guess.
 Layer 2 stops integrating, because its anti-windup gate needs a target and a
