@@ -42,6 +42,7 @@ from custom_components.abode_hvac_coordinator.models import (
     DecisionTrace,
     Mode,
 )
+from custom_components.abode_hvac_coordinator.power import OFF_HOLD
 from custom_components.abode_hvac_coordinator.regulate import CompressorState
 from custom_components.abode_hvac_coordinator.staleness import INDOOR_TOLERANCE
 from custom_components.abode_hvac_coordinator.tariff import TariffSeries
@@ -400,8 +401,25 @@ async def _setup_power(
     return coordinator
 
 
-def _ceiling(coordinator: object, *, mode=Mode.OCCUPIED, actuator=ActuatorStep.COMPRESSOR, now=None):
+def _ceiling(
+    coordinator: object,
+    *,
+    mode=Mode.OCCUPIED,
+    actuator=ActuatorStep.COMPRESSOR,
+    now=None,
+    shortfall_lasted: bool = True,
+):
+    """The budget's decision for the room at `now`.
+
+    `shortfall_lasted` (the default) treats any shortfall as having lasted
+    the ten-minute hold of DR-067 already, so these tests see the budget's own
+    decision; the hold is tested on its own.
+    """
     now = now or dt_util.utcnow()
+    if shortfall_lasted:
+        coordinator._shortfall_since.setdefault(  # type: ignore[attr-defined]
+            "test_room", now - OFF_HOLD - timedelta(minutes=1)
+        )
     room = coordinator.rooms["test_room"]  # type: ignore[attr-defined]
     inputs = coordinator._inputs_for(room, now)  # type: ignore[attr-defined]
     trace = DecisionTrace(
@@ -476,7 +494,9 @@ async def test_the_ceiling_does_not_jump_back_up_a_minute_later(
     assert first.actuator is ActuatorStep.OFF
     hass.states.async_set("sensor.solar_power", "2500")
     later = now + timedelta(minutes=1)
+    coordinator._budget_solar_samples.clear()  # type: ignore[attr-defined]
     coordinator._power_context = coordinator._compute_power_context(later)  # type: ignore[attr-defined]
+    coordinator._note_power_samples(later, coordinator._power_context)  # type: ignore[attr-defined]
     second = _ceiling(coordinator, now=later)
     assert second.power_budget_kw is not None and second.power_budget_kw > 1.0
     assert second.actuator is ActuatorStep.OFF, second.reasons

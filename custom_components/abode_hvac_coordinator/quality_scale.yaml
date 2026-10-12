@@ -22,7 +22,7 @@ rules:
   config-flow-test-coverage:
     status: done
     comment: |
-      config_flow.py is at 100% line coverage at 0.9.3 (pytest with coverage,
+      config_flow.py is at 100% line coverage at 0.9.4 (pytest with coverage,
       Home Assistant 2026.8.3, Python 3.14.6). 54 tests in
       tests/test_config_flow.py cover every step of the config and options
       flows, including the error and abort paths.
@@ -73,12 +73,13 @@ rules:
   test-coverage:
     status: done
     comment: |
-      Every one of the 28 modules is at 98% line coverage or better at 0.9.3,
+      Every one of the 28 modules is at 98% line coverage or better at 0.9.4,
       99% overall, measured with coverage.py over the whole suite against Home
-      Assistant 2026.8.3 on Python 3.14.6. 920 tests: 599 over the pure
+      Assistant 2026.8.3 on Python 3.14.6. 940 tests: 608 over the pure
       modules and 7 static checks on the source, which also run without Home
-      Assistant, and 314 against a running Home Assistant. Every fix in 0.9.3 was checked by putting the
-      defect back and watching its test fail.
+      Assistant, and 325 against a running Home Assistant. Every fix in 0.9.3
+      and 0.9.4 was checked by putting the defect back and watching its test
+      fail.
 
   # --- Gold ---
   devices: done

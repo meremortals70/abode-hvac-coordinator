@@ -223,3 +223,50 @@ async def test_removing_the_store_deletes_the_file(
     assert STORAGE_KEY in hass_storage
     await store.async_remove()
     assert STORAGE_KEY not in hass_storage
+
+
+# ---------------------------------------------------------------------------
+# 0.9.4, DR-068 - occupancy is kept across a restart
+# ---------------------------------------------------------------------------
+
+
+async def test_occupancy_reaches_disk_with_the_learned_state(
+    hass: HomeAssistant, hass_storage: dict[str, Any], freezer
+) -> None:
+    store = await _loaded(hass)
+    assert store.occupancy() == {}
+    store.set_occupancy("office", True)
+    await _wait(hass, freezer, SAVE_DELAY_SECONDS + 1)
+    on_disk = _on_disk(hass_storage)
+    assert on_disk is not None and on_disk["occupancy"] == {"office": True}
+    reread = await _loaded(hass)
+    assert reread.occupancy() == {"office": True}
+
+
+async def test_an_unchanged_occupancy_schedules_no_write(hass: HomeAssistant) -> None:
+    store = await _loaded(hass)
+    store.set_occupancy("office", False)
+    store._save_pending = False
+    store.set_occupancy("office", False)
+    assert store._save_pending is False
+
+
+async def test_a_damaged_occupancy_entry_reads_as_none(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    hass_storage[STORAGE_KEY] = {
+        "version": STORAGE_VERSION,
+        "minor_version": 1,
+        "key": STORAGE_KEY,
+        "data": {"occupancy": ["office"]},
+    }
+    store = await _loaded(hass)
+    assert store.occupancy() == {}
+
+
+async def test_forgetting_a_room_forgets_its_occupancy(hass: HomeAssistant) -> None:
+    store = await _loaded(hass)
+    store.set_occupancy("office", True)
+    store.set_occupancy("living", False)
+    store.forget_room("office")
+    assert store.occupancy() == {"living": False}

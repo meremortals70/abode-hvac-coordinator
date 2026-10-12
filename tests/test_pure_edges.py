@@ -487,3 +487,59 @@ class TestSmallEdges(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBudgetReadings(unittest.TestCase):
+    """0.9.4, DR-067. What the budget reads, and when it turns a room off."""
+
+    def test_the_mean_of_the_last_fifteen_minutes(self):
+        samples = [
+            (NOW - timedelta(minutes=20), 5000.0),
+            (NOW - timedelta(minutes=10), 600.0),
+            (NOW, 1000.0),
+        ]
+        self.assertEqual(
+            _power.mean_recent(samples, _power.READING_AVERAGE_WINDOW), 800.0
+        )
+
+    def test_a_series_no_longer_added_to_keeps_its_average(self):
+        """A room's own samples stop while it runs; its last average stands."""
+        samples = [(NOW - timedelta(hours=2, minutes=m), 650.0) for m in (0, 5, 10)]
+        self.assertEqual(
+            _power.mean_recent(samples, _power.READING_AVERAGE_WINDOW), 650.0
+        )
+
+    def test_no_samples_is_no_average(self):
+        self.assertIsNone(_power.mean_recent([], _power.READING_AVERAGE_WINDOW))
+
+    def test_an_afforded_room_clears_the_shortfall(self):
+        self.assertEqual(
+            _power.hold_before_off(2, was_on=True, shortfall_since=NOW, now=NOW),
+            (2, None),
+        )
+
+    def test_a_running_room_is_held_at_the_gentlest_bin(self):
+        since = NOW - timedelta(minutes=9)
+        self.assertEqual(
+            _power.hold_before_off(None, was_on=True, shortfall_since=since, now=NOW),
+            (0, since),
+        )
+
+    def test_a_new_shortfall_starts_the_hold_now(self):
+        self.assertEqual(
+            _power.hold_before_off(None, was_on=True, shortfall_since=None, now=NOW),
+            (0, NOW),
+        )
+
+    def test_after_the_hold_the_room_is_turned_off(self):
+        since = NOW - _power.OFF_HOLD
+        self.assertEqual(
+            _power.hold_before_off(None, was_on=True, shortfall_since=since, now=NOW),
+            (None, since),
+        )
+
+    def test_a_room_already_off_stays_off(self):
+        self.assertEqual(
+            _power.hold_before_off(None, was_on=False, shortfall_since=None, now=NOW),
+            (None, NOW),
+        )

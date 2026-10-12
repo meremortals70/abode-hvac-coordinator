@@ -81,6 +81,7 @@ class ModelStore:
             "manual_vanes": [],
             "profiles": {},
             "comfort_modes": {},
+            "occupancy": {},
         }
 
     async def async_load(self) -> None:
@@ -140,6 +141,10 @@ class ModelStore:
         removed = self._data.get("profiles", {}).pop(room_id, None) is not None or removed
         removed = (
             self._data.get("comfort_modes", {}).pop(room_id, None) is not None
+            or removed
+        )
+        removed = (
+            self._data.get("occupancy", {}).pop(room_id, None) is not None
             or removed
         )
         if removed:
@@ -207,6 +212,28 @@ class ModelStore:
             modes[room_id] = mode
         self._data["comfort_modes"] = modes
         self._save_choice_soon()
+
+    def occupancy(self) -> dict[str, bool]:
+        """Whether each room last counted as occupied, after its grace.
+
+        0.9.4, DR-068. Kept so the first evaluation after a restart or reload
+        knows whether the room was occupied. A presence sensor that is still
+        coming up reads as unknown, and unknown holds the last known
+        occupancy; with nothing kept, that was always unoccupied.
+        """
+        found = self._data.get("occupancy", {})
+        if not isinstance(found, dict):
+            return {}
+        return {str(room): bool(value) for room, value in found.items()}
+
+    def set_occupancy(self, room_id: str, occupied: bool) -> None:
+        """Record a room's occupancy when it changes, with the learned state."""
+        rooms = self.occupancy()
+        if rooms.get(room_id) == occupied:
+            return
+        rooms[room_id] = occupied
+        self._data["occupancy"] = rooms
+        self._schedule_learned_save()
 
     def profile(self, room_id: str) -> dict[str, Any] | None:
         """The stored capability profile for a room read on first load.

@@ -6,6 +6,38 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.4 - 2026-10-12
+
+From the Office on the evening of 12 October, set to Enforced, with the battery
+at 93%.
+
+### Fixed
+
+- **An enforced room turned itself off the minute after every start.** The
+  budget took off only the room's estimated draw from the house load, so the
+  rest of what the unit drew was counted as the rest of the house for the hours
+  left in the window, and the allowance collapsed. The rest of the house is now
+  the house load measured while the room's own unit was not running, so the
+  room's draw never counts against it. (DR-067)
+- **One reading moved the budget.** House load and solar are now averaged over
+  the last fifteen minutes. (DR-067)
+- **One short reading turned an enforced room off.** A running room is now held
+  at the gentlest setting until the budget has fallen short for ten minutes,
+  and its trace says when it will be turned off. (DR-067)
+- **Without a solar forecast, a room was allowed the house's share of the
+  battery.** The energy left was spread over the hours left without taking off
+  what the rest of the house would use in them. It is now taken off, as the
+  forecast budget always did. (DR-067)
+- **A reload turned an occupied room off.** After the 0.9.3 update the Office's
+  presence sensor read unavailable for a minute, and every room started as
+  unoccupied. Each room's occupancy is now kept across a restart or reload.
+  (DR-068)
+
+### Changed
+
+- The reserve margin's help text on the power form now says it is in kWh, not
+  a percentage.
+
 ## 0.9.3 - 2026-10-12
 
 From the living room's first night on Sleep, 11/12 October.

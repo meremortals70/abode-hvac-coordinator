@@ -185,7 +185,8 @@
           "solar_forecast_entry_ids": "Solar production forecast"
         },
         "data_description": {
-          "solar_forecast_entry_ids": "The forecasts your Energy dashboard can use. Until you save this step, the ones the Energy dashboard is set up with are used."
+          "solar_forecast_entry_ids": "The forecasts your Energy dashboard can use. Until you save this step, the ones the Energy dashboard is set up with are used.",
+          "reserve_margin_kwh": "Energy in kWh, not a percentage. 5% of a 13 kWh battery is 0.65 kWh. The budget never counts this much of the battery."
         }
       },
       "room_outdoor": {

@@ -313,6 +313,9 @@ async def test_enforced_turns_off_a_room_the_budget_cannot_hold(
     """0.9.3, DR-063. Enforced, with a shortfall so deep that even holding at
     setpoint cannot be afforded, turns the unit off. Until 0.9.3 it held the
     setpoint at the room's own temperature and kept drawing.
+
+    0.9.4, DR-067. Not at once: a running room is held at the gentlest setting
+    until the shortfall has lasted ten minutes.
     """
     rooms = list(mock_config_entry.options[CONF_ROOMS])
     rooms[0] = {**rooms[0], CONF_ALLOW_COMFORT_REDUCTION: POWER_MANAGEMENT_ENFORCED}
@@ -340,10 +343,35 @@ async def test_enforced_turns_off_a_room_the_budget_cannot_hold(
     model.k_solar = Coefficient(value=1.0, variance=0.01, samples=40)
     coordinator._last_target["test_room"] = 24.0
 
-    await _let_occupancy_settle(hass, coordinator)
+    start = dt_util.utcnow()
+    readings = {
+        "sensor.test_temperature": "30.0",
+        "sensor.test_humidity": "60.0",
+        "binary_sensor.test_presence": "on",
+        "sensor.battery_soc": "20.0",
+        "sensor.solar_power": "0",
+        "sensor.house_load": "500",
+    }
 
-    state = hass.states.get("sensor.test_room_mode")
-    assert state is not None
+    async def at(minutes: float):
+        with freeze_time(start + timedelta(minutes=minutes)):
+            for entity_id, value in readings.items():
+                hass.states.async_set(entity_id, value, force_update=True)
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+        state = hass.states.get("sensor.test_room_mode")
+        assert state is not None
+        return state
+
+    # Occupied after its grace, then the budget falls short.
+    await at(5)
+    held = await at(8)
+    assert held.attributes["actuator"] != "off", held.attributes["reasons"]
+    assert any(
+        "held at the gentlest setting" in reason for reason in held.attributes["reasons"]
+    ), held.attributes["reasons"]
+
+    state = await at(19)
     assert state.attributes["actuator"] == "off"
     assert state.attributes["comfort_reduction_active"] is True
     assert any(
@@ -450,7 +478,9 @@ async def test_precool_is_never_rationed_even_when_enforced(
         return trace
 
     # Control: the same budget does act on an occupied room — here it is
-    # deep enough that enforced turns it off (DR-063).
+    # deep enough that enforced turns it off (DR-063), once the shortfall has
+    # lasted the hold of DR-067.
+    coordinator._shortfall_since["test_room"] = now - timedelta(minutes=11)
     assert _ceiling_for(Mode.OCCUPIED).actuator is ActuatorStep.OFF
 
     precool = _ceiling_for(Mode.PRECOOL)

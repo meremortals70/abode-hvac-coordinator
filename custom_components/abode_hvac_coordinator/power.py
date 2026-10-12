@@ -104,10 +104,17 @@ def allowable_draw_kw(
 ) -> float:
     """The average kW this room may draw without importing.
 
-    The lesser of the energy figure spread evenly over the remaining hours
-    and what the battery can actually deliver on top of the rest of the
-    house's own measured draw. Never negative: a house already over its own
-    discharge ceiling gets a zero allowance, not a negative one.
+    The lesser of the energy figure spread evenly over the remaining hours,
+    less what the rest of the house will draw over them, and what the battery
+    can actually deliver on top of the rest of the house's own measured draw.
+    Never negative: a house already over its own discharge ceiling gets a zero
+    allowance, not a negative one.
+
+    0.9.4, DR-067. Until 0.9.4 the energy figure was not reduced by the rest
+    of the house, so a room was allowed the house's share of the battery as
+    well as its own, and the battery could reach the reserve before the
+    window ended. The forecast walk (`forecast_allowance_kw`) always took it
+    off; the two now agree.
 
     `max_discharge_kw` is the battery's rated maximum discharge power, a
     nameplate figure entered at setup (`CONF_BATTERY_MAX_DISCHARGE_KW`) —
@@ -116,7 +123,9 @@ def allowable_draw_kw(
     """
     if hours_until_clear <= 0:
         return 0.0
-    energy_rate_kw = max(available_kwh, 0.0) / hours_until_clear
+    energy_rate_kw = (
+        max(available_kwh, 0.0) / hours_until_clear - max(other_house_draw_kw, 0.0)
+    )
     if max_discharge_kw is None:
         return max(energy_rate_kw, 0.0)
     plant_rate_kw = max(max_discharge_kw - other_house_draw_kw, 0.0)
@@ -470,3 +479,56 @@ def held_ceiling_bin(
     if not clear:
         return previous
     return max(clear)
+
+
+# ---- what the budget reads, and turning off (0.9.4, DR-067) ----------------
+
+#: How long the house load and solar readings are averaged over before the
+#: budget uses them. One reading is a kettle or a compressor ramping; the
+#: budget projects the rest of the house for hours. A judgement, not a
+#: measurement.
+READING_AVERAGE_WINDOW = timedelta(minutes=15)
+
+#: How long a shortfall must last before an enforced room is turned off. The
+#: same length as `BIN_RAISE_HOLD`, so a room is not turned off on a minute it
+#: would have had to wait ten minutes to recover from. A judgement.
+OFF_HOLD = timedelta(minutes=10)
+
+
+def mean_recent(
+    samples: Sequence[tuple[datetime, float]], window: timedelta
+) -> float | None:
+    """The mean of the samples within `window` of the newest one, or None.
+
+    Measured back from the newest sample, not from now, so a series that
+    stops being added to — a room's own house-load samples while it runs —
+    keeps the average it had when it stopped.
+    """
+    if not samples:
+        return None
+    newest = max(stamp for stamp, _ in samples)
+    inside = [value for stamp, value in samples if newest - stamp <= window]
+    return sum(inside) / len(inside)
+
+
+def hold_before_off(
+    bin_index: int | None,
+    *,
+    was_on: bool,
+    shortfall_since: datetime | None,
+    now: datetime,
+) -> tuple[int | None, datetime | None]:
+    """The ceiling bin after the hold before an enforced room is turned off.
+
+    0.9.4, DR-067. `bin_index` is what the budget affords (None: not even
+    holding at setpoint). A room that was allowed to run is held at the
+    gentlest bin until the shortfall has lasted `OFF_HOLD`, then turned off.
+    A room already off stays off. Returns the bin and when the shortfall
+    began, None once the budget affords the room again.
+    """
+    if bin_index is not None:
+        return bin_index, None
+    since = shortfall_since or now
+    if was_on and now - since < OFF_HOLD:
+        return 0, since
+    return None, since

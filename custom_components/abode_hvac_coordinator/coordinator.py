@@ -174,6 +174,8 @@ from .modes import (
 )
 from .power import (
     GRID_SIGN_IMPORTING,
+    OFF_HOLD,
+    READING_AVERAGE_WINDOW,
     battery_available_kwh,
     budget_allowance_kw,
     ceiling_is_binding,
@@ -183,7 +185,9 @@ from .power import (
     forecast_slices,
     held_ceiling_bin,
     held_setpoint,
+    hold_before_off,
     implied_sign,
+    mean_recent,
     normalise_grid_import_w,
     plant_allowance_kw,
     setpoint_direction,
@@ -458,6 +462,17 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Each room's ceiling bin and when it last changed, for the
         #: hysteresis in `power.held_ceiling_bin` (DR-062).
         self._ceiling_bins: dict[str, tuple[int | None, datetime]] = {}
+        #: 0.9.4, DR-067. When each enforced room's budget first fell short,
+        #: so it is turned off only once the shortfall has lasted `OFF_HOLD`.
+        self._shortfall_since: dict[str, datetime] = {}
+        #: 0.9.4, DR-067. The house load and solar readings of the last
+        #: `READING_AVERAGE_WINDOW`, so the budget runs on averages.
+        self._budget_house_samples: deque[tuple[datetime, float]] = deque()
+        self._budget_solar_samples: deque[tuple[datetime, float]] = deque()
+        #: 0.9.4, DR-067. Per room, the house load measured while that room's
+        #: unit was not running: the rest of the house, as measured. Not added
+        #: to while the room runs, so the room's own draw never enters it.
+        self._base_load_samples: dict[str, deque[tuple[datetime, float]]] = {}
         #: How many consecutive evaluations the live grid reading has
         #: disagreed with the stored sign convention, and the repair issue
         #: this raises once persistent enough. Reset the moment the evidence
@@ -1285,6 +1300,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._stale.clear()
         self._record_house_load_sample(now)
         self._power_context = self._compute_power_context(now)
+        self._note_power_samples(now, self._power_context)
         self._track_grid(now, self._power_context)
         self._async_ensure_profiles()
         for room in self.rooms.values():
@@ -1902,10 +1918,20 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._raw_presence.pop(room.room_id, None)
             return None
 
-        state = self._grace.setdefault(room.room_id, GraceState())
+        state = self._grace.get(room.room_id)
+        if state is None:
+            # 0.9.4, DR-068. Start from the occupancy last known, which the
+            # store keeps across a restart or reload. Until 0.9.4 every room
+            # started unoccupied, so a presence sensor still coming up after a
+            # restart turned an occupied room off.
+            state = GraceState(
+                occupied=self.store.occupancy().get(room.room_id, False)
+            )
+            self._grace[room.room_id] = state
         raw = self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
         self._raw_presence[room.room_id] = raw
         result = evaluate_grace(state, raw, now, room.grace)
+        self.store.set_occupancy(room.room_id, state.occupied)
         self._grace_reason[room.room_id] = result.reason
         if result.announcement is not Announcement.NONE:
             self._pending_announcements.append((room, result.announcement))
@@ -2449,6 +2475,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self.actuator.forget(room_id, in_use)
                 self.models.pop(room_id, None)
                 self._grace.pop(room_id, None)
+                self._base_load_samples.pop(room_id, None)
+                self._shortfall_since.pop(room_id, None)
                 self._grace_reason.pop(room_id, None)
                 self._free_cooling_advised.pop(room_id, None)
                 self._regulators.pop(room_id, None)
@@ -3051,6 +3079,63 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             worst_ratio = min(worst_ratio, later_fraction / now_fraction)
         return current_solar_kw * worst_ratio
 
+    def _is_running(self, room: RoomConfig) -> bool:
+        """Whether the room's unit is cooling, heating or drying now."""
+        return self._compressor_direction(room) != 0 or self._is_drying(room)
+
+    def _note_power_samples(self, now: datetime, context: _PowerContext) -> None:
+        """Keep the last fifteen minutes of house load and solar (DR-067).
+
+        Also keeps, for each room whose unit is not running, the house load
+        as the rest of the house it measures.
+        """
+        cutoff = now - READING_AVERAGE_WINDOW
+        for samples, reading in (
+            (self._budget_house_samples, context.house_load_w),
+            (self._budget_solar_samples, context.solar_w),
+        ):
+            if reading is not None:
+                samples.append((now, reading))
+            while samples and samples[0][0] < cutoff:
+                samples.popleft()
+        if context.house_load_w is None:
+            return
+        for room in self.rooms.values():
+            if self._is_running(room):
+                continue
+            own = self._base_load_samples.setdefault(room.room_id, deque())
+            own.append((now, context.house_load_w))
+            while own and own[0][0] < cutoff:
+                own.popleft()
+
+    def _average_solar_kw(self, context: _PowerContext) -> float:
+        """Solar over the last fifteen minutes, in kW (DR-067)."""
+        mean = mean_recent(self._budget_solar_samples, READING_AVERAGE_WINDOW)
+        if mean is None:
+            mean = context.solar_w or 0.0
+        return max(mean, 0.0) / 1000.0
+
+    def _rest_of_house_kw(
+        self, room: RoomConfig, *, running: bool, own_draw_kw: float
+    ) -> float | None:
+        """What the rest of the house draws, in kW, for this room's budget.
+
+        0.9.4, DR-067. The house load measured while this room's unit was not
+        running, averaged: the room's own draw is never in it. Before the room
+        has been seen off — it has run since Home Assistant started — the
+        averaged house load less the room's estimated draw, as before 0.9.4.
+        None where there is no house-load reading at all.
+        """
+        base = mean_recent(
+            self._base_load_samples.get(room.room_id, ()), READING_AVERAGE_WINDOW
+        )
+        if base is not None:
+            return max(base, 0.0) / 1000.0
+        mean = mean_recent(self._budget_house_samples, READING_AVERAGE_WINDOW)
+        if mean is None:
+            return None
+        return max(mean / 1000.0 - (own_draw_kw if running else 0.0), 0.0)
+
     def _power_ceiling(
         self,
         room: RoomConfig,
@@ -3119,6 +3204,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         interval = self.tariff.interval_at(now)
         if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
             self._ceiling_bins.pop(room.room_id, None)
+            self._shortfall_since.pop(room.room_id, None)
             return
 
         if (
@@ -3140,15 +3226,21 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             context.reserve_margin_kwh,
         )
 
-        running = self._compressor_direction(room) != 0 or self._is_drying(room)
+        running = self._is_running(room)
         own_draw_kw = self._rated_kw_for(room) if running else 0.0
-        current_solar_kw = (context.solar_w or 0.0) / 1000.0
+        # 0.9.4, DR-067. Averages over the last fifteen minutes, and the rest
+        # of the house as measured while this room was not running. Until
+        # 0.9.4 one reading was projected for the whole window, and this
+        # room's own draw beyond its estimate was counted as the house's: the
+        # Office turned itself off the minute after every start.
+        current_solar_kw = self._average_solar_kw(context)
+        rest_kw = self._rest_of_house_kw(
+            room, running=running, own_draw_kw=own_draw_kw
+        )
 
         slices = self._solar_forecast_slices(now, hours_until_clear)
         if slices is not None:
-            other_house_kw = 0.0
-            if context.house_load_w is not None:
-                other_house_kw = max(context.house_load_w / 1000.0 - own_draw_kw, 0.0)
+            other_house_kw = rest_kw or 0.0
             headroom_kwh = context.battery_capacity_kwh * max(
                 0.0, 1.0 - context.battery_soc_percent / 100.0
             )
@@ -3178,8 +3270,8 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 available_kwh=available_kwh,
                 hours_until_clear=hours_until_clear,
                 max_discharge_kw=self.battery_max_discharge_kw,
-                house_load_w=context.house_load_w,
-                own_draw_kw=own_draw_kw,
+                house_load_w=None if rest_kw is None else rest_kw * 1000.0,
+                own_draw_kw=0.0,
                 sustained_solar_kw=sustained_solar_kw,
             )
 
@@ -3198,10 +3290,29 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             previous_since=previous[1] if previous else None,
             now=now,
         )
+        enforced = room.power_management == POWER_MANAGEMENT_ENFORCED
+        holding_off: datetime | None = None
+        if enforced:
+            # 0.9.4, DR-067. A room that was running is turned off only once
+            # the shortfall has lasted `OFF_HOLD`, held at the gentlest bin
+            # until then. Until 0.9.4 one short reading turned it off.
+            was_on = previous[0] is not None if previous else running
+            afforded = bin_index
+            bin_index, since = hold_before_off(
+                bin_index,
+                was_on=was_on,
+                shortfall_since=self._shortfall_since.get(room.room_id),
+                now=now,
+            )
+            if since is None:
+                self._shortfall_since.pop(room.room_id, None)
+            else:
+                self._shortfall_since[room.room_id] = since
+                if afforded is None and bin_index is not None:
+                    holding_off = since + OFF_HOLD
         if previous is None or previous[0] != bin_index:
             self._ceiling_bins[room.room_id] = (bin_index, now)
 
-        enforced = room.power_management == POWER_MANAGEMENT_ENFORCED
         guidance_note = (
             " (guidance only, not enforced)"
             if room.power_management == POWER_MANAGEMENT_GUIDANCE
@@ -3212,6 +3323,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             None if context.grid_import_w is None else context.grid_import_w > 0
         )
         coasting = trace.mode is Mode.COAST
+        if holding_off is not None:
+            trace.reasons.append(
+                "power budget: the "
+                f"{allowance_kw:.2f} kW allowance does not cover holding at "
+                "setpoint; held at the gentlest setting, and off at "
+                f"{dt_util.as_local(holding_off):%H:%M} unless it recovers"
+            )
 
         if bin_index is None:
             # Even holding at setpoint would exceed the allowance.

@@ -13,6 +13,7 @@
 | `test_actuator.py` | What is sent to a unit or a cover, and what is not, through Home Assistant's service registry | Yes |
 | `test_feeds.py` | The tariff, weather forecast and solar forecast fetches: startup retries, failures, repair issues | Yes |
 | `test_living_room_night.py` | 0.9.3: each finding from the living room's night of 11/12 October 2026 (DR-059 to DR-066) | Yes |
+| `test_office_evening.py` | 0.9.4: the Office on the evening of 12 October 2026 — the power budget measuring the rest of the house, averaging, the hold before off, occupancy across a restart (DR-067, DR-068) | Yes |
 | `test_coordinator_paths.py` | Coordinator paths reached only in particular conditions: learned draw, derated solar, the projection's forecast and sun, spoken warnings, setup errors | Yes |
 
 The pure tests run with nothing installed:
@@ -25,7 +26,7 @@ The rest need the harness, and CI runs the whole suite:
     python3 -m pytest tests/ -v
 
 **Say which Home Assistant a run was against.** A green run against the wrong
-version is worth stating every time. At 0.9.3 the suite is 920 tests (599 of
+version is worth stating every time. At 0.9.4 the suite is 940 tests (608 of
 them pure) and ran against Home Assistant 2026.8.3 on Python 3.14.6.
 
 **Every test written for a fix is checked by putting the defect back.** The

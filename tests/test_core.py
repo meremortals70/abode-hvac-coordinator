@@ -4056,11 +4056,18 @@ class TestAllowableDraw(unittest.TestCase):
         )
 
     def test_bounded_by_the_plant_when_that_is_tighter(self):
-        # 4 kWh over 2 h wants 2 kW, but the battery can only spare 1 kW
-        # once the rest of the house's 2 kW is subtracted from a 3 kW ceiling.
+        # 12 kWh over 2 h is 6 kW, less the house's 2 kW leaves 4 kW, but the
+        # battery can only spare 1 kW once the house's 2 kW is subtracted
+        # from a 3 kW ceiling.
         self.assertAlmostEqual(
-            _power.allowable_draw_kw(4.0, 2.0, 3.0, 2.0), 1.0
+            _power.allowable_draw_kw(12.0, 2.0, 3.0, 2.0), 1.0
         )
+
+    def test_the_rest_of_the_house_uses_its_share_of_the_energy(self):
+        """0.9.4, DR-067. 4 kWh over 2 h is 2 kW; the house's 2 kW takes all of
+        it. Until 0.9.4 this room was allowed the whole 2 kW as well."""
+        self.assertEqual(_power.allowable_draw_kw(4.0, 2.0, 3.0, 2.0), 0.0)
+        self.assertAlmostEqual(_power.allowable_draw_kw(4.0, 2.0, None, 1.5), 0.5)
 
     def test_never_negative(self):
         self.assertEqual(_power.allowable_draw_kw(-5.0, 2.0, 3.0, 5.0), 0.0)
@@ -4157,8 +4164,8 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
         self.assertAlmostEqual(_power.battery_available_kwh(50.0, 13.5, 1.0), 5.75)
 
     def test_allowance_is_the_energy_rate_when_the_battery_can_deliver_it(self):
-        # 6 kWh over 3 h = 2 kW. No solar, rest of house 1 kW, 5 kW battery:
-        # plant rate 4 kW. The lesser is 2 kW.
+        # 6 kWh over 3 h = 2 kW, less the rest of the house's 1 kW (DR-067).
+        # 5 kW battery: plant rate 4 kW. The lesser is 1 kW.
         allowance = _power.budget_allowance_kw(
             available_kwh=6.0,
             hours_until_clear=3.0,
@@ -4167,12 +4174,13 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
             own_draw_kw=0.0,
             sustained_solar_kw=0.0,
         )
-        self.assertAlmostEqual(allowance, 2.0)
+        self.assertAlmostEqual(allowance, 1.0)
 
     def test_allowance_is_the_discharge_headroom_when_the_house_uses_it(self):
-        # Energy would allow 4 kW. House 4 kW against a 5 kW battery leaves 1.
+        # Energy: 24 kWh over 3 h, less the house's 4 kW, would allow 4 kW.
+        # House 4 kW against a 5 kW battery leaves 1.
         allowance = _power.budget_allowance_kw(
-            available_kwh=12.0,
+            available_kwh=24.0,
             hours_until_clear=3.0,
             max_discharge_kw=5.0,
             house_load_w=4000.0,
@@ -4183,9 +4191,10 @@ class TestDecisionsMovedOutOfTheCoordinator(unittest.TestCase):
 
     def test_the_rooms_own_draw_is_taken_out_of_the_house_load(self):
         # House 4 kW of which 1.5 kW is this room: the rest of the house is
-        # 2.5 kW, leaving 2.5 kW of a 5 kW battery. Energy gives 4 kW.
+        # 2.5 kW, leaving 2.5 kW of a 5 kW battery. Energy gives 8 kW less
+        # the house's 2.5 kW.
         allowance = _power.budget_allowance_kw(
-            available_kwh=12.0,
+            available_kwh=24.0,
             hours_until_clear=3.0,
             max_discharge_kw=5.0,
             house_load_w=4000.0,
