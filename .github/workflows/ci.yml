@@ -38,7 +38,7 @@ jobs:
           python-version: "3.14"
 
       - name: Run pure-module tests (no Home Assistant required)
-        run: python3 -m unittest discover -s tests -p "test_core.py" -v
+        run: python3 -m unittest tests.test_core tests.test_pure_edges tests.test_attributes -v
 
   home-assistant-tests:
     runs-on: ubuntu-latest
@@ -54,7 +54,8 @@ jobs:
           pip install \
             homeassistant==2026.8.3 \
             pytest-homeassistant-custom-component==0.13.357 \
-            pytest pytest-asyncio
+            pytest pytest-asyncio \
+            mutagen==1.48.1 ha-ffmpeg==3.2.2
 
-      - name: Run full suite (test_core, test_attributes, test_config_flow, test_init)
+      - name: Run the full suite
         run: python3 -m pytest tests/ -v
