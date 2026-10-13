@@ -35,6 +35,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_WARNING_GRACE,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
+    ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
     ISSUE_FORECAST_UNAVAILABLE,
     POWER_MANAGEMENT_ENFORCED,
 )
@@ -42,6 +43,7 @@ from custom_components.abode_hvac_coordinator.coordinator import (
     DRAW_POST_WINDOW,
     DRAW_RAMP_ALLOWANCE,
 )
+from custom_components.abode_hvac_coordinator.grace import Announcement
 from custom_components.abode_hvac_coordinator.models import (
     ActuatorStep,
     DecisionTrace,
@@ -59,6 +61,8 @@ from custom_components.abode_hvac_coordinator.weather import (
     WeatherTrajectory,
 )
 
+import voluptuous as vol
+from real_tts import ENGINE, real_tts_speak
 from test_living_room_night import _ceiling, _setup, _setup_power
 
 _GROUP = "climate.test"
@@ -476,7 +480,7 @@ async def test_an_empty_room_is_warned_about_then_turned_off(
 ) -> None:
     hass.states.async_set("media_player.kitchen", "idle")
     coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
-    spoken = async_mock_service(hass, "tts", "speak")
+    spoken = await real_tts_speak(hass)
     async_mock_service(hass, "climate", "set_hvac_mode")
     await _leave(hass, coordinator, 17)
     messages = [call.data["message"] for call in spoken]
@@ -485,28 +489,95 @@ async def test_an_empty_room_is_warned_about_then_turned_off(
         "is still running.",
         "Turning the Test Room air conditioning off.",
     ]
-    assert all(
-        call.data["entity_id"] == ["media_player.kitchen"] for call in spoken
-    )
+    # DR-069: through the engine, on the room's speakers.
+    for call in spoken:
+        assert call.data["entity_id"] == [ENGINE]
+        assert call.data["media_player_entity_id"] == ["media_player.kitchen"]
 
 
-async def test_announcing_with_no_text_to_speech_does_not_stop_the_room(
+async def test_a_warning_that_cannot_be_given_never_stops_the_evaluation(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Text-to-speech not set up: the warning is logged and the room carries on.
+    """12-13 October: every vacancy warning raised and the evaluation failed.
 
-    The call is not blocking, so this is the only failure it can see at the
-    call itself; a speaker that fails later fails in Home Assistant's own task.
+    Whatever the call raises, the room is still evaluated, published and
+    turned off, and the failure is logged once.
     """
     hass.states.async_set("media_player.kitchen", "idle")
     coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    await real_tts_speak(hass)
+    hass.services.async_remove("tts", "speak")
+    async_mock_service(
+        hass, "tts", "speak", schema=vol.Schema({vol.Required("never"): str})
+    )
     async_mock_service(hass, "climate", "set_hvac_mode")
     with caplog.at_level(logging.WARNING):
         await _leave(hass, coordinator, 17)
-    assert caplog.text.count("Announcement for test_room failed") == 2
-    assert not coordinator._pending_announcements
+    assert coordinator.last_update_success
+    assert "Unexpected error fetching" not in caplog.text
+    assert caplog.text.count("Spoken warning not given: announcement for test_room") == 1
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None and state.state == "unoccupied"
+
+
+async def test_with_no_engine_the_warning_is_skipped_and_reported(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, caplog: pytest.LogCaptureFixture
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass, engines=())
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    with caplog.at_level(logging.WARNING):
+        await _leave(hass, coordinator, 17)
+    assert not spoken
+    assert coordinator.last_update_success
+    assert caplog.text.count("Home Assistant has no text-to-speech engine") == 1
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ANNOUNCEMENTS_UNAVAILABLE)
+    assert issue is not None
+    assert issue.translation_placeholders == {
+        "reason": "Home Assistant has no text-to-speech engine"
+    }
+
+
+async def test_with_several_engines_the_chosen_one_speaks(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(
+        hass, engines=("tts.google_translate", "tts.home_assistant_cloud")
+    )
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    room = coordinator.rooms["test_room"]
+    coordinator._pending_announcements.append((room, Announcement.FIRST_WARNING))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert not spoken
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ANNOUNCEMENTS_UNAVAILABLE)
+    assert issue is not None
+    assert "there are 2" in issue.translation_placeholders["reason"]
+
+    coordinator.tts_engine_entity_id = "tts.home_assistant_cloud"
+    coordinator._pending_announcements.append((room, Announcement.FIRST_WARNING))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert [call.data["entity_id"] for call in spoken] == [["tts.home_assistant_cloud"]]
+    assert (
+        ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ANNOUNCEMENTS_UNAVAILABLE)
+        is None
+    )
+
+
+async def test_a_chosen_engine_that_has_gone_is_named(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    await real_tts_speak(hass)
+    coordinator.tts_engine_entity_id = "tts.removed"
+    assert coordinator._tts_engine() == (
+        None,
+        "the chosen text-to-speech engine tts.removed does not exist",
+    )
 
 
 async def test_a_room_with_nowhere_to_speak_is_silent(
@@ -515,7 +586,7 @@ async def test_a_room_with_nowhere_to_speak_is_silent(
     coordinator = await _setup(
         hass, mock_config_entry, room_extra=_announcing(**{CONF_ANNOUNCE_TARGETS: []})
     )
-    spoken = async_mock_service(hass, "tts", "speak")
+    spoken = await real_tts_speak(hass)
     async_mock_service(hass, "climate", "set_hvac_mode")
     await _leave(hass, coordinator, 17)
     assert not spoken

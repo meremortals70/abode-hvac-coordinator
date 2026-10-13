@@ -98,10 +98,12 @@ from .const import (
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
     CONF_WARNING_GRACE,
+    CONF_TTS_ENGINE,
     CONF_WEATHER_ENTITY,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
     EVALUATION_INTERVAL,
+    ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
     ISSUE_FORECAST_UNAVAILABLE,
     ISSUE_GRID_REQUIRED,
     ISSUE_GRID_SIGN_CONTRADICTED,
@@ -402,6 +404,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self.weather_entity_id: str | None = config_entry.options.get(
             CONF_WEATHER_ENTITY, config_entry.data.get(CONF_WEATHER_ENTITY)
         )
+        #: 0.9.5, DR-069. The chosen text-to-speech engine, or None to use the
+        #: only one Home Assistant has.
+        self.tts_engine_entity_id: str | None = config_entry.options.get(
+            CONF_TTS_ENGINE, config_entry.data.get(CONF_TTS_ENGINE)
+        )
+        #: Each distinct announcement failure, so it is logged once.
+        self._announce_failures: set[str] = set()
         self.trajectory: WeatherTrajectory | None = None
         #: Power-aware operation. All five optional and read the same way as
         #: every other house-level feed; the decision only engages once every
@@ -2147,25 +2156,90 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._bool(room.sleep_schedule_entity_id) is True,
         )
 
+    def _tts_engine(self) -> tuple[str | None, str | None]:
+        """The text-to-speech engine to speak through, or why there is none.
+
+        0.9.5, DR-069. The one chosen under House configuration where it
+        exists; otherwise the only engine Home Assistant has. Returns
+        (engine, None) or (None, reason).
+        """
+        engines = sorted(
+            state.entity_id for state in self.hass.states.async_all("tts")
+        )
+        if self.tts_engine_entity_id:
+            if self.tts_engine_entity_id in engines:
+                return self.tts_engine_entity_id, None
+            return None, (
+                f"the chosen text-to-speech engine {self.tts_engine_entity_id} "
+                "does not exist"
+            )
+        if len(engines) == 1:
+            return engines[0], None
+        if not engines:
+            return None, "Home Assistant has no text-to-speech engine"
+        return None, (
+            "no text-to-speech engine is chosen and there are "
+            f"{len(engines)}: {', '.join(engines)}"
+        )
+
     async def _async_announce(self) -> None:
-        """Speak any warnings raised this evaluation."""
-        for room, announcement in self._pending_announcements:
-            if not room.announce_target_entity_ids:
-                continue
-            message = _announcement_text(room, announcement)
+        """Speak any warnings raised this evaluation.
+
+        0.9.5, DR-069. Through `tts.speak`, which targets a text-to-speech
+        engine and takes the speakers as `media_player_entity_id`. Until 0.9.5
+        the speakers were sent as the target, Home Assistant rejected every
+        call, no warning was ever spoken, and the rejection stopped the rest
+        of the evaluation. A warning that cannot be given is now logged once
+        and never stops anything else.
+        """
+        pending = [
+            (room, announcement)
+            for room, announcement in self._pending_announcements
+            if room.announce_target_entity_ids
+        ]
+        self._pending_announcements.clear()
+        if not pending:
+            return
+        engine, reason = self._tts_engine()
+        if engine is None:
+            self._note_announce_failure(f"no engine: {reason}", str(reason))
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
+                translation_placeholders={"reason": str(reason)},
+            )
+            return
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_ANNOUNCEMENTS_UNAVAILABLE)
+        for room, announcement in pending:
             try:
                 await self.hass.services.async_call(
                     "tts",
                     "speak",
                     {
-                        ATTR_ENTITY_ID: list(room.announce_target_entity_ids),
-                        "message": message,
+                        ATTR_ENTITY_ID: engine,
+                        "media_player_entity_id": list(
+                            room.announce_target_entity_ids
+                        ),
+                        "message": _announcement_text(room, announcement),
                     },
                     blocking=False,
                 )
-            except HomeAssistantError as err:
-                LOGGER.warning("Announcement for %s failed: %s", room.room_id, err)
-        self._pending_announcements.clear()
+            except Exception as err:  # noqa: BLE001 - a spoken warning must never stop the evaluation
+                self._note_announce_failure(
+                    f"{room.room_id}: {type(err).__name__}: {err}",
+                    f"announcement for {room.room_id} failed: {err}",
+                )
+
+    def _note_announce_failure(self, key: str, message: str) -> None:
+        """Log an announcement failure the first time it happens."""
+        if key in self._announce_failures:
+            return
+        self._announce_failures.add(key)
+        LOGGER.warning("Spoken warning not given: %s", message)
 
     def _compressor_direction(self, room: RoomConfig) -> int:
         """Whether the unit is moving sensible heat, and which way.

@@ -299,10 +299,10 @@ async def test_setup_stores_no_tariff_of_its_own(
     assert CONF_TARIFF_ENTRY_ID not in result["data"]
 
 
-async def test_the_house_menu_offers_the_three_house_wide_settings(
+async def test_the_house_menu_offers_the_house_wide_settings(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """Tariff, outdoor feeds, forecast and power. The window editing steps are gone."""
+    """Tariff, outdoor feeds, forecast, power and spoken warnings."""
     mock_config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -315,7 +315,13 @@ async def test_the_house_menu_offers_the_three_house_wide_settings(
         result["flow_id"], {"next_step_id": "global"}
     )
     assert result["type"] is FlowResultType.MENU
-    assert set(result["menu_options"]) == {"tariff", "outdoor", "forecast", "power"}
+    assert set(result["menu_options"]) == {
+        "tariff",
+        "outdoor",
+        "forecast",
+        "power",
+        "announcements",
+    }
 
 
 async def test_the_outdoor_step_collects_both_feeds(
@@ -1432,3 +1438,45 @@ async def test_a_grid_sensor_without_house_readings_offers_no_guess(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_GRID_SIGN] == GRID_SIGN_EXPORTING
+
+
+async def test_the_spoken_warning_engine_is_chosen_for_the_house(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.9.5, DR-069. One text-to-speech engine for every room's warnings."""
+    mock_config_entry.add_to_hass(hass)
+    hass.states.async_set("tts.home_assistant_cloud", "unknown")
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    assert "**Spoken warnings**" in result["description_placeholders"]["configuration"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "announcements"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "announcements"
+    assert set(result["data_schema"].schema) == {"tts_engine_entity_id"}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"tts_engine_entity_id": "tts.home_assistant_cloud"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["tts_engine_entity_id"] == "tts.home_assistant_cloud"
+    await hass.async_block_till_done()
+    assert mock_config_entry.runtime_data.tts_engine_entity_id == "tts.home_assistant_cloud"
+
+    # Opened again, the choice is shown.
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "global"}
+    )
+    assert "tts.home_assistant_cloud" in result["description_placeholders"]["configuration"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "announcements"}
+    )
+    field = next(iter(result["data_schema"].schema))
+    assert field.description == {"suggested_value": "tts.home_assistant_cloud"}

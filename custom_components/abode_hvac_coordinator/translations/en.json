@@ -154,7 +154,8 @@
           "tariff": "Tariff (from Abode Power Tariffs)",
           "outdoor": "Outdoor temperature, humidity and wind",
           "forecast": "Weather forecast",
-          "power": "Power-aware operation (optional)"
+          "power": "Power-aware operation (optional)",
+          "announcements": "Spoken warnings (text-to-speech engine)"
         }
       },
       "tariff": {
@@ -198,6 +199,16 @@
         "description": "{grid_entity_id}\n  reading now          {grid_reading}\n  house load           {house_load}\n  solar                {solar}\n\n{evidence}\n\nSettled once, here, from what the component can currently see. Never inferred at runtime and never changed automatically afterward — if live readings later disagree persistently, a repair issue names it rather than the component correcting itself.",
         "data": {
           "grid_sign": "Which direction does a positive number mean?"
+        }
+      },
+      "announcements": {
+        "title": "Spoken warnings",
+        "description": "A room with spoken warnings turned on says, on its own speakers, when it is about to turn its air conditioning off because it is empty or a window has been left open. The words are spoken through one text-to-speech engine for the whole house.\n\nLeave this empty to use the only engine Home Assistant has. Where there is more than one, choose one here, or no warning is spoken and a repair issue says why.",
+        "data": {
+          "tts_engine_entity_id": "Text-to-speech engine"
+        },
+        "data_description": {
+          "tts_engine_entity_id": "For example Home Assistant Cloud or Google Translate. Each room's speakers are chosen on the room."
         }
       }
     },
@@ -396,6 +407,10 @@
     "solar_forecast_unavailable": {
       "title": "A solar forecast could not be read",
       "description": "The power budget could not read a solar production forecast: {reason}\n\nWhere no forecast could be read, the budget counts only the solar being produced now, as it did before solar forecasts were used, so a room may be held back at sunrise more than the day's sun justifies. The last forecast read is kept until it no longer reaches the present."
+    },
+    "announcements_unavailable": {
+      "title": "Spoken warnings cannot be given",
+      "description": "{reason}.\n\nRooms are still controlled as normal, and still turned off when empty or when a window is left open; the warning is just not spoken. Choose an engine under Configure → House configuration → Spoken warnings."
     }
   },
   "selector": {

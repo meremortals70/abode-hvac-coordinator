@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
+from real_tts import ENGINE, real_tts_speak
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_mock_service,
@@ -817,7 +818,7 @@ async def test_the_warnings_are_spoken_once_each_before_the_unit_stops(
             **{CONF_ANNOUNCE: True, CONF_ANNOUNCE_TARGETS: ["media_player.kitchen"]}
         ),
     )
-    spoken = async_mock_service(hass, "tts", "speak")
+    spoken = await real_tts_speak(hass)
     async_mock_service(hass, "climate", "set_hvac_mode")
     hass.states.async_set("binary_sensor.test_window", "on")
     start = dt_util.utcnow()
@@ -830,6 +831,10 @@ async def test_the_warnings_are_spoken_once_each_before_the_unit_stops(
     assert len(messages) == 2, messages
     assert "will turn off in about 3 minutes" in messages[0]
     assert "Turning the Test Room air conditioning off" in messages[1]
+    # Through the engine, on the room's own speakers (DR-069).
+    for call in spoken:
+        assert call.data["entity_id"] == [ENGINE]
+        assert call.data["media_player_entity_id"] == ["media_player.kitchen"]
 
 
 async def test_a_room_with_announcements_off_is_silent_about_a_window(
@@ -837,7 +842,7 @@ async def test_a_room_with_announcements_off_is_silent_about_a_window(
 ) -> None:
     hass.states.async_set("binary_sensor.test_window", "off")
     coordinator = await _setup(hass, mock_config_entry, room_extra=_with_window())
-    spoken = async_mock_service(hass, "tts", "speak")
+    spoken = await real_tts_speak(hass)
     await _open_window_for(hass, coordinator, 7)
     assert not spoken
 

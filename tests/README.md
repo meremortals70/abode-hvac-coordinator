@@ -14,6 +14,7 @@
 | `test_feeds.py` | The tariff, weather forecast and solar forecast fetches: startup retries, failures, repair issues | Yes |
 | `test_living_room_night.py` | 0.9.3: each finding from the living room's night of 11/12 October 2026 (DR-059 to DR-066) | Yes |
 | `test_office_evening.py` | 0.9.4: the Office on the evening of 12 October 2026 — the power budget measuring the rest of the house, averaging, the hold before off, occupancy across a restart (DR-067, DR-068) | Yes |
+| `real_tts.py` | Not a test: sets up Home Assistant's own `tts` integration and records `tts.speak` calls through its real schema (DR-069) | Yes |
 | `test_coordinator_paths.py` | Coordinator paths reached only in particular conditions: learned draw, derated solar, the projection's forecast and sun, spoken warnings, setup errors | Yes |
 
 The pure tests run with nothing installed:
@@ -22,11 +23,12 @@ The pure tests run with nothing installed:
 
 The rest need the harness, and CI runs the whole suite:
 
-    pip install pytest-homeassistant-custom-component pytest pytest-asyncio
+    pip install pytest-homeassistant-custom-component pytest pytest-asyncio \
+        mutagen==1.48.1 ha-ffmpeg==3.2.2
     python3 -m pytest tests/ -v
 
 **Say which Home Assistant a run was against.** A green run against the wrong
-version is worth stating every time. At 0.9.4 the suite is 940 tests (608 of
+version is worth stating every time. At 0.9.5 the suite is 945 tests (609 of
 them pure) and ran against Home Assistant 2026.8.3 on Python 3.14.6.
 
 **Every test written for a fix is checked by putting the defect back.** The

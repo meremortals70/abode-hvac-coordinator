@@ -6,6 +6,37 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.5 - 2026-10-13
+
+### Fixed
+
+- **No spoken warning was ever given, and every attempt stopped that
+  evaluation.** Warnings called `tts.speak` with the room's speakers as the
+  target. Home Assistant needs a text-to-speech engine as the target and the
+  speakers as `media_player_entity_id`, and rejected every call. The rejection
+  was not caught, so each time a room emptied or a window was left open, the
+  rest of that evaluation was skipped after its commands were sent: device
+  clean-up, draw learning, the demand forecast and the save of what was
+  learned. Seen eight times on 12–13 October as "Unexpected error fetching
+  abode_hvac_coordinator data". Warnings now go through the engine to the
+  room's speakers, and a warning that cannot be given is logged once and never
+  stops anything else. (DR-069)
+
+### Added
+
+- **Spoken warnings**, under House configuration: the text-to-speech engine
+  every room's warnings are spoken through. Left empty, the only engine Home
+  Assistant has is used; with several and none chosen, a repair issue says so.
+  (DR-069)
+
+### Changed
+
+- The spoken-warning tests now check every `tts.speak` call against Home
+  Assistant's own schema. The tests before passed a call Home Assistant rejects.
+  Running them needs `mutagen` and `ha-ffmpeg`, added to CI.
+- `docs/contributing.md` no longer says the Home Assistant tests have never
+  been run.
+
 ## 0.9.4 - 2026-10-12
 
 From the Office on the evening of 12 October, set to Enforced, with the battery

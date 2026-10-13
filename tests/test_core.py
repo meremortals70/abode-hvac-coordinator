@@ -2553,6 +2553,13 @@ class TestGlobalConfigurationIsSeparate(unittest.TestCase):
     def test_no_rooms_says_so(self):
         self.assertIn("No rooms configured", _forms.describe_rooms([]))
 
+    def test_the_spoken_warning_engine_is_listed(self):
+        """0.9.5, DR-069."""
+        chosen = _forms.describe_global(None, None, tts_engine_entity_id="tts.cloud")
+        self.assertIn("**Spoken warnings**\n  tts.cloud", chosen)
+        unset = _forms.describe_global(None, None)
+        self.assertIn("the only text-to-speech engine is used", unset)
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 regulation, staleness, psychrometrics and scheduling.
@@ -2562,6 +2569,7 @@ _regulate = importlib.import_module("hvac_core.regulate")
 _staleness = importlib.import_module("hvac_core.staleness")
 _psychro = importlib.import_module("hvac_core.psychro")
 _scheduling = importlib.import_module("hvac_core.scheduling")
+
 
 
 class TestOuterLoopRegulation(unittest.TestCase):

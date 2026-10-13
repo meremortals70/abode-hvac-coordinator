@@ -351,6 +351,7 @@ def describe_global(
     outdoor_humidity_entity_id: str | None = None,
     outdoor_wind_entity_id: str | None = None,
     weather_entity_id: str | None = None,
+    tts_engine_entity_id: str | None = None,
 ) -> str:
     """The house-wide settings, as readable lines."""
     return "\n".join(
@@ -385,6 +386,15 @@ def describe_global(
                 if weather_entity_id
                 else " — precool falls back to comparing conditions right now, "
                 "which at midday cannot see the afternoon coming"
+            ),
+            "",
+            "**Spoken warnings**",
+            f"  {tts_engine_entity_id or 'Nothing selected'}"
+            + (
+                ""
+                if tts_engine_entity_id
+                else " — the only text-to-speech engine is used where there is "
+                "exactly one"
             ),
         ]
     )

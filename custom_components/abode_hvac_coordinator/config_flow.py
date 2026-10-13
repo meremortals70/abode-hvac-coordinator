@@ -68,6 +68,7 @@ from .const import (
     CONF_TEMPERATURE_ENTITY,
     CONF_VACANT_AFTER,
     CONF_WARNING_GRACE,
+    CONF_TTS_ENGINE,
     CONF_WEATHER_ENTITY,
     CONF_WINDOW_DIRECTION,
     DOMAIN,
@@ -600,7 +601,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
         return self.async_show_menu(
             step_id="global",
             description_placeholders={"configuration": self._global_summary()},
-            menu_options=["tariff", "outdoor", "forecast", "power"],
+            menu_options=["tariff", "outdoor", "forecast", "power", "announcements"],
         )
 
     def _rooms_summary(self) -> str:
@@ -615,6 +616,7 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
             self._outdoor_humidity_entity_id(),
             self._outdoor_wind_entity_id(),
             self._weather_entity_id(),
+            self._tts_engine_entity_id(),
         )
 
     def _summary(self) -> str:
@@ -646,6 +648,9 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
     def _weather_entity_id(self) -> str | None:
         return self._stored(CONF_WEATHER_ENTITY)
+
+    def _tts_engine_entity_id(self) -> str | None:
+        return self._stored(CONF_TTS_ENGINE)
 
     def _battery_soc_entity_id(self) -> str | None:
         return self._stored(CONF_BATTERY_SOC_ENTITY)
@@ -777,6 +782,37 @@ class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
 
         options = dict(self.config_entry.options)
         options[CONF_WEATHER_ENTITY] = user_input.get(CONF_WEATHER_ENTITY)
+        options.setdefault(CONF_ROOMS, self._rooms)
+        return self.async_create_entry(title="", data=options)
+
+    async def async_step_announcements(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The text-to-speech engine spoken warnings are given through.
+
+        0.9.5, DR-069. One engine for the house; each room chooses its own
+        speakers. Left empty, the only engine Home Assistant has is used.
+        """
+        if user_input is None:
+            current = self._tts_engine_entity_id()
+            schema = vol.Schema(
+                {
+                    vol.Optional(CONF_TTS_ENGINE): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="tts")
+                    )
+                }
+            )
+            return self.async_show_form(
+                step_id="announcements",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, {CONF_TTS_ENGINE: current}
+                )
+                if current
+                else schema,
+            )
+
+        options = dict(self.config_entry.options)
+        options[CONF_TTS_ENGINE] = user_input.get(CONF_TTS_ENGINE)
         options.setdefault(CONF_ROOMS, self._rooms)
         return self.async_create_entry(title="", data=options)
 

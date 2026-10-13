@@ -176,6 +176,9 @@ CONF_OUTDOOR_WIND_ENTITY: Final = "outdoor_wind_entity_id"
 #: precool falls back to comparing current conditions, which is what the
 #: controller did before the forecast existed and is stated as such.
 CONF_WEATHER_ENTITY: Final = "weather_entity_id"
+#: 0.9.5, DR-069. The text-to-speech engine spoken warnings are given through.
+#: House-level: one engine speaks for every room, on that room's speakers.
+CONF_TTS_ENGINE: Final = "tts_engine_entity_id"
 
 #: How often the forecast is refetched. Hourly forecasts do not change faster
 #: than this, and precool decisions turn on the shape of the day rather than
@@ -259,6 +262,7 @@ ATTR_DEADLINE: Final = "deadline"
 ISSUE_UNRECOGNISED_CONSTRAINT: Final = "unrecognised_constraint"
 ISSUE_TARIFF_UNAVAILABLE: Final = "tariff_unavailable"
 ISSUE_FORECAST_UNAVAILABLE: Final = "forecast_unavailable"
+ISSUE_ANNOUNCEMENTS_UNAVAILABLE: Final = "announcements_unavailable"
 ISSUE_NO_BANDS: Final = "room_without_bands"
 #: Two or more rooms configured against the same climate entity. Raised as an
 #: error rather than a warning: the affected rooms are locked out until it is
