@@ -43,9 +43,9 @@ the one-hour hold of DR-032 both coast this way.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms**, as amended by DR-059.
+Checked against: 0.9.6. **Conforms**, as amended by DR-059.
 
-- `modes.py:636` - `def coast_step` - fan where the unit has fan-only, otherwise off
-- `modes.py:504` - `return coast_step(inputs, trace, band, hci)` - the in-band coast
-- `modes.py:872` - `trace.actuator = coast_step(inputs, trace, band, hci)` - the weather coast
-- `coordinator.py:2507` - `and trace.mode is not Mode.COAST,` - a coasting room projects no compressor energy
+- `modes.py:708` - `def coast_step` - fan where the unit has fan-only, otherwise off
+- `modes.py:566` - `return coast_step(inputs, trace, band, hci)` - the in-band coast
+- `modes.py:944` - `trace.actuator = coast_step(inputs, trace, band, hci)` - the weather coast
+- `coordinator.py:2706` - `and trace.mode is not Mode.COAST,` - a coasting room projects no compressor energy

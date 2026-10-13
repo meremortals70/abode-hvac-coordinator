@@ -44,13 +44,13 @@ listed in known limitations.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms.**
 
 - `thermal.py:113` - `REBOUND_HOURS: Final = 0.25` - the length of the rebound
 - `thermal.py:405` - `def _observe_rebound` - the rebound rate is learned on its own
 - `thermal.py:341` - `if obs.in_rebound:` - and not as passive drift
 - `thermal.py:414` - `def rebound_rh_rise` - None until converged
-- `coordinator.py:1779` - `def _track_stop` - when the compressor stopped cooling or drying
-- `coordinator.py:2769` - `def humidity_at` - humidity projected through the rebound
-- `coordinator.py:2820` - `comfort_index(` - the projection is judged on the index
-- `modes.py:727` - `if inputs.unaided_refused is not None and demand == "cool":` - no weather coast on an unlearned rebound
+- `coordinator.py:1846` - `def _track_stop` - when the compressor stopped cooling or drying
+- `coordinator.py:3011` - `def humidity_at` - humidity projected through the rebound
+- `coordinator.py:3062` - `comfort_index(` - the projection is judged on the index
+- `modes.py:799` - `if inputs.unaided_refused is not None and demand == "cool":` - no weather coast on an unlearned rebound

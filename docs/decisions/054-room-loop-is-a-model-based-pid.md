@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; supersedes DR-015; amended by DR-056 |
+| Status | Accepted; supersedes DR-015; amended by DR-056; amended by DR-075 in 0.9.6 |
 | Since | 0.9.0 (2026-10-03) |
 | Origin | Instruction, 2026-10-03: the component learns the room, so it should know when the room will arrive in band and hold it there gently |
 | Related | DR-003, DR-015, DR-051, DR-053, DR-056 |
@@ -59,12 +59,12 @@ unit as the inner loop. The loop and DR-053 share the drift model.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-075.
 
-- `regulate.py:469` - `def pid_setpoint` - feed-forward, proportional and derivative terms
-- `regulate.py:423` - `def track_room_rate` - the room's filtered rate of change, from distinct readings
-- `regulate.py:137` - `heat_trim_c` - the heating trim, separate from the cooling one
+- `regulate.py:482` - `def pid_setpoint` - feed-forward, proportional and derivative terms
+- `regulate.py:434` - `def track_room_rate` - the room's filtered rate of change, from distinct readings
+- `regulate.py:145` - `heat_trim_c` - the heating trim, separate from the cooling one
 - `regulate.py:44` - `ARRIVAL_HOURS` - half an hour
 - `thermal.py:502` - `def approach_for_rate` - the learned rate against approach, inverted
-- `coordinator.py:1523` - `def _room_loop_setpoint` - the loop, or the target plus trim where nothing has converged
-- `coordinator.py:1385` - `def _regulate` - per-direction trim, ceiling, then rounding
+- `coordinator.py:1586` - `def _room_loop_setpoint` - the loop, or the target plus trim where nothing has converged
+- `coordinator.py:1444` - `def _regulate` - per-direction trim, ceiling, then rounding

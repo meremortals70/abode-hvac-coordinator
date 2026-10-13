@@ -1,0 +1,33 @@
+# DR-079: Sleep chosen by hand ends when the sleep schedule finishes, or at sunrise
+
+| | |
+|---|---|
+| Status | Accepted; amends DR-058 |
+| Since | 0.9.6 (2026-10-14) |
+| Origin | Review of the component against its intent, 14 October 2026. Instruction, 2026-10-14: "yes" (approving the review fixes) |
+| Related | DR-014, DR-058 |
+
+## Decision
+
+A Comfort mode of Sleep goes back to Schedule when the room's sleep schedule turns from on to off, as Awake does, or at sunrise in a room with no sleep schedule. It still ends when the room reads empty.
+
+## Why
+
+Sleep ended only when the room read empty. A room with no presence sensor never reads empty, so the living room, set to Sleep on the evening of 13 October, would have stayed on its sleep band all of the next day and every night after, until it was changed by hand.
+
+## Rejected
+
+- **Keep Sleep through the schedule's end (DR-058).** It was meant to cover a lie-in; it also covered every following day in a room without presence.
+- **A wake-up time per room, as a setting.** The sleep schedule already is one; sunrise is the fallback that needs nothing configured.
+
+## Consequences
+
+A lie-in past the end of the schedule puts the room back on its occupied band; choosing Sleep again keeps it. A Sleep chosen during the day in a room with no schedule lasts until the next sunrise.
+
+## In the code
+
+Checked against: 0.9.6. **Conforms.**
+
+- `modes.py:117` - `if schedule_was_active is True and not schedule_active:` - the schedule ends it
+- `modes.py:122` - `if comfort_mode is ComfortMode.SLEEP and not has_schedule and sunrise:` - or sunrise, with no schedule
+- `coordinator.py:1288` - `sunrise=sun_up is True and sun_was_up is False,` - sunrise as the rising edge of sun.sun

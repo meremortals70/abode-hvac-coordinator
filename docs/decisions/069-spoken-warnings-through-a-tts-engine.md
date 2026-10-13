@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-050 |
+| Status | Accepted; amends DR-050; amended by DR-071 in 0.9.6 |
 | Since | 0.9.5 (2026-10-13) |
 | Origin | Incident, Office, 12–13 October 2026: eight evaluations failed with "required key not provided at 'media_player_entity_id'". Instruction, 2026-10-13: "ok build it" |
 | Related | DR-006, DR-012, DR-050 |
@@ -46,11 +46,11 @@ the test requirements.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-071.
 
 - `const.py:181` - `CONF_TTS_ENGINE: Final = "tts_engine_entity_id"` - the house-level setting
-- `coordinator.py:2159` - `def _tts_engine` - the chosen engine, or the only one
-- `coordinator.py:2224` - `"media_player_entity_id": list(` - the speakers, as Home Assistant requires
-- `coordinator.py:2231` - `except Exception as err:  # noqa: BLE001 - a spoken warning must never stop the evaluation` - contained
-- `coordinator.py:2237` - `def _note_announce_failure` - logged once
+- `coordinator.py:2245` - `def _tts_engine` - the chosen engine, or the only one
+- `coordinator.py:2320` - `"media_player_entity_id": list(` - the speakers, as Home Assistant requires
+- `coordinator.py:2327` - `except Exception as err:  # noqa: BLE001 - a spoken warning must never stop the evaluation` - contained
+- `coordinator.py:2386` - `def _note_announce_failure` - logged once
 - `config_flow.py:788` - `async def async_step_announcements` - where the engine is chosen

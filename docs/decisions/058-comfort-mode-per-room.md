@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-014 |
+| Status | Accepted; amends DR-014; amended by DR-079 in 0.9.6 |
 | Since | 0.9.2 (2026-10-11) |
 | Origin | Instruction, 2026-10-11: "while some people may go to sleep and wake up based on a schedule, we do not. I need to have switches available in home assistant to set sleep mode"; "per room, and I don't want to lose the ability to schedule it"; "when presence clears it should turn off and return to normal mode" |
 | Related | DR-007, DR-009, DR-012, DR-014, DR-045, DR-049 |
@@ -75,20 +75,20 @@ this control by the instruction above, as it was for DR-049 and DR-050.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-079.
 
 - `models.py:32` - `class ComfortMode` - Schedule, Sleep, Awake
 - `modes.py:56` - `def sleeping` - the one answer to "is the room sleeping"
 - `modes.py:71` - `def room_reads_empty` - graced and raw presence both off
-- `modes.py:84` - `def comfort_mode_after` - empty ends both; the schedule turning off ends Awake
-- `modes.py:120` - `def comfort_mode_refused` - Sleep or Awake refused in an empty room
-- `modes.py:138` - `asleep = sleeping(inputs.comfort_mode, inputs.sleep_schedule_active)` - the mode decision
-- `coordinator.py:2146` - `def _sleeping` - the coordinator's band lookups
-- `coordinator.py:2154` - `return sleeping(` - the same answer as the mode decision
-- `coordinator.py:1843` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the cheaper-tariff wait
-- `coordinator.py:2713` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the unaided-return projection
-- `coordinator.py:2590` - `self._update_comfort_mode(room, presence)` - settled before anything asks
-- `coordinator.py:1245` - `def _update_comfort_mode` - ends the choice and says why
-- `coordinator.py:579` - `_comfort_modes_from_store(` - read from the store before the first evaluation
+- `modes.py:84` - `def comfort_mode_after` - empty ends both; the schedule turning off ends both, and sunrise ends Sleep with no schedule (DR-079)
+- `modes.py:129` - `def comfort_mode_refused` - Sleep or Awake refused in an empty room
+- `modes.py:147` - `asleep = sleeping(inputs.comfort_mode, inputs.sleep_schedule_active)` - the mode decision
+- `coordinator.py:2232` - `def _sleeping` - the coordinator's band lookups
+- `coordinator.py:2240` - `return sleeping(` - the same answer as the mode decision
+- `coordinator.py:1910` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the cheaper-tariff wait
+- `coordinator.py:2955` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the unaided-return projection
+- `coordinator.py:2791` - `self._update_comfort_mode(room, presence)` - settled before anything asks
+- `coordinator.py:1265` - `def _update_comfort_mode` - ends the choice and says why
+- `coordinator.py:599` - `_comfort_modes_from_store(` - read from the store before the first evaluation
 - `store.py:205` - `def set_comfort_mode` - kept across restarts
 - `select.py:134` - `class RoomComfortModeSelect` - always available, always writable
