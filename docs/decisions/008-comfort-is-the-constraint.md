@@ -31,7 +31,7 @@ reading, an unconverged model, a missing price (DR-018, DR-035, DR-044).
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms.**
 
-- `modes.py:544-548` - `within band` - inside the band nothing is changed
-- `coordinator.py:3253-3256` - `POWER_MANAGEMENT_OFF` - the default leaves comfort untouched
+- `modes.py:606-610` - `within band` - inside the band nothing is changed
+- `coordinator.py:3492-3495` - `POWER_MANAGEMENT_OFF` - the default leaves comfort untouched

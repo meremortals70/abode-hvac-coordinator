@@ -36,8 +36,8 @@ entity reports, which is why `hvac_action` matters so much (DR-025).
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.** Every command goes through Home Assistant climate and cover
+Checked against: 0.9.6. **Conforms.** Every command goes through Home Assistant climate and cover
 services.
 
-- `actuator.py:480` - `_async_command_head` - climate service calls only
-- `coordinator.py:2592` - `_capabilities` - what the unit can do is read from the entity
+- `actuator.py:495` - `_async_command_head` - climate service calls only
+- `coordinator.py:2800` - `_capabilities` - what the unit can do is read from the entity

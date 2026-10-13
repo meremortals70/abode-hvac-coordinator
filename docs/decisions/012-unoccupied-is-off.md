@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-071, DR-077 and DR-082 in 0.9.6 |
 | Since | Design v0.4 |
 | Origin | Design v0.4, superseding DR-011 |
 | Related | DR-011, DR-013, DR-033 |
@@ -29,7 +29,7 @@ because someone left for a minute.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-071 and DR-077 and DR-082.
 
-- `modes.py:458-462` - `Mode.UNOCCUPIED` - off
-- `coordinator.py:1920` - `_graced_presence` - the grace period
+- `modes.py:511-515` - `Mode.UNOCCUPIED` - off
+- `coordinator.py:1991` - `_graced_presence` - the grace period

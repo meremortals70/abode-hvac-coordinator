@@ -7,7 +7,7 @@ you were told about.
 
 Every build runs continuously against a live air conditioner in Jason's own
 office, used as the test room. Faults found there and reported back are what
-has driven every real-world fix in this project's history. The 644 tests and
+has driven every real-world fix in this project's history. The test suite and
 the clean install/unload are what an automated pass can confirm on their
 own — they do not, by themselves, prove a compressor, blind or fan did the
 right thing on real equipment; that proof comes from the office room, not
@@ -125,6 +125,12 @@ hour when the band is turned into dry-bulb limits.
 
 ## The loop still asks the unit for what it learned, not for what it can do
 
+Until 0.9.6 every cooling interval was learned against the solved target plus
+the trim, not the setpoint the unit had actually been sent (DR-081), so the
+curve described below was learned against the wrong approach. From 0.9.6 it is
+learned against the setpoint the unit reports. Rooms keep what they learned
+before; it is corrected only as new intervals come in.
+
 DR-056 stops the loop asking for a rate beyond the unit's best learned rate. It
 does not make the learned rate right. The Office's unit shows a return-air
 temperature about 3 °C below the room's, so the unit's own thermostat can be
@@ -181,6 +187,23 @@ sensor instead — it overrides the calculation entirely.
 A room with no direction and no sensor never uses its blinds, because the
 controller will not move them on a guess.
 
+## A unit's own reading stands in for a dead room sensor, and may read low
+
+Since 0.9.6 a room whose sensor is unavailable is run on the air conditioner's
+own reading (DR-074). The Office's unit reads about 3 °C below the room, so a
+room run this way can be cooled less than it needs. A unit that reports no
+humidity cannot stand in for a missing humidity sensor, and that room is still
+left as it is until the sensor returns.
+
+## A room sensor that freezes while still available is trusted
+
+Since 0.9.6 a room's temperature and humidity have no age limit (DR-070),
+because many room sensors report only when the reading changes. A sensor that
+stops reporting and goes `unavailable` is caught. One that stops reporting
+while Home Assistant still shows its last value as available is not: the room
+is controlled against that value until it changes or goes unavailable. The
+room's trace shows the reading the decision used.
+
 ## Announcements are text-to-speech only
 
 A warning is spoken through `tts.speak`, with the house's text-to-speech engine
@@ -192,6 +215,9 @@ Before 0.9.5 the call sent the speakers as the target. Home Assistant rejects
 that, so no warning was ever spoken, and each rejected call stopped the rest of
 that evaluation (DR-069). The tests before 0.9.5 used a mock `tts.speak` with no
 schema and passed regardless; they now validate against Home Assistant's own.
+
+Nothing is spoken for a room with Automatic control off, or one asleep
+(DR-071). A warning missed that way is dropped, not replayed later.
 
 ## The comfort index is one opinion
 
@@ -221,7 +247,7 @@ planned and an enforced room is turned off later in the window than it would
 have been. Sun beyond what the house uses and the battery can store is not
 counted: energy exported in one hour does not pay for a later one.
 
-## Six 0.9.3 and 0.9.4 figures are judgement, not measurement
+## Twelve 0.9.3 to 0.9.6 figures are judgement, not measurement
 
 | Figure | Value | What it does |
 |---|---|---|
@@ -231,6 +257,12 @@ counted: energy exported in one hour does not pay for a later one.
 | `FORECAST_POINT_MAX` | 1 hour | The longest period one forecast point is taken to cover (DR-061) |
 | `READING_AVERAGE_WINDOW` | 15 minutes | How long house load and solar are averaged over before the budget uses them (DR-067) |
 | `OFF_HOLD` | 10 minutes | How long the budget must fall short before an enforced room is turned off (DR-067) |
+| `HEADING_HOME_EXPIRY` | 1 hour | How long after its deadline a heading-home request stands with nobody arrived (DR-080) |
+| `FREE_COOLING_WAIT` | 10 minutes | How long an occupied room's compressor is held off while outdoor air is better (DR-073) |
+| `DIRECTION_MARGIN_C_PER_HOUR` | 0.5 C/h | How far past zero the rate the room loop needs must go before it turns round (DR-075) |
+| `DRY_FALLBACK_HYSTERESIS_RH` | 3 points | How far the 65% dry line moves away from the route the unit is on (DR-076) |
+| `DRY_ROUTE_HYSTERESIS` | 1.15 | The same for the learned comparison (DR-076) |
+| `DRY_FALLBACK_MAX_OVERSHOOT_HCI` | 2.0 HCI | Beyond it an unconverged room is cooled whatever the humidity (DR-076) |
 
 The rebound length is a judgement from one night in one room, where humidity
 rose four to six points in every fan phase (one, from 00:11 to 00:28 on 12

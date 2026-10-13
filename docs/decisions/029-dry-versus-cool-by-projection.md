@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-076 in 0.9.6 |
 | Since | Learned rates from design v0.8; projection in 0.8.9 (2026-08-22); bin-aware in 0.8.10 |
 | Origin | Design v0.8; finding 17 |
 | Related | DR-026, DR-027, DR-028 |
@@ -36,10 +36,10 @@ for it. Until the rates converge at all, the threshold (DR-027) decides.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-076.
 
-- `modes.py:323` - `_latent_route` - both routes projected
-- `modes.py:298` - `DRY_MODE_ADVANTAGE` - 1.25
+- `modes.py:356` - `_latent_route` - both routes projected
+- `modes.py:307` - `DRY_MODE_ADVANTAGE` - 1.25
 - `thermal.py:333` - `_observe_rh_cooling` - measured humidity response
 - `thermal.py:519` - `sensible_rate_at` - the rate for this operating point
 - `hci.py:190` - `relative_humidity_at_constant_vapour_pressure` - the floor

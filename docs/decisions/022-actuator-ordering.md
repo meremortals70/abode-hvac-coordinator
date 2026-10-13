@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-072 in 0.9.6 |
 | Since | Design v0.4; in the code from 0.6.0 (2026-08-16); unknown cover position skipped in 0.8.6 |
 | Origin | Design v0.4; finding 1 |
 | Related | DR-006, DR-023, DR-024, DR-029 |
@@ -40,9 +40,9 @@ forever.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-072.
 
-- `modes.py:441` - `select_actuator` - the ordering
-- `modes.py:562-569` - `cover_position is None` - unknown position skips covers
-- `modes.py:586-594` - `demand == "heat"` - heating skips fan and dry
-- `modes.py:253` - `FAN_MARGIN_HCI` - 0.5
+- `modes.py:494` - `select_actuator` - the ordering
+- `modes.py:624-631` - `cover_position is None` - unknown position skips covers
+- `modes.py:648-656` - `demand == "heat"` - heating skips fan and dry
+- `modes.py:262` - `FAN_MARGIN_HCI` - 0.5

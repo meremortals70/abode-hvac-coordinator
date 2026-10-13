@@ -428,9 +428,22 @@ than run the compressor.
 | The power budget measures the rest of the house, averages its readings over fifteen minutes, and holds a running room ten minutes before turning it off | Built, tested. New in 0.9.4 (DR-067) |
 | A room's occupancy is kept across a restart | Built, tested. New in 0.9.4 (DR-068) |
 | Spoken warnings through one text-to-speech engine; a failed warning never stops an evaluation | Built, tested. New in 0.9.5 (DR-069). Before it no warning was ever spoken |
+| A room's own temperature and humidity are trusted until they are unavailable | Built, tested. New in 0.9.6 (DR-070) |
+| A room speaks only while the coordinator runs it and the room is awake | Built, tested. New in 0.9.6 (DR-071) |
+| A unit bringing a room down is not put on its fan short of the band | Built, tested. New in 0.9.6 (DR-072) |
+| While outdoor air is better, an occupied room is not started for ten minutes; an opening made for it stops the unit at once | Built, tested. New in 0.9.6 (DR-073) |
+| The unit's own reading stands in for an unavailable room sensor | Built, tested. New in 0.9.6 (DR-074) |
+| The room loop turns round only when the rate it needs has clearly changed sign | Built, tested. New in 0.9.6 (DR-075) |
+| Dry or cool holds its route; an unconverged room well above band is cooled | Built, tested. New in 0.9.6 (DR-076) |
+| A warning is said only when it is true | Built, tested. New in 0.9.6 (DR-077) |
+| Dry mode is sent with the room's setpoint and held to it | Built, tested. New in 0.9.6 (DR-078) |
+| Sleep chosen by hand ends when the sleep schedule finishes, or at sunrise | Built, tested. New in 0.9.6 (DR-079) |
+| A heading-home request ends once the room is occupied, or an hour after its deadline | Built, tested. New in 0.9.6 (DR-080) |
+| The model learns against the setpoint the unit reports | Built, tested. New in 0.9.6 (DR-081) |
+| An empty room waits for its warning only where a warning can be said | Built, tested. New in 0.9.6 (DR-082) |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.5 it is 945 tests (609 over the pure modules),
+pure modules. At 0.9.6 it is 995 tests (627 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two

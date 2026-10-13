@@ -34,10 +34,10 @@ After a restart the trim starts from zero and re-converges.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms**, as amended by DR-064 and DR-068.
+Checked against: 0.9.6. **Conforms**, as amended by DR-064 and DR-068.
 
 - `store.py:62` - `ModelStore` - storage
 - `store.py:54` - `SAVE_DELAY_SECONDS` - 300
-- `coordinator.py:2458` - `_persist_models` - handed to the store every cycle; one delayed save pending at a time (DR-064)
-- `regulate.py:124` - `RegulatorState` - not persisted, by design
+- `coordinator.py:2657` - `_persist_models` - handed to the store every cycle; one delayed save pending at a time (DR-064)
+- `regulate.py:132` - `RegulatorState` - not persisted, by design
 - `thermal.py:917` - `is_finite` - non-finite values rejected

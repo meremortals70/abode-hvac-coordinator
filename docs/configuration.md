@@ -184,6 +184,9 @@ Home Assistant has is used. Where there is more than one and none is chosen, no
 warning is spoken, and a repair issue says so; the rooms are still controlled
 as normal.
 
+A room says nothing while its Automatic control is off or while it is asleep,
+by its Comfort mode or its sleep schedule (0.9.6, DR-071).
+
 ### Power
 
 Optional fields, all off by default: battery state-of-charge entity,

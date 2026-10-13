@@ -58,8 +58,9 @@ deliberate: a room can only do what **all** its air conditioners can do.
 
 ## The comfort index is unavailable
 
-The temperature or humidity sensor has no reading. Check both in Developer Tools
-→ States. A sensor showing `unknown` or `unavailable` will make the index
+The temperature or humidity sensor has no reading, and the air conditioner
+reports nothing to stand in for it (DR-074). Check both in Developer Tools →
+States. A sensor showing `unknown` or `unavailable` will make the index
 unavailable too, deliberately, rather than showing a stale number.
 
 ## A room shows no bands and never actuates
@@ -185,9 +186,11 @@ compressor protection and are not configurable.
 
 ## A room is holding and its sensors all look fine
 
-Check `sensor.stale_feeds` and the room's own `stale_feeds` trace attribute. A
-Zigbee device that has left the mesh keeps its last state indefinitely, so a
-reading that looks present can be hours old. See [Stale feeds](staleness.md).
+Check `sensor.stale_feeds` and the room's own `stale_feeds` trace attribute,
+and the room's `rejected` list for "not reporting". A room's own temperature and
+humidity are only treated as missing when Home Assistant shows them as
+`unavailable` or `unknown` (DR-070); other feeds also when they are too old.
+See [Stale feeds](staleness.md).
 
 ## The tariff rate sensor is empty
 

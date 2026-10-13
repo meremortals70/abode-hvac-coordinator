@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-081 in 0.9.6 |
 | Since | 0.8.9 (2026-08-22) |
 | Origin | Findings 9, 13 and 14 |
 | Related | DR-020, DR-025, DR-029, DR-037 |
@@ -49,10 +49,10 @@ approach, not every cycle, to avoid the 0.8.3 anchor fault.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-081.
 
 - `thermal.py:90` - `BIN_NAMES` - the four bins
 - `thermal.py:116` - `approach_bin` - binning
 - `thermal.py:814` - `DrawModel` - learned draw per group
-- `coordinator.py:2389` - `_process_draw_candidates` - house-load steps
+- `coordinator.py:2588` - `_process_draw_candidates` - house-load steps
 - `forecast.py:46` - `ASSUMED_UNIT_KW` - fallback without a house-load sensor

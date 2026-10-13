@@ -148,6 +148,12 @@ Air movement, no compressor. Tried only when the room is within 0.5 HCI of the
 band. Beyond that a fan is noise, and the trace says how far out of band the
 room actually was.
 
+**Only to start, never to stop halfway (0.9.6, DR-072).** Where the unit is
+already cooling, drying or heating and the room is still outside its band, the
+fan step is skipped and the unit carries on. Putting it on its fan stopped the
+compressor short of the band, the minimum off time held it while the room
+climbed back, and the living room went round that about ten times in a night.
+
 **Heating skips fan entirely.** A fan does not add heat.
 
 ## 3. Dry
@@ -161,6 +167,12 @@ comfort index closed per hour and compared directly; cooling has to be 25%
 faster to be chosen, because dry mode gets the same effect at lower duty. While
 either rate is unconverged a 65% humidity threshold applies and the trace says
 it is falling back. See [Drying against cooling](latent-and-sensible.md).
+
+**The route is held (0.9.6, DR-076).** Once the unit is drying, the 65% line
+moves down three points and cooling has to be 15% further ahead; once it is
+cooling, the line moves up three points and drying has to be 15% further ahead.
+While the model has not converged, a room more than 2 HCI above its band is
+cooled whatever the humidity.
 
 **Heating skips dry entirely.** Dry mode does not add heat.
 
@@ -193,7 +205,7 @@ whole of a no-import window. See
 |---|---|
 | Covers | `cover.set_cover_position`. 0% to block gain, 100% to admit it |
 | Fan | `fan_only`, plus the quietest fan mode and the least draughty swing the unit offered when the room was set up |
-| Dry | `dry`, plus the quietest fan mode |
+| Dry | `dry`, plus the quietest fan mode and, since 0.9.6, the room's setpoint (DR-078). A coasting room's dry keeps the unit's setpoint |
 | Compressor | `cool` or `heat`, plus the setpoint (rounded to what the unit can hold), a mixing fan mode and a mixing swing mode |
 | Nothing, in lockout or unoccupied | `climate.set_hvac_mode` to `off` |
 
@@ -269,6 +281,8 @@ An unchanged decision is not re-sent.
 | Cover travel margin | 5% | Fixed internal |
 | Dry-mode advantage | 25% | Fixed internal |
 | Dry mode humidity | 65% | Fallback only, until the model converges |
+| Dry or cool hysteresis | 3 points on the fallback; 15% on the learned comparison | Fixed internal (DR-076) |
+| Fallback overshoot | 2.0 HCI | Fixed internal; beyond it an unconverged room is cooled (DR-076) |
 
 These are not settings and will not become settings. Exposing tuning parameters
 is how configuration becomes unusable.

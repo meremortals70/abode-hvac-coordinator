@@ -35,10 +35,10 @@ path `NONE`. The demand forecast follows the same verdict (finding 23).
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms.**
 
 - `models.py:57` - `ActuatorStep` - OFF and NONE as distinct values
 - `actuator.py:365-368` - `ActuatorStep.OFF` - commands off
 - `actuator.py:370-377` - `ActuatorStep.NONE` - sends nothing
-- `regulate.py:551-552` - `ActuatorStep.NONE` - NONE keeps the room's last demand
-- `coordinator.py:2505-2506` - `will_run` - forecast follows the verdict
+- `regulate.py:581-582` - `ActuatorStep.NONE` - NONE keeps the room's last demand
+- `coordinator.py:2704-2705` - `will_run` - forecast follows the verdict

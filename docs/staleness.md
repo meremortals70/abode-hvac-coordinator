@@ -3,6 +3,9 @@
 Home Assistant tells you when an entity is `unavailable`. It does not tell you
 when an entity is reporting a number from four hours ago.
 
+Room temperature and humidity are the exception, since 0.9.6 (DR-070): they are
+trusted for as long as they are available, whatever their age. See below.
+
 ## The failure this catches
 
 A battery-powered Zigbee sensor drops off the mesh. It does not go
@@ -37,13 +40,22 @@ a setting would mean asking a question nobody can answer.
 
 | Feed | Tolerance | Why |
 |---|---|---|
-| Indoor temperature and humidity | 2 hours | most report on change with a heartbeat well inside an hour |
+| Room temperature and humidity | none (DR-070) | many report only when the reading changes; a steady room is legitimately quiet for hours. Only `unavailable` or `unknown` makes them absent |
 | Outdoor temperature and humidity | 3 hours | often a weather integration on a fifteen- or thirty-minute poll; has to clear a couple of misses |
 | Presence | 6 hours | an mmWave sensor in a room nobody enters legitimately says nothing for a long time |
 | Openings and covers | 26 hours | contact sensors are quiet by nature but heartbeat daily |
 
 They are generous on purpose. This catches a feed that has died, not one that
 reports slowly.
+
+Until 0.9.6 room readings had a two-hour limit. On 13 October 2026 the living
+room's Eve Room reported at 17:42 and next at 21:05 because the room did not
+change; after two hours the room had no reading and its air conditioner was
+left off while the room was set to Sleep. A room sensor that really drops out
+goes `unavailable` through its own integration, and that is still caught; the
+air conditioner's own reading then stands in where it reports one (DR-074). One
+that freezes while still shown as available is not: see
+[Known limitations](known-limitations.md).
 
 Two cases are deliberately treated as fresh: a reading with no timestamp, which
 means a test fixture rather than a real entity, and a timestamp in the future,

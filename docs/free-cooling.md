@@ -80,6 +80,16 @@ It is published, not actuated. This controller owns the air conditioner and the
 covers. Windows are yours, or an automation you write against
 `free_cooling_advised`.
 
+What it does change (0.9.6, DR-073):
+
+- **An occupied room's compressor is not started for ten minutes** after the
+  advice is first given, so the windows can be opened. After that it starts.
+  A unit already running is left running, and a sleeping room is not held
+  waiting, since nothing is said to it.
+- **An opening made while the advice stands stops the unit at once**, without
+  the room's opening grace and without the opening warnings: it was opened on
+  purpose.
+
 If the room has media players configured under **Announce through**
 ([Configuration](configuration.md)), the moment it becomes advised is also
 spoken there — once, not repeated every cycle the window stays open. Without

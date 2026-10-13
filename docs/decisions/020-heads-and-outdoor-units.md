@@ -38,8 +38,8 @@ output is a dry-bulb target per room.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms.**
 
 - `models.py:176` - `group_of` - a head's outdoor unit
 - `models.py:184` - `groups` - a room's compressors
-- `coordinator.py:2945` - `set.intersection` - capabilities across heads
+- `coordinator.py:3184` - `set.intersection` - capabilities across heads

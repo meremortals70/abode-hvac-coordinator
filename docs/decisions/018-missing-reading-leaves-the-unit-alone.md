@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Accepted; amended by DR-074 in 0.9.6 |
 | Since | 0.8.7 (2026-08-22) |
 | Origin | Finding 20, on finding 3's reasoning |
 | Related | DR-008, DR-017, DR-030, DR-044 |
@@ -32,6 +32,6 @@ naming the entity is how the fault gets noticed.
 
 ## In the code
 
-Checked against: 0.9.5. **Conforms.**
+Checked against: 0.9.6. **Conforms**, as amended by DR-074.
 
-- `modes.py:489-514` - `ActuatorStep.NONE` - missing reading or band, named in the trace
+- `modes.py:578-603` - `ActuatorStep.NONE` - missing reading or band, named in the trace

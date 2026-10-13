@@ -153,7 +153,15 @@ Off by default — a house that suddenly starts talking is a surprise. Turn it o
 per room and pick which media players to speak through, and before a room is
 shut down after a long absence you get two announcements: one when the vacancy
 period expires, and a second after the warning period (default 3 minutes)
-immediately before it shuts off.
+as it shuts off.
+
+Both are said only where the unit was on, and "turning off" is said in the
+evaluation the off command is actually sent (0.9.6, DR-077). Where the
+compressor's minimum run holds the unit on, the warning waits for it.
+
+Where no warning can be said — no media players, the room asleep or not under
+Automatic control, or its unit already off — the room is turned off when the
+vacancy period ends, without the extra warning period (0.9.6, DR-082).
 
 Returning at any point during that cancels the shutdown and the warning. A
 later absence warns again rather than shutting off silently.
@@ -163,6 +171,12 @@ shutdown toggle: the moment [free cooling](free-cooling.md) becomes advised
 for a room, it's spoken once — not repeated every cycle while the window
 stays open. A room with no media players configured gets neither
 announcement; the shutdown toggle only ever controls the shutdown warnings.
+
+Nothing is spoken for a room whose Automatic control is off, a room still
+waiting for its air conditioner to report, or a room that is asleep, by its
+Comfort mode or its sleep schedule (0.9.6, DR-071). Such a room's presence is
+still followed, so its warnings resume once it is run and awake; what was
+missed is not replayed.
 
 ### Why this is in the integration rather than an automation
 
@@ -204,14 +218,18 @@ mode may still cool in `heat_cool` or `auto`, and the trace says
 occupied mode rather than switching the air conditioning off, and the trace says
 `presence unknown, holding occupied`.
 
-**A dead temperature or humidity sensor stops actuation entirely.** There is no
-comfort index without both, and the controller will not act on a guess. The
-comfort index entity goes unavailable rather than showing a stale number.
+**A dead temperature or humidity sensor is replaced by the air conditioner's
+own reading where the unit reports one (0.9.6, DR-074).** The trace says
+`room temperature from the air conditioner's own sensor`, and nothing is learned
+from it, because the unit's sensor sits in the unit, not the room. Where the
+unit reports nothing to stand in, there is no comfort index, the unit is left
+as it is, and the comfort index entity goes unavailable rather than showing a
+stale number.
 
-**A sensor that stops reporting without going unavailable is treated the same
-way.** Home Assistant keeps the last state of a device that has silently left
-the network, so every reading carries an age and one past its tolerance is
-treated as absent rather than as a value. See [Stale feeds](staleness.md).
+**A room's temperature and humidity have no age limit (0.9.6, DR-070).** Many
+room sensors report only when the reading changes, so they are trusted for as
+long as Home Assistant shows them as available. Other feeds still carry an age,
+and one past its tolerance is treated as absent. See [Stale feeds](staleness.md).
 
 Either way the log records the transition once, when it happens and when it
 recovers — not every 30 seconds.
@@ -272,6 +290,13 @@ The band is instead **ramped across the transition over one hour**. The trace
 says how far through the ramp the room is and how long is left. The same
 applies waking up, in the other direction.
 
+**Sleep chosen by hand ends in the morning (0.9.6, DR-079).** A room's Comfort
+mode set to Sleep goes back to Schedule when the room's sleep schedule
+finishes, or, in a room with no sleep schedule, at sunrise. It also ends when
+the room reads empty, as before. Until 0.9.6 it ended only when the room read
+empty, so a room with no presence sensor stayed on Sleep until it was changed
+by hand.
+
 ## Heading home from four hours away
 
 A heading-home request with a deadline no longer starts the compressor the
@@ -281,6 +306,12 @@ that answer plus a fifteen-minute margin decides when to begin.
 A deadline four hours out therefore costs nothing until it is about an hour
 out. The room stays in PRECONDITION the whole time — the request stands — and
 the trace says how long it is waiting and why.
+
+**The request ends by itself (0.9.6, DR-080)** once the room is occupied, or an
+hour after its deadline if nobody has arrived; `clear_override` still ends it
+at any time. A request with no deadline, in a room with no presence sensor,
+stands until it is cleared. Until 0.9.6 every request stood until it was
+cleared, and the room was never turned off when it emptied again.
 
 Three cases start immediately regardless: no deadline given, a deadline inside
 thirty minutes, or a thermal model that has not converged enough to estimate.
