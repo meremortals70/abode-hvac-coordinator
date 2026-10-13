@@ -215,7 +215,7 @@ planned and an enforced room is turned off later in the window than it would
 have been. Sun beyond what the house uses and the battery can store is not
 counted: energy exported in one hour does not pay for a later one.
 
-## Four 0.9.3 figures are judgement, not measurement
+## Six 0.9.3 and 0.9.4 figures are judgement, not measurement
 
 | Figure | Value | What it does |
 |---|---|---|
@@ -223,11 +223,23 @@ counted: energy exported in one hour does not pay for a later one.
 | `BIN_RAISE_HOLD` | 10 minutes | How long the power ceiling stands before it may rise (DR-062) |
 | `BIN_RAISE_MARGIN_KW` | 0.3 kW | How far the allowance must clear a bin's draw before the ceiling rises to it (DR-062) |
 | `FORECAST_POINT_MAX` | 1 hour | The longest period one forecast point is taken to cover (DR-061) |
+| `READING_AVERAGE_WINDOW` | 15 minutes | How long house load and solar are averaged over before the budget uses them (DR-067) |
+| `OFF_HOLD` | 10 minutes | How long the budget must fall short before an enforced room is turned off (DR-067) |
 
 The rebound length is a judgement from one night in one room, where humidity
 rose four to six points in every fan phase (one, from 00:11 to 00:28 on 12
 October 2026, raised the dew point 2.5 C). Confidence that it suits other rooms and
 units: **60%**. The rate within it is learned per room; the length is not.
+
+## While a room runs, its budget does not see new loads in the house
+
+The rest of the house is measured while the room's own unit is off (DR-067).
+While the unit runs, that measure stands. An oven or a pool pump that comes on
+after the room started is not counted until the room next stops. The battery
+reading still falls with it, so the budget tightens through the energy left,
+but more slowly than if the load were seen. A room that has run since Home
+Assistant started has no measure yet and uses the house load less its
+estimated draw, which counts any draw above that estimate as the house's.
 
 ## It never writes to your battery
 

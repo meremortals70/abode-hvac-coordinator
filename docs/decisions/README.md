@@ -39,17 +39,17 @@ Each record has the same six parts, in this order ([template](TEMPLATE.md)):
 
 ## Index
 
-Anchors checked against 0.9.3, 2026-10-12.
+Anchors checked against 0.9.4, 2026-10-12.
 
 ### Origin
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [000](000-origin-and-purpose.md) | Origin and purpose | Accepted | The project brief | Conforms |
 
 ### Foundations
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [001](001-four-layer-model.md) | Four layers, and Layers 2 and 3 only see a climate entity | Accepted | Design v0.5 | Conforms |
 | [002](002-decisions-in-pure-modules.md) | Decisions live in pure modules; the coordinator gathers and acts | Accepted | Design v0.4 | Conforms |
@@ -61,7 +61,7 @@ Anchors checked against 0.9.3, 2026-10-12.
 
 ### Comfort
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [008](008-comfort-is-the-constraint.md) | Comfort is the constraint, not the variable | Accepted | Design v0.4 | Conforms |
 | [009](009-one-comfort-definition-the-band.md) | One comfort definition per room: a band in comfort index | Accepted | Design v0.4 | Conforms |
@@ -75,7 +75,7 @@ Anchors checked against 0.9.3, 2026-10-12.
 
 ### Control
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [015](015-integral-only-outer-loop.md) | The outer loop is integral-only, and does not wind up against a limit | Superseded by DR-054 | Design v0.8; finding 7 | Superseded; its integrator is DR-054's integral term |
 | [016](016-short-cycle-guard-per-outdoor-unit.md) | Short-cycle protection is 10 minutes on, 5 off, per outdoor unit | Accepted | Design v0.8; findings 5 and 13 | Conforms |
@@ -94,7 +94,7 @@ Anchors checked against 0.9.3, 2026-10-12.
 
 ### Actuation
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [022](022-actuator-ordering.md) | Cheapest first: covers, fan, dry, compressor, every skip traced | Accepted | Design v0.4; finding 1 | Conforms |
 | [023](023-covers-gated-on-sun-geometry.md) | Covers are gated on sun geometry, not light level | Accepted | Design v0.4 | Conforms |
@@ -104,7 +104,7 @@ Anchors checked against 0.9.3, 2026-10-12.
 
 ### Learning
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [025](025-learned-thermal-model.md) | A learned per-room thermal model, with hysteresis until it converges | Accepted; amended by DR-060 | Design v0.4, after RoomMind; findings 2 and 4 | Conforms as amended by DR-060 |
 | [026](026-sensible-and-latent-separately.md) | Sensible and latent load are learned separately | Accepted | Design v0.4; the addition to RoomMind's approach | Conforms |
@@ -113,12 +113,13 @@ Anchors checked against 0.9.3, 2026-10-12.
 | [029](029-dry-versus-cool-by-projection.md) | Dry versus cool is decided by projecting both routes | Accepted | Design v0.8; finding 17 | Conforms |
 | [030](030-stale-feeds-are-absent.md) | A reading that is too old is treated as absent | Accepted; amended by DR-066 | Design v0.8 | Conforms as amended by DR-066 |
 | [066](066-staleness-from-last-reported.md) | A reading's age is measured from when it was last reported | Accepted; amends DR-030 | Living room review, 2026-10-12 | Conforms |
-| [031](031-model-persisted-trim-not.md) | The learned model is persisted; the regulation trim is not | Accepted; amended by DR-064 | Design v0.8; architecture review 2026-08-23 | Conforms as amended by DR-064 |
+| [031](031-model-persisted-trim-not.md) | The learned model is persisted; the regulation trim is not | Accepted; amended by DR-064; amended by DR-068 | Design v0.8; architecture review 2026-08-23 | Conforms as amended by DR-064 and DR-068 |
 | [064](064-store-saves-and-flushes.md) | Learned state is saved on one pending timer, choices at once, and the store is flushed on unload | Accepted; amends DR-031 | Living room review, 2026-10-12 | Conforms |
+| [068](068-occupancy-survives-a-restart.md) | A room's occupancy is kept across a restart | Accepted; amends DR-031 | Incident, Office, 2026-10-12 | Conforms |
 
 ### Modes
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [032](032-coast-on-a-one-hour-hold.md) | A room coasts when the model says its band holds for an hour | Accepted; amended by DR-053; coast no longer commands the unit off, DR-057 | Design v0.4 | Partly; see DR-053 and DR-057 |
 | [053](053-coast-when-the-room-will-return-unaided.md) | A room coasts when its own physics will bring it back into band | Accepted; amends DR-032; amended by DR-060 | Instruction, 2026-10-03 | Conforms as amended by DR-060 |
@@ -129,31 +130,32 @@ Anchors checked against 0.9.3, 2026-10-12.
 
 ### Tariff and cost
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [034](034-tariff-constraints-are-absolute.md) | Tariff constraints are declared, absolute, and reported if unknown | Accepted; amended by DR-041 for `no_grid_import` | Design v0.4 | Conforms |
 | [035](035-cost-minimised-at-every-decision-point.md) | Every decision point looks for the cheapest way to deliver the band | Accepted | Findings 12 and 19b | Conforms |
 
 ### Power
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [036](036-boolean-power-veto.md) | Refuse the compressor when the battery cannot cover a no-import window | Superseded by DR-037 | 0.8.5 | Superseded |
-| [037](037-power-budget-setpoint-ceiling.md) | A no-import window is met with a setpoint ceiling, never a stop | Accepted; gated per room by DR-041; amended by DR-062 and DR-063 | Finding 10, superseding DR-036 | Conforms as amended by DR-062 and DR-063 |
+| [037](037-power-budget-setpoint-ceiling.md) | A no-import window is met with a setpoint ceiling, never a stop | Accepted; gated per room by DR-041; amended by DR-062 and DR-063; amended by DR-067 | Finding 10, superseding DR-036 | Conforms as amended by DR-062 and DR-063 and DR-067 |
 | [038](038-grid-sign-settled-at-setup.md) | The grid sensor's sign is settled at setup and never inferred again | Accepted | Finding 11 | Conforms |
-| [039](039-solar-checked-first.md) | Solar pays down the house first; the battery binds only on the shortfall | Accepted; amended by DR-061 | Finding 18 | Conforms as amended by DR-061 |
+| [039](039-solar-checked-first.md) | Solar pays down the house first; the battery binds only on the shortfall | Accepted; amended by DR-061; amended by DR-067 | Finding 18 | Conforms as amended by DR-061 and DR-067 |
 | [040](040-comfort-reduction-checkbox.md) | A per-room checkbox permits power management to reduce comfort | Superseded by DR-041 | Finding 15 | Superseded |
 | [041](041-power-management-off-guidance-enforced.md) | Power management per room is off, guidance or enforced | Accepted; amended by DR-063 | Instruction, 2026-08-24, superseding DR-040 | Conforms as amended by DR-063 |
 | [042](042-battery-discharge-is-a-setting.md) | The battery's maximum discharge is a setup figure, not learned | Accepted | Finding 10 build | Conforms |
 | [043](043-shortfall-measured-afterwards.md) | A no-import window's actual grid import is measured and reported afterwards | Accepted | Finding 16 | Conforms |
 | [044](044-power-management-fails-open.md) | Power management fails open | Accepted | Finding 3 | Conforms |
 | [061](061-forecast-solar-in-the-budget.md) | The power budget counts the day's forecast solar, from house-level forecast sources | Accepted; amends DR-039 | Instruction, 2026-10-12 | Conforms |
-| [062](062-power-ceiling-hysteresis.md) | The power ceiling drops at once and rises only when the allowance is clear | Accepted; amends DR-037 | Living room review, 2026-10-12 | Conforms |
-| [063](063-enforced-may-turn-the-unit-off.md) | Enforced power management may turn the unit off; guidance never does | Accepted; amends DR-037 and DR-041 | Instruction, 2026-10-12 | Conforms |
+| [062](062-power-ceiling-hysteresis.md) | The power ceiling drops at once and rises only when the allowance is clear | Accepted; amends DR-037; amended by DR-067 | Living room review, 2026-10-12 | Conforms as amended by DR-067 |
+| [063](063-enforced-may-turn-the-unit-off.md) | Enforced power management may turn the unit off; guidance never does | Accepted; amends DR-037 and DR-041; amended by DR-067 | Instruction, 2026-10-12 | Conforms as amended by DR-067 |
+| [067](067-the-budget-measures-the-rest-of-the-house.md) | The power budget measures the rest of the house, averages its readings, and waits before turning a room off | Accepted; amends DR-037, DR-039, DR-062 and DR-063 | Incident, Office, 2026-10-12 | Conforms |
 
 ### Configuration
 
-| DR | Decision | Status | Origin | At 0.9.3 |
+| DR | Decision | Status | Origin | At 0.9.4 |
 |---|---|---|---|---|
 | [045](045-configuration-discipline.md) | A setting exists only if a correct result is impossible without it | Accepted; set aside for two settings by DR-049 and DR-050 | Design v0.4, in reaction to Dual Smart Thermostat | Conforms |
 | [046](046-comfort-inputs-required.md) | A room needs a temperature and a humidity sensor | Accepted | 0.8.9 build | Conforms |

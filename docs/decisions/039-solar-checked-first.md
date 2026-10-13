@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amended by DR-061 in 0.9.3 |
+| Status | Accepted; amended by DR-061 in 0.9.3; amended by DR-067 in 0.9.4 |
 | Since | 0.8.11 (2026-08-24) |
 | Origin | Finding 18 |
 | Related | DR-037 |
@@ -32,7 +32,7 @@ Without a weather entity, the instantaneous reading is used unchanged.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms**, as amended by DR-061.
+Checked against: 0.9.4. **Conforms**, as amended by DR-061 and DR-067.
 
-- `power.py:140` - `solar_offset_kw` - the split
-- `coordinator.py:3019` - `_sustained_solar_kw` - the derating, used where no solar forecast is read (DR-061)
+- `power.py:149` - `solar_offset_kw` - the split
+- `coordinator.py:3047` - `_sustained_solar_kw` - the derating, used where no solar forecast is read (DR-061)

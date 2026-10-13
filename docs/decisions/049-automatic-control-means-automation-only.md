@@ -65,15 +65,15 @@ picture of the compressor can be wrong.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms.**
 
 - `switch.py:59` - `class RoomAutomaticControlSwitch` - the Automatic control switch
 - `switch.py:92` - `class RoomAutomaticVaneControlSwitch` - the Automatic vane control switch
 - `select.py:175` - `class RoomSelect` - mode, fan speed and vane controls
 - `number.py:57` - `class RoomSetpoint` - the setpoint control
 - `entity.py:107` - `def _require_writable` - the refusal, with a translated reason
-- `coordinator.py:1250` - `def controls_writable` - which controls the two switches open
-- `coordinator.py:1299` - `inactive_reason` - a switched-off room is evaluated and sent nothing
-- `coordinator.py:1185` - `def is_room_vanes_manual` - read by the actuator before it moves a vane
+- `coordinator.py:1265` - `def controls_writable` - which controls the two switches open
+- `coordinator.py:1315` - `inactive_reason` - a switched-off room is evaluated and sent nothing
+- `coordinator.py:1200` - `def is_room_vanes_manual` - read by the actuator before it moves a vane
 - `actuator.py:679` - `def async_user_command` - a user's change goes to every head, checked against the profile
-- `store.py:169` - `def manual_vanes` - the vane choice, read before the first refresh
+- `store.py:174` - `def manual_vanes` - the vane choice, read before the first refresh

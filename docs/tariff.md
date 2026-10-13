@@ -88,8 +88,17 @@ highest steady draw for this room that keeps the battery above the reserve the
 whole way, with the battery unable to store more than it has room for. Without
 a forecast, the solar being produced now is counted, cut back by the cloud the
 weather forecast expects later in the window (DR-039). The rest of the house's
-draw is taken off first. Where the battery's maximum discharge power is set,
-the allowance never exceeds what the battery can deliver on top of the sun.
+draw is taken off first, from both the battery's energy and its discharge
+power. Where the battery's maximum discharge power is set, the allowance never
+exceeds what the battery can deliver on top of the sun.
+
+**The rest of the house is measured, not estimated** (DR-067). It is the house
+load averaged over the last fifteen minutes in which this room's unit was not
+running, so the room's own draw never counts against it. Solar is averaged over
+fifteen minutes too, so a kettle or a passing cloud does not move the budget.
+Until 0.9.4 one reading was used, and a unit's own draw beyond its estimate was
+counted as the house's: the Office turned itself off the minute after every
+start.
 
 **What the budget buys.** Each room's air conditioner has a learned draw at
 four operating points, from holding at setpoint to pulling the room down
@@ -98,8 +107,10 @@ demanding operating point the allowance covers sets a ceiling on how far from
 the room's own temperature the setpoint may be asked to go: 0.5 C, 1.5 C,
 3.0 C or no limit. Under Enforced, the room loop's setpoint is held inside that
 ceiling, and rounded towards the room rather than away from it so it stays
-inside (DR-051). If the allowance covers no operating point at all, Enforced
-turns the unit off.
+inside (DR-051). If the allowance covers no operating point at all for ten
+minutes, Enforced turns the unit off. Until then a room that was running is
+held at the gentlest setting, and its trace says when it will be turned off
+(DR-067).
 
 **It does not flap.** The ceiling drops the moment the allowance falls. It
 rises only after it has stood for ten minutes, and only to an operating point

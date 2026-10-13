@@ -57,7 +57,7 @@ changes the heat reaching the room; that is physical, not a reading of the unit.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms.**
 
-- `coordinator.py:2091` - `def _air_moving` - only a configured entity counts; otherwise still
+- `coordinator.py:2117` - `def _air_moving` - only a configured entity counts; otherwise still
 - `hci.py:108` - `STILL_AIR_HCI` - the correction, 1.0

@@ -38,10 +38,10 @@ switch entity to lock a room out from a dashboard.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms.**
 
 - `config_flow.py:324` - `CONF_LOCKOUT_REASON` - the dropdown
 - `forms.py:174` - `_lockout_reason` - first option means not locked out
 - `const.py:216` - `DEFAULT_LOCKOUT_REASONS` - offered reasons
-- `coordinator.py:3510` - `_lock_out_shared_climate` - conflict lockout
+- `coordinator.py:3628` - `_lock_out_shared_climate` - conflict lockout
 - `modes.py:454-456` - `Mode.LOCKOUT` - off

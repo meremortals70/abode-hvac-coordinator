@@ -59,12 +59,12 @@ unit as the inner loop. The loop and DR-053 share the drift model.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms.**
 
 - `regulate.py:469` - `def pid_setpoint` - feed-forward, proportional and derivative terms
 - `regulate.py:423` - `def track_room_rate` - the room's filtered rate of change, from distinct readings
 - `regulate.py:137` - `heat_trim_c` - the heating trim, separate from the cooling one
 - `regulate.py:44` - `ARRIVAL_HOURS` - half an hour
 - `thermal.py:502` - `def approach_for_rate` - the learned rate against approach, inverted
-- `coordinator.py:1498` - `def _room_loop_setpoint` - the loop, or the target plus trim where nothing has converged
-- `coordinator.py:1360` - `def _regulate` - per-direction trim, ceiling, then rounding
+- `coordinator.py:1514` - `def _room_loop_setpoint` - the loop, or the target plus trim where nothing has converged
+- `coordinator.py:1376` - `def _regulate` - per-direction trim, ceiling, then rounding

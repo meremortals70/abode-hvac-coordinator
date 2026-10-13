@@ -210,8 +210,9 @@ the room is already inside its band or calling for correction, holding it as
 close to the band as the remaining energy allows rather than running it flat
 out or refusing it. **Since 0.9.3, whether power management may turn the unit
 off depends on that setting (DR-063).** Where the budget cannot even afford
-holding at setpoint, an enforced room is turned off until the budget allows
-it, and the trace says so. A guidance room is never turned off or throttled
+holding at setpoint for ten minutes, an enforced room is turned off until the
+budget allows it, and the trace says so; until then a running room is held at
+the gentlest setting (DR-067). A guidance room is never turned off or throttled
 for power: its ceiling floors at "ask for nothing colder than the room
 already is" and is reported only. A coasting room the budget can afford is
 left alone.
@@ -424,9 +425,11 @@ than run the compressor.
 | Enforced power management may turn the unit off; guidance never does | Built, tested. New in 0.9.3 (DR-063) |
 | Cooling rounds the setpoint down, heating rounds up | Built, tested. New in 0.9.3 (DR-065) |
 | A reading's age is measured from when it was last reported | Built, tested. New in 0.9.3 (DR-066) |
+| The power budget measures the rest of the house, averages its readings over fifteen minutes, and holds a running room ten minutes before turning it off | Built, tested. New in 0.9.4 (DR-067) |
+| A room's occupancy is kept across a restart | Built, tested. New in 0.9.4 (DR-068) |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.3 it is 920 tests (599 over the pure modules),
+pure modules. At 0.9.4 it is 940 tests (608 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two
@@ -467,8 +470,8 @@ band or calling for correction, holding it as close to the band as the
 remaining energy allows — running at the largest output the budget
 affords, spread across the hours until the constraint clears, degrading
 gradually as the battery depletes rather than running flat out. Where even
-holding at setpoint cannot be afforded, an enforced room is turned off until
-the budget allows it; a guidance room's ceiling floors at zero further
+holding at setpoint cannot be afforded for ten minutes, an enforced room is
+turned off until the budget allows it (DR-067); a guidance room's ceiling floors at zero further
 correction and is reported only. Until 0.9.3 no setting ever turned the unit
 off for power.
 

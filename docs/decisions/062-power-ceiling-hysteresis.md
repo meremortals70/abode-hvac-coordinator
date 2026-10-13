@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-037 |
+| Status | Accepted; amends DR-037; amended by DR-067 in 0.9.4 |
 | Since | 0.9.3 (2026-10-12) |
 | Origin | Living room overnight review, 11/12 October 2026, finding 9 |
 | Related | DR-016, DR-037 |
@@ -35,9 +35,9 @@ constants are judgement figures, listed in known limitations.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms**, as amended by DR-067.
 
-- `power.py:435` - `def held_ceiling_bin` - down at once, up when clear
-- `power.py:428` - `BIN_RAISE_HOLD = timedelta(minutes=10)` - the hold
-- `power.py:423` - `BIN_RAISE_MARGIN_KW = 0.3` - the margin
-- `coordinator.py:3194` - `bin_index = held_ceiling_bin(` - used in the budget
+- `power.py:444` - `def held_ceiling_bin` - down at once, up when clear
+- `power.py:437` - `BIN_RAISE_HOLD = timedelta(minutes=10)` - the hold
+- `power.py:432` - `BIN_RAISE_MARGIN_KW = 0.3` - the margin
+- `coordinator.py:3286` - `bin_index = held_ceiling_bin(` - used in the budget

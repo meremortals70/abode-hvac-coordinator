@@ -189,7 +189,7 @@ and this integration never writes to any of them — it only reads.
 | Battery capacity (kWh) | For power-aware operation | As above |
 | Solar output | For power-aware operation | As above |
 | House load | For power-aware operation | As above |
-| Reserve margin (kWh) | For power-aware operation | As above |
+| Reserve margin (kWh, not a percentage: 5% of a 13 kWh battery is 0.65) | For power-aware operation | As above |
 | Battery maximum discharge power (kW) | No | The budget is bounded by stored energy only |
 | Grid power sensor | No | No breach figure is measured afterwards |
 | Solar production forecast | No | The forecasts the Energy dashboard uses are read until this step is saved. Saved with none chosen, only the solar being produced now is counted |

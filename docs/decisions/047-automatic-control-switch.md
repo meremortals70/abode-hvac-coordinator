@@ -46,11 +46,11 @@ reconfiguration; this switch is for the day-to-day case.
 
 ## In the code
 
-Checked against: 0.9.3. **Superseded by DR-049.** The switch, its store entry and its survival of a restart remain. What it did when off does not: the unit is no longer commanded off every cycle, and the guard bypass for a forced stop is gone.
+Checked against: 0.9.4. **Superseded by DR-049.** The switch, its store entry and its survival of a restart remain. What it did when off does not: the unit is no longer commanded off every cycle, and the guard bypass for a forced stop is gone.
 
 - `switch.py:50` - `RoomAutomaticControlSwitch` - the entity
-- `store.py:148` - `switched_off` - read before the first refresh
-- `store.py:159` - `set_switched_off` - written within seconds
-- `coordinator.py:547` - `_switched_off` - loaded from the store
-- `coordinator.py:1176` - `async_set_room_switched_off` - flips the choice and acts now
-- `coordinator.py:1300` - `SWITCHED_OFF_REASON` - the reason shown while the switch is off; the room is evaluated and sent nothing
+- `store.py:153` - `switched_off` - read before the first refresh
+- `store.py:164` - `set_switched_off` - written within seconds
+- `coordinator.py:562` - `_switched_off` - loaded from the store
+- `coordinator.py:1191` - `async_set_room_switched_off` - flips the choice and acts now
+- `coordinator.py:1316` - `SWITCHED_OFF_REASON` - the reason shown while the switch is off; the room is evaluated and sent nothing

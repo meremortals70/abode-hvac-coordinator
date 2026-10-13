@@ -14,7 +14,7 @@ ordering â€” including which conditions stop the unit and which leave it alone â
 tariff windows and constraint handling, setpoint clamping, the setup form
 helpers, the seeded band defaults and lockout reason handling.
 
-920 tests in total across the pure and Home Assistant suites at 0.9.3, run
+940 tests in total across the pure and Home Assistant suites at 0.9.4, run
 against Home Assistant 2026.8.3 on Python 3.14.6. Every module is covered to
 98% or better, and the config flow to 100%, as the quality scale asks. That number is only meaningful
 alongside the version they ran against. Say which every time, and report a run

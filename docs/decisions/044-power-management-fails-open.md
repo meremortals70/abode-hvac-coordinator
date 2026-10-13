@@ -32,7 +32,7 @@ room shows why.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms.**
 
-- `coordinator.py:2866-2872` - `engaged=False` - any unconfigured input disengages
-- `coordinator.py:3109-3123` - `context.engaged` - any missing reading returns unthrottled
+- `coordinator.py:2899-2905` - `engaged=False` - any unconfigured input disengages
+- `coordinator.py:3200-3214` - `context.engaged` - any missing reading returns unthrottled

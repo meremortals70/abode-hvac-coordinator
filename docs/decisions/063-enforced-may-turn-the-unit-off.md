@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-037 and DR-041 |
+| Status | Accepted; amends DR-037 and DR-041; amended by DR-067 in 0.9.4 |
 | Since | 0.9.3 (2026-10-12) |
 | Origin | Instruction, 2026-10-12: "it should be based on if the aircon is set to strictly follow the power or use it as guidance" |
 | Related | DR-037, DR-041, DR-044, DR-057, DR-059 |
@@ -36,9 +36,9 @@ DR-044 still holds: missing power data never stops a unit.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms.**
+Checked against: 0.9.4. **Conforms**, as amended by DR-067.
 
-- `coordinator.py:3204` - `enforced = room.power_management == POWER_MANAGEMENT_ENFORCED` - the setting decides
-- `coordinator.py:3230` - `"off until the budget allows it"` - enforced turns the unit off
-- `coordinator.py:3233` - `trace.power_ceiling_c = 0.0` - guidance reports only
-- `coordinator.py:3245` - `"room while it coasts"` - a coasting room the budget affords is left alone
+- `coordinator.py:3293` - `enforced = room.power_management == POWER_MANAGEMENT_ENFORCED` - the setting decides
+- `coordinator.py:3348` - `"off until the budget allows it"` - enforced turns the unit off
+- `coordinator.py:3351` - `trace.power_ceiling_c = 0.0` - guidance reports only
+- `coordinator.py:3363` - `"room while it coasts"` - a coasting room the budget affords is left alone

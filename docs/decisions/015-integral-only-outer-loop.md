@@ -41,11 +41,11 @@ trim pins at its limit, the trace says the unit is not keeping up.
 
 ## In the code
 
-Checked against: 0.9.3. **Superseded by DR-054.** The integrator, its deadband and its anti-windup remain as the integral term of the loop; the proportional and derivative terms this record refused now exist, and the trim is kept per direction.
+Checked against: 0.9.4. **Superseded by DR-054.** The integrator, its deadband and its anti-windup remain as the integral term of the loop; the proportional and derivative terms this record refused now exist, and the trim is kept per direction.
 
 - `regulate.py:74` - `INTEGRAL_GAIN_PER_HOUR` - 0.35
 - `regulate.py:79` - `DEADBAND_C` - 0.3 C
 - `regulate.py:68` - `MAX_TRIM_C` - 3.0 C
 - `regulate.py:149` - `integrate` - the gated integrator
-- `coordinator.py:1338-1339` - `_guard_cycling` - guard first, then regulate
-- `coordinator.py:1436-1439` - `regulating` - integrates only on the applied step, and not while capped
+- `coordinator.py:1354-1355` - `_guard_cycling` - guard first, then regulate
+- `coordinator.py:1452-1455` - `regulating` - integrates only on the applied step, and not while capped

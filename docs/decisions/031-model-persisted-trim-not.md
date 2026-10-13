@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amended by DR-064 in 0.9.3 |
+| Status | Accepted; amended by DR-064 in 0.9.3; amended by DR-068 in 0.9.4 |
 | Since | In the code from 0.6.0 (2026-08-16); non-finite guard after 0.8.11 |
 | Origin | Design v0.8; architecture review 2026-08-23 |
 | Related | DR-015, DR-025 |
@@ -34,10 +34,10 @@ After a restart the trim starts from zero and re-converges.
 
 ## In the code
 
-Checked against: 0.9.3. **Conforms**, as amended by DR-064.
+Checked against: 0.9.4. **Conforms**, as amended by DR-064 and DR-068.
 
 - `store.py:62` - `ModelStore` - storage
 - `store.py:54` - `SAVE_DELAY_SECONDS` - 300
-- `coordinator.py:2358` - `_persist_models` - handed to the store every cycle; one delayed save pending at a time (DR-064)
+- `coordinator.py:2384` - `_persist_models` - handed to the store every cycle; one delayed save pending at a time (DR-064)
 - `regulate.py:124` - `RegulatorState` - not persisted, by design
 - `thermal.py:917` - `is_finite` - non-finite values rejected
