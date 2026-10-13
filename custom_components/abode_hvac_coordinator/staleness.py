@@ -35,6 +35,16 @@ it a setting would mean asking the user a question they have no way to answer.
 
 They are deliberately generous. The purpose is to catch a feed that has died,
 not to police reporting intervals.
+
+ROOM TEMPERATURE AND HUMIDITY HAVE NO AGE LIMIT
+-----------------------------------------------
+0.9.6, DR-070. A room's own temperature and humidity are trusted for as long
+as Home Assistant shows them as available. Many room sensors report only when
+the reading changes: the living room's Eve Room went 3 h 23 min without a
+report on 13 October 2026 because the room did not change, and the two-hour
+limit left the room with no reading and its air conditioner idle. A room
+sensor that really has dropped out is shown as unavailable by its own
+integration, and that is caught as no reading.
 """
 
 from __future__ import annotations
@@ -42,9 +52,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-#: Room temperature and humidity. Most report on change with a heartbeat well
-#: inside an hour; two hours of total silence means the device is gone.
-INDOOR_TOLERANCE = timedelta(hours=2)
+#: Room temperature and humidity. None: no age limit (DR-070). Many report
+#: only on change, and a steady room legitimately says nothing for hours.
+INDOOR_TOLERANCE: timedelta | None = None
 
 #: Outdoor temperature. Often a weather integration polling every fifteen or
 #: thirty minutes, so the tolerance has to clear a couple of missed polls.
@@ -76,9 +86,13 @@ class Freshness:
 
 
 def assess(
-    changed_at: datetime | None, now: datetime, tolerance: timedelta
+    changed_at: datetime | None, now: datetime, tolerance: timedelta | None
 ) -> Freshness:
     """Judge one reading's age against its feed's tolerance.
+
+    A tolerance of None means the feed has no age limit (DR-070): the
+    reading is fresh whatever its age, and only an unavailable state, which
+    the caller checks, makes it absent.
 
     A reading with no timestamp is treated as fresh. Home Assistant always
     supplies one for a real entity, so the absence of it means a test fixture
@@ -94,7 +108,7 @@ def assess(
         return Freshness(fresh=True, age=None, reason=None)
 
     age = now - changed_at
-    if age <= tolerance:
+    if tolerance is None or age <= tolerance:
         return Freshness(fresh=True, age=age, reason=None)
 
     hours = age.total_seconds() / 3600.0

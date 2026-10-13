@@ -6,6 +6,83 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.6 - 2026-10-14
+
+From the living room on the night of 13–14 October, the Office on the
+morning of 14 October, and two reviews of the whole component against its
+intent.
+
+### Fixed
+
+- **A room whose sensor reports only on change was left with no reading, and
+  its air conditioner did nothing.** A room's temperature and humidity were
+  treated as missing two hours after their last report. The living room's Eve
+  Room reported at 17:42 and next at 21:05 because the room did not change, so
+  the room, set to Sleep with Automatic control on, sent nothing to its unit.
+  A room's own temperature and humidity are now trusted for as long as Home
+  Assistant shows them as available; only `unavailable` or `unknown` makes them
+  missing. (DR-070)
+- **With its sensor down, a room whose unit was off stayed off.** The unit's own
+  temperature (and humidity, where it reports one) now stands in, the room's
+  trace says so, and nothing is learned from it. (DR-074)
+- **The setpoint swung between 18 and 23 C while the room sat in its band.**
+  The room loop decided whether it was cooling or heating from the room against
+  its target, so a room 0.1 C either side of it lost and regained about 1 C of
+  hold every minute or two; the living room was cooled to 19.4 C, below its
+  band. The loop now turns round only when the rate it needs has clearly
+  changed sign, and the setpoint is rounded the way the loop is working.
+  (DR-075)
+- **A drying or cooling unit was put on its fan short of the band.** The
+  minimum off time then held it while the room climbed back; the living room
+  went round about ten times overnight without reaching its band. A unit
+  already working the room down now carries on until the room is in band.
+  (DR-072)
+- **The unit changed between cool and dry every minute or two** with the room's
+  humidity at 64–65%. The route the unit is on is now kept unless the other
+  wins by a margin, and an unconverged room more than 2 HCI above its band is
+  cooled whatever the humidity. (DR-076)
+- **"Turning the air conditioning off" was said when the stop was decided, not
+  when it was sent.** On 14 October the minimum run held the Office's unit on
+  for four and a half minutes after it was said. It is now said with the off
+  command. Warnings that the air conditioning is running, or will be turned
+  off, are said only where the unit was on. (DR-077)
+- **The Office was started and told to open up in the same second, then warned
+  for opening up.** While outdoor air is better, an occupied room's compressor
+  is not started for ten minutes; an opening made while that advice stands
+  stops the unit at once, with no warnings. (DR-073)
+- **Dry mode was sent with no setpoint**, so the unit dried toward whatever it
+  had last been given. It is now sent the room's setpoint and held to it in
+  band, as cooling is. (DR-078)
+- **Warnings were spoken for rooms the coordinator was not running.** Nothing is
+  now spoken for a room with Automatic control off or one still waiting for its
+  unit to report. (DR-071)
+- **Sleep chosen by hand never ended in a room with no presence sensor.** It
+  now ends when the room's sleep schedule finishes or, with no schedule, at
+  sunrise. (DR-079)
+- **A heading-home request never ended**, so the room stayed in Precondition
+  and was never turned off when it emptied again. It now ends once the room is
+  occupied, or an hour after its deadline if nobody arrived. (DR-080)
+- **The thermal model learned against a setpoint the unit was never sent.**
+  Every cooling interval was filed against the solved target plus the trim, a
+  form the room loop has not sent since 0.9.0, and against the coordinator's
+  figure when the unit had been set by hand. It now learns against the setpoint
+  the unit reports. (DR-081)
+- **An empty room waited three more minutes for a warning nobody would hear.**
+  Where no warning can be said, the room is turned off when the vacancy period
+  ends. (DR-082)
+- **Removing a room used device-registry calls Home Assistant stops supporting
+  in 2027.8.** It now uses the ones Home Assistant names as their replacements,
+  and a removed room's device is removed.
+
+### Changed
+
+- **No warnings are spoken in a sleeping room**, asleep by its Comfort mode or
+  its sleep schedule. (DR-071)
+- Two outdoor-temperature reads, for the cheaper-window coast and the demand
+  forecast, used the room-reading limit (two hours) instead of the outdoor one
+  (three hours). They now use the outdoor limit, and a static test checks every
+  house feed names its own limit.
+
 ## 0.9.5 - 2026-10-13
 
 ### Fixed

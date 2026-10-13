@@ -335,6 +335,20 @@ class RoomInputs:
     #: Opening warnings due this cycle, set by the coordinator from the room's
     #: own announce setting and how long the opening has been open.
     opening_age_unknown: bool = False
+    #: 0.9.6, DR-072. The mode the room's unit is in now ("cool", "dry",
+    #: "fan_only", "off" ...), or None where it is not reporting. A unit
+    #: already cooling or drying a room that is still above its band is not
+    #: switched to its fan halfway, and it keeps the route it is on.
+    unit_mode: str | None = None
+    #: 0.9.6, DR-073. Outdoor air was judged better than the room's at the
+    #: last evaluation (free cooling advised).
+    free_cooling_advised: bool = False
+    #: 0.9.6, DR-073. The advice has stood for `FREE_COOLING_WAIT` or longer,
+    #: so the compressor may start in an occupied room after all.
+    free_cooling_wait_over: bool = False
+    #: 0.9.6, DR-074. `temperature_c` is the unit's own reading, because the
+    #: room's sensor is unavailable.
+    temperature_from_unit: bool = False
 
 
 @dataclass(slots=True)
@@ -393,6 +407,9 @@ class DecisionTrace:
     #: that would stop it. Without this the guard, which exists to protect the
     #: compressor, silently replaced cover and fan decisions with COMPRESSOR.
     hold_compressor: bool = False
+    #: 0.9.6, DR-077. An off command was actually sent to the unit this cycle,
+    #: so a warning that it is being turned off is true.
+    stopped: bool = False
     #: DR-056. The room is inside its band and the step is "none": the unit is
     #: left running, and the room loop's setpoint is still walked onto it, so a
     #: setpoint set for a pull-down does not stay on a unit that has arrived.

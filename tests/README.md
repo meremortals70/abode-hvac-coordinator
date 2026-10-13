@@ -28,7 +28,7 @@ The rest need the harness, and CI runs the whole suite:
     python3 -m pytest tests/ -v
 
 **Say which Home Assistant a run was against.** A green run against the wrong
-version is worth stating every time. At 0.9.5 the suite is 945 tests (609 of
+version is worth stating every time. At 0.9.6 the suite is 995 tests (627 of
 them pure) and ran against Home Assistant 2026.8.3 on Python 3.14.6.
 
 **Every test written for a fix is checked by putting the defect back.** The

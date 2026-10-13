@@ -819,13 +819,23 @@ async def test_the_warnings_are_spoken_once_each_before_the_unit_stops(
         ),
     )
     spoken = await real_tts_speak(hass)
-    async_mock_service(hass, "climate", "set_hvac_mode")
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
     hass.states.async_set("binary_sensor.test_window", "on")
     start = dt_util.utcnow()
     for minutes in (1, 2, 3, 4, 5, 6, 7):
         with freeze_time(start + timedelta(minutes=minutes)):
             await coordinator.async_refresh()
             await hass.async_block_till_done()
+    # 0.9.6, DR-077. The stop is decided at five minutes, but the unit's
+    # minimum run (it started when the room was set up, five minutes in)
+    # holds it on until fifteen: "turning off" is not said until it is.
+    assert not mode_calls, [c.data for c in mode_calls]
+    assert len(spoken) == 1, [call.data["message"] for call in spoken]
+    for minutes in range(8, 17):
+        with freeze_time(start + timedelta(minutes=minutes)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+    assert {c.data["hvac_mode"] for c in mode_calls} == {"off"}
 
     messages = [call.data["message"] for call in spoken]
     assert len(messages) == 2, messages
@@ -1179,7 +1189,8 @@ async def test_a_unit_that_is_not_running_against_a_setpoint_is_not_sent_one(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
     coordinator = await _setup(hass, mock_config_entry, temperature="24.0", humidity="50.0")
-    for state in ("off", "fan_only", "dry"):
+    # Dry takes a setpoint from 0.9.6 (DR-078) and is walked like cooling.
+    for state in ("off", "fan_only"):
         _publish(hass, state=state, temperature=19.0)
         temperature_calls = async_mock_service(hass, "climate", "set_temperature")
         with freeze_time(dt_util.utcnow() + timedelta(minutes=30)):
@@ -1399,9 +1410,11 @@ async def test_awake_overrides_the_schedule_and_ends_when_it_goes_off(
     assert coordinator.comfort_mode("test_room").value == "schedule"
 
 
-async def test_sleep_outlasts_the_schedule_until_the_room_is_empty(
+async def test_sleep_ends_when_the_schedule_finishes(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
+    """0.9.6, DR-079. Until 0.9.6 a chosen Sleep outlasted the schedule and
+    ended only when the room read empty."""
     hass.states.async_set(_SLEEP_SWITCH, "on")
     coordinator = await _setup(
         hass,
@@ -1409,10 +1422,32 @@ async def test_sleep_outlasts_the_schedule_until_the_room_is_empty(
         room_extra={**_WITH_SLEEP_BAND, "sleep_schedule_entity_id": _SLEEP_SWITCH},
     )
     await _select(hass, _COMFORT, "sleep")
+    await _settle(hass, coordinator, minutes=1)
+    assert coordinator.comfort_mode("test_room").value == "sleep"
     hass.states.async_set(_SLEEP_SWITCH, "off")
     await _settle(hass, coordinator, minutes=6)
+    assert coordinator.comfort_mode("test_room").value == "schedule"
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None and state.state != "sleep"
+
+
+async def test_sleep_ends_at_sunrise_in_a_room_with_no_schedule(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """13-14 October: the living room, with no presence sensor and no
+    schedule, would have stayed on Sleep all of the next day."""
+    hass.states.async_set("sun.sun", "below_horizon")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
+    await _select(hass, _COMFORT, "sleep")
+    await _settle(hass, coordinator, minutes=1)
     assert coordinator.comfort_mode("test_room").value == "sleep"
-    assert hass.states.get("sensor.test_room_mode").state == "sleep"  # type: ignore[union-attr]
+    hass.states.async_set("sun.sun", "above_horizon")
+    await _settle(hass, coordinator, minutes=1)
+    assert coordinator.comfort_mode("test_room").value == "schedule"
+    # A chosen Sleep in the day is not undone by the sun already being up.
+    await _select(hass, _COMFORT, "sleep")
+    await _settle(hass, coordinator, minutes=1)
+    assert coordinator.comfort_mode("test_room").value == "sleep"
 
 
 async def test_the_schedule_still_works_on_its_own(

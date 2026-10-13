@@ -375,11 +375,13 @@ class TestActuatorOrdering(unittest.TestCase):
         self.assertIs(trace.actuator, ActuatorStep.FAN)
 
     def test_dry_mode_when_the_load_is_latent(self):
+        # 0.9.6, DR-076: about 1.2 HCI above band. Further than 2.0 above it,
+        # an unconverged room is cooled whatever the humidity.
         trace = evaluate_room(
             room(),
             RoomInputs(
                 now=NOW,
-                temperature_c=28.0,
+                temperature_c=24.2,
                 relative_humidity=80.0,
                 presence=True,
             ),
@@ -1040,11 +1042,32 @@ class TestComfortModeEnds(unittest.TestCase):
             self.assertIs(after, ComfortMode.SCHEDULE)
             self.assertIn("the room is empty", reason)
 
-    def test_sleep_outlasts_the_schedule(self):
+    def test_sleep_ends_when_the_schedule_goes_off(self):
+        """0.9.6, DR-079. It outlasted the schedule until then."""
         after, reason = self._after(
             ComfortMode.SLEEP, schedule_active=False, schedule_was_active=True
         )
-        self.assertEqual((after, reason), (ComfortMode.SLEEP, None))
+        self.assertIs(after, ComfortMode.SCHEDULE)
+        self.assertIn("sleep schedule has finished", reason)
+
+    def test_sleep_without_a_schedule_ends_at_sunrise_only(self):
+        after, reason = self._after(ComfortMode.SLEEP, has_schedule=False, sunrise=True)
+        self.assertIs(after, ComfortMode.SCHEDULE)
+        self.assertIn("the sun is up", reason)
+        self.assertEqual(
+            self._after(ComfortMode.SLEEP, has_schedule=False, sunrise=False),
+            (ComfortMode.SLEEP, None),
+        )
+        # With a schedule, the schedule decides, not the sun.
+        self.assertEqual(
+            self._after(ComfortMode.SLEEP, has_schedule=True, sunrise=True),
+            (ComfortMode.SLEEP, None),
+        )
+        # Awake is not ended by the sun.
+        self.assertEqual(
+            self._after(ComfortMode.AWAKE, has_schedule=False, sunrise=True),
+            (ComfortMode.AWAKE, None),
+        )
 
     def test_awake_ends_when_the_schedule_goes_off(self):
         after, reason = self._after(
@@ -2748,42 +2771,60 @@ class TestShortCycleGuard(unittest.TestCase):
 class TestStaleness(unittest.TestCase):
     """A reading that is present is not the same as a reading that is current."""
 
+    TWO_HOURS = timedelta(hours=2)
+
     def test_a_recent_reading_is_fresh(self):
         verdict = _staleness.assess(
-            NOW - timedelta(minutes=5), NOW, _staleness.INDOOR_TOLERANCE
+            NOW - timedelta(minutes=5), NOW, self.TWO_HOURS
         )
         self.assertTrue(verdict.fresh)
 
     def test_a_reading_past_its_tolerance_is_not(self):
         verdict = _staleness.assess(
-            NOW - timedelta(hours=5), NOW, _staleness.INDOOR_TOLERANCE
+            NOW - timedelta(hours=5), NOW, self.TWO_HOURS
         )
         self.assertFalse(verdict.fresh)
         self.assertIn("treated as no reading", verdict.reason)
 
     def test_the_reason_names_the_age_and_the_tolerance(self):
         verdict = _staleness.assess(
-            NOW - timedelta(hours=5), NOW, _staleness.INDOOR_TOLERANCE
+            NOW - timedelta(hours=5), NOW, self.TWO_HOURS
         )
         self.assertIn("5.0 h", verdict.reason)
         self.assertIn("2 h", verdict.reason)
 
     def test_a_reading_with_no_timestamp_is_treated_as_fresh(self):
         self.assertTrue(
-            _staleness.assess(None, NOW, _staleness.INDOOR_TOLERANCE).fresh
+            _staleness.assess(None, NOW, self.TWO_HOURS).fresh
         )
 
     def test_clock_skew_into_the_future_is_not_a_staleness_fault(self):
         verdict = _staleness.assess(
-            NOW + timedelta(minutes=2), NOW, _staleness.INDOOR_TOLERANCE
+            NOW + timedelta(minutes=2), NOW, self.TWO_HOURS
         )
         self.assertTrue(verdict.fresh)
 
-    def test_presence_is_tolerated_far_longer_than_temperature(self):
-        # An mmWave sensor in a room nobody enters legitimately says nothing.
-        self.assertGreater(
-            _staleness.PRESENCE_TOLERANCE, _staleness.INDOOR_TOLERANCE
+    def test_room_temperature_and_humidity_have_no_age_limit(self):
+        # DR-070: many room sensors report only on change; a steady room
+        # says nothing for hours. Only unavailable makes them absent.
+        self.assertIsNone(_staleness.INDOOR_TOLERANCE)
+        verdict = _staleness.assess(
+            NOW - timedelta(days=10), NOW, _staleness.INDOOR_TOLERANCE
         )
+        self.assertTrue(verdict.fresh)
+        self.assertEqual(verdict.age, timedelta(days=10))
+        self.assertIsNone(verdict.reason)
+
+    def test_every_other_feed_keeps_its_limit(self):
+        for tolerance in (
+            _staleness.OUTDOOR_TOLERANCE,
+            _staleness.PRESENCE_TOLERANCE,
+            _staleness.CONTACT_TOLERANCE,
+            _staleness.POWER_TOLERANCE,
+        ):
+            self.assertFalse(
+                _staleness.assess(NOW - timedelta(days=2), NOW, tolerance).fresh
+            )
 
 
 class TestDewPoint(unittest.TestCase):
@@ -3283,12 +3324,13 @@ class TestLatentRouteUsesTheLearnedRates(unittest.TestCase):
         self.assertIs(warm_room, ActuatorStep.DRY)
 
     def test_an_unconverged_model_falls_back_and_says_so(self):
-        step, trace = self._step(relative_humidity=70.0)
+        # About 1.0 HCI above band (DR-076).
+        step, trace = self._step(temperature_c=24.1, relative_humidity=70.0)
         self.assertIs(step, ActuatorStep.DRY)
         self.assertTrue(any("has not converged" in r for r in trace.reasons))
 
     def test_the_fallback_threshold_still_applies_below_it(self):
-        step, trace = self._step(temperature_c=30.0, relative_humidity=50.0)
+        step, trace = self._step(temperature_c=25.6, relative_humidity=50.0)
         self.assertIs(step, ActuatorStep.COMPRESSOR)
         self.assertTrue(any("fallback threshold" in r for r in trace.rejected))
 
@@ -3376,7 +3418,7 @@ class TestLatentRouteUsesTheLearnedRates(unittest.TestCase):
 
     def test_the_trace_names_the_deciding_state(self):
         # State 3: k_sensible/k_latent themselves unconverged.
-        _, unconverged = self._step(relative_humidity=70.0)
+        _, unconverged = self._step(temperature_c=24.1, relative_humidity=70.0)
         self.assertTrue(
             any("has not converged" in r for r in unconverged.reasons)
         )
@@ -4703,9 +4745,44 @@ class TestRoomLoop(unittest.TestCase):
         self.assertLess(result.setpoint_c, 24.0)
 
     def test_a_room_already_below_target_while_cooling_asks_for_nothing(self):
-        result = self._pid(23.5, drift=0.0)
+        # Within DIRECTION_MARGIN_C_PER_HOUR of needing no cooling (DR-075).
+        result = self._pid(23.8, drift=0.0)
+        self.assertEqual(result.direction, "cool")
         self.assertEqual(result.approach_c, 0.0)
-        self.assertEqual(result.setpoint_c, 23.5)
+        self.assertEqual(result.setpoint_c, 23.8)
+
+    def test_a_room_clearly_below_target_turns_the_loop_round(self):
+        result = self._pid(23.5, drift=0.0)
+        self.assertEqual(result.direction, "heat")
+
+    def test_crossing_the_target_does_not_swing_the_setpoint(self):
+        """13 October, living room: the target about 20.8 C, the room 0.1 C
+        either side, and the setpoint sent swinging between 18 and 23 C. The
+        way the loop works now follows the rate the unit must supply, so the
+        term that holds the room against its drift does not vanish at the
+        target. A curve with an intercept, as a real unit has."""
+        state = _regulate.RegulatorState()
+
+        def curve(rate):
+            return 1.0 + 0.5 * rate
+
+        def ask(room_c, direction):
+            return _regulate.pid_setpoint(
+                state,
+                target_c=20.8,
+                room_c=room_c,
+                direction=direction,
+                drift_c_per_hour=0.15,
+                approach_for_rate=curve,
+            )
+
+        above = ask(20.9, "cool")
+        # The coordinator passes the room against its target, "heat" here.
+        below = ask(20.7, "heat")
+        self.assertEqual(above.direction, "cool")
+        self.assertEqual(below.direction, "cool")
+        self.assertLess(abs(below.setpoint_c - above.setpoint_c), 1.2)
+        self.assertLessEqual(below.setpoint_c, 20.7)
 
     def test_a_room_falling_fast_toward_target_is_eased_off(self):
         """Derivative on the measurement: the same error is asked for less
@@ -4999,8 +5076,10 @@ class TestWeatherCoast(unittest.TestCase):
     def test_without_a_projection_sun_on_the_glass_keeps_the_cooling(self):
         trace = evaluate_room(
             room(),
+            # Outdoors is cooler and drier; the free-cooling wait (DR-073) is
+            # taken as over, so this is about the coast alone.
             self._inputs(31.0, outdoor_c=15.0, outdoor_relative_humidity=50.0,
-                         direct_sun=True),
+                         direct_sun=True, free_cooling_wait_over=True),
         )
         self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
 
@@ -5338,6 +5417,8 @@ class TestWeatherCoastWaitsForTheRebound(unittest.TestCase):
             "unaided_return_minutes": 30.0,
             "unaided_return_limit_minutes": 90.0,
             "unaided_refused": refused,
+            # About the coast alone, not the free-cooling wait (DR-073).
+            "free_cooling_wait_over": True,
         }
         base.update(overrides)
         return evaluate_room(room(), RoomInputs(**base))
@@ -5581,3 +5662,146 @@ class TestCeilingHysteresis(unittest.TestCase):
         """The 06:31-07:13 pattern: 0.41 kW then 0.56 kW against a 0.5 kW
         at-setpoint draw."""
         self.assertIsNone(self._bin(0.56, None, 15))
+
+
+class TestDryOrCoolHoldsItsRoute(unittest.TestCase):
+    """0.9.6, DR-076. Cool or dry is not flipped by a point of humidity, and an
+    unconverged room well above its band is cooled."""
+
+    def _step(self, *, temperature_c, relative_humidity, unit_mode=None, **rates):
+        trace = _models.DecisionTrace(room_id="office", at=NOW, mode=Mode.OCCUPIED)
+        band = ComfortBand(24.0, 26.0)
+        inputs = RoomInputs(
+            now=NOW,
+            temperature_c=temperature_c,
+            relative_humidity=relative_humidity,
+            presence=True,
+            unit_mode=unit_mode,
+            **rates,
+        )
+        hci = comfort_index(temperature_c, relative_humidity)
+        return _modes.select_actuator(Mode.OCCUPIED, band, hci, inputs, trace), trace
+
+    def test_far_above_band_an_unconverged_room_is_cooled_however_humid(self):
+        """21:05 on 13 October: seven points above band at 73%, put on dry."""
+        step, trace = self._step(temperature_c=26.2, relative_humidity=80.0)
+        self.assertIs(step, ActuatorStep.COMPRESSOR)
+        self.assertTrue(any("too far for drying" in r for r in trace.rejected))
+
+    def test_a_drying_unit_keeps_drying_a_little_below_the_line(self):
+        step, _ = self._step(
+            temperature_c=24.6, relative_humidity=63.0, unit_mode="dry"
+        )
+        self.assertIs(step, ActuatorStep.DRY)
+
+    def test_a_cooling_unit_keeps_cooling_a_little_above_the_line(self):
+        step, trace = self._step(
+            temperature_c=24.3, relative_humidity=66.0, unit_mode="cool"
+        )
+        self.assertIs(step, ActuatorStep.COMPRESSOR)
+        self.assertTrue(any("68% fallback threshold" in r for r in trace.rejected))
+
+    def test_from_off_the_line_is_where_it_was(self):
+        step, _ = self._step(temperature_c=24.3, relative_humidity=65.0)
+        self.assertIs(step, ActuatorStep.DRY)
+
+    def test_the_learned_comparison_also_holds_the_route(self):
+        """Cooling ahead by more than 1.25 but less than 1.25 x 1.15."""
+        rates = {"k_sensible_c_per_hour": 1.6, "k_latent_rh_per_hour": 8.0}
+        from_off, _ = self._step(temperature_c=30.0, relative_humidity=75.0, **rates)
+        drying, _ = self._step(
+            temperature_c=30.0, relative_humidity=75.0, unit_mode="dry", **rates
+        )
+        self.assertIs(from_off, ActuatorStep.COMPRESSOR)
+        self.assertIs(drying, ActuatorStep.DRY)
+
+
+class TestNoFanHalfwayDown(unittest.TestCase):
+    """0.9.6, DR-072. A unit bringing a room down is not put on its fan while
+    the room is still above its band."""
+
+    def _step(self, unit_mode):
+        trace = _models.DecisionTrace(room_id="office", at=NOW, mode=Mode.OCCUPIED)
+        band = ComfortBand(24.0, 26.0)
+        inputs = RoomInputs(
+            now=NOW,
+            temperature_c=22.8,
+            relative_humidity=66.0,
+            presence=True,
+            unit_mode=unit_mode,
+            k_sensible_c_per_hour=1.0,
+            k_latent_rh_per_hour=20.0,
+        )
+        # 0.3 HCI above band: inside the fan margin.
+        return _modes.select_actuator(Mode.OCCUPIED, band, 26.3, inputs, trace), trace
+
+    def test_a_drying_unit_keeps_drying(self):
+        step, trace = self._step("dry")
+        self.assertIs(step, ActuatorStep.DRY)
+        self.assertTrue(any("already dry" in r for r in trace.rejected))
+
+    def test_a_cooling_unit_is_not_put_on_its_fan(self):
+        step, _ = self._step("cool")
+        self.assertIsNot(step, ActuatorStep.FAN)
+
+    def test_a_unit_that_is_off_or_on_its_fan_starts_with_the_fan(self):
+        for mode in ("off", "fan_only", None):
+            step, _ = self._step(mode)
+            self.assertIs(step, ActuatorStep.FAN, mode)
+
+
+class TestFreeCooling(unittest.TestCase):
+    """0.9.6, DR-073. When outdoors is better the compressor is not started,
+    and an opening made for it stops the unit without a grace."""
+
+    def _trace(self, **overrides):
+        base = {
+            "now": NOW,
+            "temperature_c": 30.0,
+            "relative_humidity": 60.0,
+            "presence": True,
+            "outdoor_c": 18.0,
+            "outdoor_relative_humidity": 50.0,
+            # Sun on the glass, so the weather coast does not take the room
+            # first (DR-053) and this is about the free-cooling wait alone.
+            "direct_sun": True,
+        }
+        base.update(overrides)
+        return evaluate_room(room(), RoomInputs(**base))
+
+    def test_an_occupied_room_is_not_started_while_outdoors_is_better(self):
+        """08:23:15 on 14 October: started, and told to open up, together."""
+        trace = self._trace()
+        self.assertTrue(trace.free_cooling_advised)
+        self.assertIs(trace.actuator, ActuatorStep.NONE)
+        self.assertTrue(any("not started" in r for r in trace.rejected))
+
+    def test_after_the_wait_the_compressor_starts_anyway(self):
+        trace = self._trace(free_cooling_wait_over=True)
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_a_unit_already_cooling_is_left_cooling(self):
+        trace = self._trace(unit_mode="cool")
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_a_sleeping_room_is_not_held_waiting_for_windows(self):
+        trace = self._trace(comfort_mode=_models.ComfortMode.SLEEP)
+        self.assertIs(trace.actuator, ActuatorStep.COMPRESSOR)
+
+    def test_an_opening_made_on_the_advice_stops_the_unit_at_once(self):
+        trace = self._trace(
+            opening_open=True,
+            opening_open_since=NOW,
+            free_cooling_advised=True,
+        )
+        self.assertIs(trace.actuator, ActuatorStep.OFF)
+        self.assertTrue(any("outdoors is better" in r for r in trace.rejected))
+
+    def test_without_the_advice_an_opening_still_has_its_grace(self):
+        trace = self._trace(
+            opening_open=True,
+            opening_open_since=NOW,
+            outdoor_c=None,
+            outdoor_relative_humidity=None,
+        )
+        self.assertIs(trace.actuator, ActuatorStep.NONE)

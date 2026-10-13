@@ -256,6 +256,60 @@ async def test_dry_is_sent_as_dry_with_a_quiet_fan_and_settled_vane(
     assert climate["set_swing_mode"][0].data["swing_mode"] == "off"
 
 
+async def test_dry_is_sent_with_the_rooms_setpoint(hass: HomeAssistant) -> None:
+    """0.9.6, DR-078. Until 0.9.6 dry went without one, and the unit dried
+    toward whatever it had last been given."""
+    _unit(hass, "off")
+    climate = _calls(hass)
+    trace = _trace(ActuatorStep.DRY, commanded_dry_bulb_c=22.0, target_dry_bulb_c=23.4)
+    await _actuator(hass).async_apply(_room(), trace)
+    assert climate["set_hvac_mode"][0].data["hvac_mode"] == "dry"
+    assert climate["set_temperature"][0].data["temperature"] == 22.0
+
+
+async def test_dry_without_a_commanded_setpoint_is_sent_the_target(
+    hass: HomeAssistant,
+) -> None:
+    _unit(hass, "off")
+    climate = _calls(hass)
+    trace = _trace(ActuatorStep.DRY, target_dry_bulb_c=23.4)
+    await _actuator(hass).async_apply(_room(), trace)
+    assert climate["set_temperature"][0].data["temperature"] == 23.4
+
+
+async def test_a_coasting_rooms_dry_keeps_the_units_setpoint(
+    hass: HomeAssistant,
+) -> None:
+    _unit(hass, "cool")
+    climate = _calls(hass)
+    trace = _trace(ActuatorStep.DRY, commanded_dry_bulb_c=22.0, mode=Mode.COAST)
+    await _actuator(hass).async_apply(_room(), trace)
+    assert climate["set_hvac_mode"][0].data["hvac_mode"] == "dry"
+    assert not climate["set_temperature"]
+
+
+async def test_a_sent_off_is_marked_on_the_trace(hass: HomeAssistant) -> None:
+    """0.9.6, DR-077. What lets "turning off" be said only when it is true."""
+    _unit(hass, "cool")
+    _calls(hass)
+    trace = _trace(ActuatorStep.OFF)
+    await _actuator(hass).async_apply(_room(), trace)
+    assert trace.stopped
+    held = _trace(ActuatorStep.OFF, hold_compressor=True)
+    await _actuator(hass).async_apply(_room(), held)
+    assert not held.stopped
+
+
+async def test_a_drying_unit_in_band_has_its_setpoint_walked(
+    hass: HomeAssistant,
+) -> None:
+    _unit(hass, "dry", temperature=18.0)
+    climate = _calls(hass)
+    trace = _trace(ActuatorStep.NONE, hold_setpoint=True, commanded_dry_bulb_c=21.0)
+    await _actuator(hass).async_apply(_room(), trace)
+    assert climate["set_temperature"][0].data["temperature"] == 21.0
+
+
 async def test_the_vane_is_left_alone_when_the_user_has_it(hass: HomeAssistant) -> None:
     _unit(hass, "off", swing_mode="swing")
     climate = _calls(hass)

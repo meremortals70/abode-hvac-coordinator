@@ -256,3 +256,45 @@ class TestOutdoorApparentTemperatureIsNeverAnInput(unittest.TestCase):
 
     def test_the_thermal_model_does_not_reference_it(self):
         self.assertNotIn("apparent_temperature", (SRC / "thermal.py").read_text())
+
+
+class TestEveryFeedIsReadAgainstItsOwnLimit(unittest.TestCase):
+    """0.9.6, DR-070. `_number` defaults to the room-reading limit, which is
+    no limit at all. An outdoor or power feed read without naming its own
+    limit would be trusted at any age. Until 0.9.6 two outdoor reads relied
+    on the default, then two hours; with no default limit they would have
+    been trusted for ever."""
+
+    LIMITS: ClassVar[dict[str, str]] = {
+        "outdoor_entity_id": "OUTDOOR_TOLERANCE",
+        "outdoor_humidity_entity_id": "OUTDOOR_TOLERANCE",
+        "outdoor_wind_entity_id": "OUTDOOR_TOLERANCE",
+        "house_load_entity_id": "POWER_TOLERANCE",
+        "solar_entity_id": "POWER_TOLERANCE",
+        "grid_entity_id": "POWER_TOLERANCE",
+        "battery_soc_entity_id": "POWER_TOLERANCE",
+    }
+
+    def test_house_feeds_name_their_limit_on_every_read(self):
+        tree = ast.parse((SRC / "coordinator.py").read_text())
+        seen: set[str] = set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_number"
+                and node.args
+                and isinstance(node.args[0], ast.Attribute)
+                and node.args[0].attr in self.LIMITS
+            ):
+                continue
+            feed = node.args[0].attr
+            seen.add(feed)
+            with self.subTest(feed=feed, line=node.lineno):
+                self.assertGreaterEqual(len(node.args), 2, "no limit named")
+                limit = node.args[1]
+                self.assertIsInstance(limit, ast.Name)
+                assert isinstance(limit, ast.Name)
+                self.assertEqual(limit.id, self.LIMITS[feed])
+        self.assertIn("outdoor_entity_id", seen)
+        self.assertIn("house_load_entity_id", seen)

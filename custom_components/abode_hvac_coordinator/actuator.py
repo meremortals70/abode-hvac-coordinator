@@ -83,7 +83,7 @@ from homeassistant.util import dt as dt_util
 
 from .capabilities import RoomCapabilities, intersect
 from .const import DOMAIN, LOGGER
-from .models import ActuatorStep, DecisionTrace, RoomConfig
+from .models import ActuatorStep, DecisionTrace, Mode, RoomConfig
 from .regulate import SetpointLimits, combine_limits
 
 if TYPE_CHECKING:
@@ -392,7 +392,21 @@ class Actuator:
             return
 
         if trace.actuator is ActuatorStep.DRY:
-            await self._async_command(room, trace, DRY_MODES, None, active=False)
+            # 0.9.6, DR-078. Dry mode works to a setpoint on the units that
+            # take one, so the room's is sent with it, as for cooling. Until
+            # 0.9.6 none was, and the unit dried toward whatever it had last
+            # been given. A coasting room's dry step is not a pull-down and
+            # keeps the unit's own setpoint.
+            temperature = (
+                None
+                if trace.mode is Mode.COAST
+                else trace.commanded_dry_bulb_c
+                if trace.commanded_dry_bulb_c is not None
+                else trace.target_dry_bulb_c
+            )
+            await self._async_command(
+                room, trace, DRY_MODES, temperature, active=False
+            )
             return
 
         preferred = HEAT_MODES if trace.demand == "heat" else COOL_MODES
@@ -427,6 +441,7 @@ class Actuator:
             live_mode = _hvac_mode_of(state)
             if state is None or live_mode not in (
                 HVACMode.COOL,
+                HVACMode.DRY,
                 HVACMode.HEAT,
                 HVACMode.HEAT_COOL,
                 HVACMode.AUTO,
@@ -564,6 +579,8 @@ class Actuator:
 
         self._last_climate[entity_id] = (hvac_mode, temperature)
         self._record_command(room, entity_id, str(hvac_mode), temperature, trace)
+        if hvac_mode is HVACMode.OFF:
+            trace.stopped = True
         trace.reasons.append(
             f"set {entity_id} to {hvac_mode}"
             + (f" at {temperature:.1f} C" if temperature is not None else "")

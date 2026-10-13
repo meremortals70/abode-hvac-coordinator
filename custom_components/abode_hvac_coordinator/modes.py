@@ -88,16 +88,24 @@ def comfort_mode_after(
     empty: bool,
     schedule_active: bool,
     schedule_was_active: bool | None,
+    has_schedule: bool = True,
+    sunrise: bool = False,
 ) -> tuple[ComfortMode, str | None]:
     """Whether a chosen Comfort mode still stands, and why not (DR-058).
 
     Returns the mode to use and, where it has just gone back to Schedule, the
     reason. Sleep and Awake both end when the room is empty, as
-    `room_reads_empty` decides; a room with no presence sensor is never empty
-    and keeps the choice until it is changed. Awake also ends when the sleep
-    schedule goes from on to off, because what it was overriding has
-    finished; a schedule that is simply off ends nothing, or choosing Awake
-    during the day would undo itself.
+    `room_reads_empty` decides. Awake also ends when the sleep schedule goes
+    from on to off, because what it was overriding has finished; a schedule
+    that is simply off ends nothing, or choosing Awake during the day would
+    undo itself.
+
+    0.9.6, DR-079. Sleep ends the same way, when the sleep schedule goes from
+    on to off; in a room with no sleep schedule it ends at sunrise. Until
+    0.9.6 Sleep chosen by hand ended only when the room read empty, so in a
+    room with no presence sensor it never ended: the living room, set to Sleep
+    on the evening of 13 October, would have stayed on its sleep band all of
+    the next day.
     """
     if comfort_mode is ComfortMode.SCHEDULE:
         return comfort_mode, None
@@ -106,14 +114,15 @@ def comfort_mode_after(
             f"comfort mode {comfort_mode.value} ended: the room is empty, "
             "back to the schedule"
         )
-    if (
-        comfort_mode is ComfortMode.AWAKE
-        and schedule_was_active is True
-        and not schedule_active
-    ):
+    if schedule_was_active is True and not schedule_active:
         return ComfortMode.SCHEDULE, (
-            "comfort mode awake ended: the sleep schedule has finished, back "
-            "to the schedule"
+            f"comfort mode {comfort_mode.value} ended: the sleep schedule has "
+            "finished, back to the schedule"
+        )
+    if comfort_mode is ComfortMode.SLEEP and not has_schedule and sunrise:
+        return ComfortMode.SCHEDULE, (
+            "comfort mode sleep ended: the sun is up and this room has no "
+            "sleep schedule, back to the schedule"
         )
     return comfort_mode, None
 
@@ -297,6 +306,30 @@ DRY_MODE_RH_FALLBACK = 65.0
 #: drying; cooling has to actually win to be chosen.
 DRY_MODE_ADVANTAGE = 1.25
 
+#: 0.9.6, DR-076. Once the unit is drying or cooling, the other route has to
+#: win by this much more before it changes, in percent of humidity on the
+#: fallback threshold and as a factor on the learned comparison. On 13
+#: October the living room sat at 64-65% and changed between cool and dry
+#: every minute or two. Judgements, not measurements.
+DRY_FALLBACK_HYSTERESIS_RH = 3.0
+DRY_ROUTE_HYSTERESIS = 1.15
+
+#: 0.9.6, DR-076. While the model has not converged, a room this far above its
+#: band, in comfort index, is cooled whatever the humidity. The 65% fallback
+#: is a poor test, and a room seven points above its band at 73% was put on
+#: dry on 13 October. Judgement, not measurement.
+DRY_FALLBACK_MAX_OVERSHOOT_HCI = 2.0
+
+#: 0.9.6, DR-073. How long an occupied room waits, after outdoor air was
+#: judged better than its own, before the compressor is started anyway: time
+#: to open the windows. Judgement, not measurement.
+FREE_COOLING_WAIT = timedelta(minutes=10)
+
+#: 0.9.6, DR-072. Modes in which the unit is already working the room down
+#: (or up). A room still outside its band is not switched from one of these
+#: to its fan.
+WORKING_MODES = frozenset({"cool", "dry", "heat", "heat_cool", "auto"})
+
 #: How near an extreme a cover counts as already there, in percent. A blind at
 #: 3% is shut for our purposes; commanding it to 0 achieves nothing, and
 #: without this check the ordering picks covers every cycle on an already-shut
@@ -363,14 +396,29 @@ def _latent_route(
         # State 3. Not learned yet. The humidity threshold is a poor test and
         # it is what there is until the filter converges. Saying so keeps the
         # fallback visible rather than looking like a decision.
-        if inputs.relative_humidity >= DRY_MODE_RH_FALLBACK:
+        #
+        # 0.9.6, DR-076. A room well above its band is cooled, and the line
+        # moves away from whichever route the unit is already on.
+        if overshoot > DRY_FALLBACK_MAX_OVERSHOOT_HCI:
+            trace.rejected.append(
+                f"dry: {overshoot:.1f} HCI above band, too far for drying while "
+                "the model has not converged"
+            )
+            return None
+        threshold = DRY_MODE_RH_FALLBACK
+        if inputs.unit_mode == "dry":
+            threshold -= DRY_FALLBACK_HYSTERESIS_RH
+        elif inputs.unit_mode in WORKING_MODES:
+            threshold += DRY_FALLBACK_HYSTERESIS_RH
+        if inputs.relative_humidity >= threshold:
             return (
                 f"dry: {inputs.relative_humidity:.0f}% humidity and the model "
-                "has not converged, falling back to the humidity threshold"
+                "has not converged, falling back to the humidity threshold "
+                f"({threshold:.0f}%)"
             )
         trace.rejected.append(
             f"dry: {inputs.relative_humidity:.0f}% is below the "
-            f"{DRY_MODE_RH_FALLBACK:.0f}% fallback threshold, and the model has "
+            f"{threshold:.0f}% fallback threshold, and the model has "
             "not converged enough to judge the load properly"
         )
         return None
@@ -400,7 +448,12 @@ def _latent_route(
         trace.rejected.append("dry: this room has never shown a latent response")
         return None
 
-    if cooling_per_hour > drying_per_hour * DRY_MODE_ADVANTAGE:
+    advantage = DRY_MODE_ADVANTAGE
+    if inputs.unit_mode == "dry":
+        advantage *= DRY_ROUTE_HYSTERESIS
+    elif inputs.unit_mode in WORKING_MODES:
+        advantage /= DRY_ROUTE_HYSTERESIS
+    if cooling_per_hour > drying_per_hour * advantage:
         trace.rejected.append(
             f"dry: cooling closes {cooling_per_hour:.2f} HCI per hour "
             f"({rh_state}) against {drying_per_hour:.2f} for drying — the "
@@ -475,6 +528,15 @@ def select_actuator(
         # An opening whose age cannot be read holds the unit. An unknown age
         # is not an old one, and a sensor that cannot be read is not evidence
         # the door has been open long.
+        if inputs.free_cooling_advised:
+            # 0.9.6, DR-073. Outdoors is better than in and the room has been
+            # opened up: that is what was advised, so the unit is stopped
+            # without waiting out the grace.
+            trace.rejected.append(
+                "all actuators: an opening is open and outdoors is better than "
+                "in, so the air conditioning is off"
+            )
+            return ActuatorStep.OFF
         grace = timedelta(minutes=inputs.opening_grace_minutes)
         since = inputs.opening_open_since
         if since is None:
@@ -601,6 +663,16 @@ def select_actuator(
     overshoot = hci - (band.low if mode is Mode.PRECOOL else band.high)
     if not inputs.can_fan_only:
         trace.rejected.append("fan: this unit has no fan-only mode")
+    elif inputs.unit_mode in WORKING_MODES:
+        # 0.9.6, DR-072. The unit is already bringing the room down. Moving it
+        # to its fan short of the band stopped the compressor, the minimum off
+        # time held it there while the room climbed back, and the living room
+        # went round that about ten times on 13-14 October without reaching
+        # its band once.
+        trace.rejected.append(
+            f"fan: the unit is already {inputs.unit_mode}, and the room is "
+            f"still {overshoot:.1f} HCI above band"
+        )
     elif overshoot <= FAN_MARGIN_HCI:
         trace.reasons.append("fan: marginally above band, air movement should carry it")
         return ActuatorStep.FAN
@@ -884,6 +956,24 @@ def evaluate_room(
         demand=trace.demand,
     )
     trace.free_cooling_advised = advice.advised
+    if (
+        advice.advised
+        and mode is Mode.OCCUPIED
+        and trace.actuator in (ActuatorStep.COMPRESSOR, ActuatorStep.DRY)
+        and inputs.unit_mode not in WORKING_MODES
+        and not inputs.free_cooling_wait_over
+    ):
+        # 0.9.6, DR-073. Outdoors is better than in. The compressor is not
+        # started while the windows may be opened; on 14 October the Office
+        # was started and told to open up in the same second. After
+        # `FREE_COOLING_WAIT` it starts anyway: comfort is the constraint.
+        trace.actuator = ActuatorStep.NONE
+        trace.hold_setpoint = False
+        trace.rejected.append(
+            "compressor: not started, outdoors is cooler and drier; opening up "
+            f"would help, and the unit starts after {FREE_COOLING_WAIT.seconds // 60} "
+            "minutes if the room is not opened"
+        )
     trace.dew_point_c = advice.indoor_dew_point_c
     trace.outdoor_dew_point_c = advice.outdoor_dew_point_c
     trace.outdoor_apparent_c = advice.outdoor_apparent_c

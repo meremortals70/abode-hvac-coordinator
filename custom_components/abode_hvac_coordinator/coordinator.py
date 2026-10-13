@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import (
     ATTR_ENTITY_ID,
+    ATTR_TEMPERATURE,
     ATTR_UNIT_OF_MEASUREMENT,
     UnitOfSpeed,
 )
@@ -166,8 +167,10 @@ from .models import (
 )
 from .modes import (
     DEFAULT_OPENING_GRACE_MINUTES,
+    FREE_COOLING_WAIT,
     UNAIDED_RETURN_FALLBACK_MINUTES,
     UNAIDED_RETURN_MARGIN_MINUTES,
+    WORKING_MODES,
     comfort_mode_after,
     comfort_mode_refused,
     evaluate_room,
@@ -211,7 +214,7 @@ from .regulate import (
     track_room_rate,
     wants_running,
 )
-from .scheduling import PreconditionPlan, plan_precondition
+from .scheduling import HEADING_HOME_EXPIRY, PreconditionPlan, plan_precondition
 from .staleness import (
     CONTACT_TOLERANCE,
     INDOOR_TOLERANCE,
@@ -535,6 +538,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: only on the rising edge — the moment it becomes true — not every
         #: cycle it stays true, the same principle the grace warnings use.
         self._free_cooling_advised: dict[str, bool] = {}
+        #: 0.9.6, DR-073. When outdoor air was first judged better, per room,
+        #: for as long as it stays better.
+        self._free_cooling_since: dict[str, datetime] = {}
+        #: 0.9.6, DR-077. A final warning ("turning ... off") waiting for the
+        #: stop it announces to actually be sent.
+        self._deferred_final: dict[str, Announcement] = {}
+        #: 0.9.6, DR-077. The mode each room's unit was in at the start of the
+        #: evaluation, before anything was sent: a warning about a running
+        #: unit is only true of one that was on.
+        self._unit_mode_seen: dict[str, str | None] = {}
+        #: 0.9.6, DR-074. Why a room is reading its unit's own sensor.
+        self._fallback_reason: dict[str, str] = {}
+        #: 0.9.6, DR-079. Whether the sun was up at the last evaluation, per
+        #: room, so a chosen Sleep ends at sunrise in a room with no schedule.
+        self._sun_was_up: dict[str, bool | None] = {}
+        #: 0.9.6, DR-080. Why a heading-home request ended, for the trace.
+        self._heading_home_reason: dict[str, str] = {}
         #: Announcements raised this evaluation, dispatched after it.
         self._pending_announcements: list[tuple[RoomConfig, Announcement]] = []
         #: Entities currently logged as unavailable, so each transition is
@@ -1253,11 +1273,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         schedule_active = self._bool(room.sleep_schedule_entity_id) is True
         current = self.comfort_mode(room_id)
         empty = room_reads_empty(presence, self._raw_presence.get(room_id))
+        # 0.9.6, DR-079. Sunrise, as the rising edge of `sun.sun`, for a room
+        # with no sleep schedule.
+        sun = self.hass.states.get("sun.sun")
+        sun_up = None if sun is None else sun.state == "above_horizon"
+        sun_was_up = self._sun_was_up.get(room_id)
+        self._sun_was_up[room_id] = sun_up
         after, reason = comfort_mode_after(
             current,
             empty=empty,
             schedule_active=schedule_active,
             schedule_was_active=self._schedule_was_on.get(room_id),
+            has_schedule=room.sleep_schedule_entity_id is not None,
+            sunrise=sun_up is True and sun_was_up is False,
         )
         self._schedule_was_on[room_id] = schedule_active
         self._room_empty[room_id] = empty
@@ -1281,6 +1309,32 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         if room_id in self._switched_off:
             return True
         return vane and room_id in self._manual_vanes
+
+    def _end_heading_home(
+        self, room: RoomConfig, presence: bool | None, now: datetime
+    ) -> None:
+        """End a heading-home request whose purpose has passed (DR-080).
+
+        It ends once the room is occupied, and an hour after its deadline if
+        nobody has arrived. Until 0.9.6 only the clear-override action ended
+        one, and until then the room stayed in Precondition, overriding
+        presence and sleep: it was never turned off when it emptied again.
+        """
+        if room.room_id not in self._heading_home:
+            return
+        deadline = self._heading_home[room.room_id]
+        reason: str | None = None
+        if presence is True:
+            reason = "heading home ended: the room is occupied"
+        elif deadline is not None and now >= deadline + HEADING_HOME_EXPIRY:
+            reason = (
+                "heading home ended: an hour past its deadline and nobody has "
+                "arrived"
+            )
+        if reason is not None:
+            self._heading_home.pop(room.room_id, None)
+            self._heading_home_reason[room.room_id] = reason
+            LOGGER.info("%s: %s", room.name, reason)
 
     @callback
     def async_clear_override(self, room_id: str) -> None:
@@ -1314,6 +1368,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._async_ensure_profiles()
         for room in self.rooms.values():
             inputs = self._inputs_for(room, now)
+            self._unit_mode_seen[room.room_id] = inputs.unit_mode
             capabilities = self._capabilities(room)
             self._learn(room, inputs, now)
             # A room is evaluated, and its decision published, whether or not
@@ -1339,6 +1394,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             if trace.target_dry_bulb_c is not None:
                 self._last_target[room.room_id] = trace.target_dry_bulb_c
             if reason := self._grace_reason.get(room.room_id):
+                trace.reasons.append(reason)
+            if reason := self._fallback_reason.get(room.room_id):
+                trace.reasons.append(reason)
+            if reason := self._heading_home_reason.pop(room.room_id, None):
                 trace.reasons.append(reason)
             if reason := self._comfort_mode_reason.pop(room.room_id, None):
                 trace.reasons.append(reason)
@@ -1375,7 +1434,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
             await self.actuator.async_apply(room, trace)
 
-        await self._async_announce()
+        await self._async_announce(traces)
         self._async_remove_stale_devices(set(traces))
         self._process_draw_candidates(now)
         self.forecast = self._build_forecast(now, traces)
@@ -1504,12 +1563,16 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # degree steps is never sent a setpoint at or past the room it is
             # meant to be moving. Rounding to the nearest sent 26 C to a 25.9 C
             # room the loop wanted 0.2 C below, and the unit did nothing.
+            # 0.9.6, DR-075. Where the room loop answered, its own way of
+            # working decides the rounding, not the room against its target:
+            # the two disagree for a room a tenth of a degree past its target.
+            way = pid.direction if pid is not None else direction
             toward = None
             if capped:
                 toward = "up" if direction == "cool" else "down"
-            elif direction == "cool":
+            elif way == "cool":
                 toward = "down"
-            elif direction == "heat":
+            elif way == "heat":
                 toward = "up"
             rounded = quantise_setpoint(commanded, limits, toward=toward)
             if abs(rounded - commanded) >= 0.05:
@@ -1699,15 +1762,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         interval gets attributed to is meaningless once what the room was
         being asked to reach has moved.
         """
-        temperature = inputs.temperature_c
+        # 0.9.6, DR-074. The unit's own sensor is not the room; nothing is
+        # learned from it.
+        temperature = None if inputs.temperature_from_unit else inputs.temperature_c
         humidity = inputs.relative_humidity
         compressor = self._compressor_direction(room)
         drying = self._is_drying(room)
         self._track_stop(room.room_id, cooling=compressor == -1 or drying, now=now)
-        commanded = commanded_setpoint(
-            self._regulators.get(room.room_id, RegulatorState()),
-            self._last_target.get(room.room_id),
-        )
+        # 0.9.6, DR-081. The setpoint the unit itself reports, which is what
+        # drove it, whoever set it. Until 0.9.6 this was the solved target
+        # plus the trim, a form the room loop has not sent since 0.9.0, so
+        # every cooling interval was filed under an approach the unit was
+        # never asked for.
+        commanded = self._unit_setpoint(room)
 
         if temperature is None or humidity is None:
             # No reading at this end of the interval. Drop the anchor rather
@@ -1848,7 +1915,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         return (
             model.holds_through(
                 indoor,
-                self._number(self.outdoor_entity_id),
+                self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE),
                 direct_sun=self._direct_sun(room) is True,
                 hours=hours,
                 lower_c=lower_c,
@@ -1914,6 +1981,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """
         was_advised = self._free_cooling_advised.get(room.room_id, False)
         self._free_cooling_advised[room.room_id] = trace.free_cooling_advised
+        if trace.free_cooling_advised:
+            self._free_cooling_since.setdefault(room.room_id, trace.at)
+        else:
+            self._free_cooling_since.pop(room.room_id, None)
         if trace.free_cooling_advised and not was_advised:
             self._pending_announcements.append((room, Announcement.FREE_COOLING))
 
@@ -1939,7 +2010,22 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             self._grace[room.room_id] = state
         raw = self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
         self._raw_presence[room.room_id] = raw
-        result = evaluate_grace(state, raw, now, room.grace)
+        # 0.9.6, DR-082. The wait for the warnings only where a warning can
+        # be said: the room has speakers, is run and awake, and its unit is
+        # on. Otherwise the room is turned off when the vacancy period ends,
+        # not three minutes after a warning nobody heard.
+        speaks = (
+            room.grace.announce
+            and bool(room.announce_target_entity_ids)
+            and not self._silenced(room)
+            and self._unit_mode(room) not in (None, "off")
+        )
+        result = evaluate_grace(
+            state,
+            raw,
+            now,
+            room.grace if speaks == room.grace.announce else replace(room.grace, announce=speaks),
+        )
         self.store.set_occupancy(room.room_id, state.occupied)
         self._grace_reason[room.room_id] = result.reason
         if result.announcement is not Announcement.NONE:
@@ -2182,7 +2268,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             f"{len(engines)}: {', '.join(engines)}"
         )
 
-    async def _async_announce(self) -> None:
+    async def _async_announce(
+        self, traces: Mapping[str, DecisionTrace] | None = None
+    ) -> None:
         """Speak any warnings raised this evaluation.
 
         0.9.5, DR-069. Through `tts.speak`, which targets a text-to-speech
@@ -2191,11 +2279,19 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         call, no warning was ever spoken, and the rejection stopped the rest
         of the evaluation. A warning that cannot be given is now logged once
         and never stops anything else.
+
+        0.9.6, DR-070. A room speaks only while the coordinator is running it
+        and the room is awake. Nothing is spoken for a room whose Automatic
+        control is off, a room still waiting for its air conditioner to
+        report, or a room that is asleep, by its Comfort mode or its sleep
+        schedule. Until 0.9.6 the empty-room and free-cooling warnings were
+        queued before the Automatic control check, so a room the coordinator
+        was not running still said it was turning its air conditioning off.
         """
         pending = [
             (room, announcement)
-            for room, announcement in self._pending_announcements
-            if room.announce_target_entity_ids
+            for room, announcement in self._timed_announcements(traces or {})
+            if room.announce_target_entity_ids and not self._silenced(room)
         ]
         self._pending_announcements.clear()
         if not pending:
@@ -2233,6 +2329,59 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     f"{room.room_id}: {type(err).__name__}: {err}",
                     f"announcement for {room.room_id} failed: {err}",
                 )
+
+    def _timed_announcements(
+        self, traces: Mapping[str, DecisionTrace]
+    ) -> list[tuple[RoomConfig, Announcement]]:
+        """The warnings that are true now (DR-077).
+
+        A warning that the air conditioning is running, or will be turned
+        off, is said only where a unit is on. A warning that it is being
+        turned off is said only in the evaluation the off command is actually
+        sent: until 0.9.6 it was said when the stop was decided, and on 14
+        October the minimum run then held the Office's unit on for another
+        four and a half minutes after it said so. Held until then, and dropped
+        if the room no longer stops.
+        """
+        timed: list[tuple[RoomConfig, Announcement]] = []
+        queued = list(self._pending_announcements)
+        for room_id, announcement in list(self._deferred_final.items()):
+            room = self.rooms.get(room_id)
+            if room is not None:
+                queued.append((room, announcement))
+        self._deferred_final.clear()
+        for room, announcement in queued:
+            trace = traces.get(room.room_id)
+            if announcement is not Announcement.FREE_COOLING and (
+                self._unit_mode_seen.get(room.room_id) in (None, "off")
+            ):
+                continue
+            if announcement in (
+                Announcement.FINAL_WARNING,
+                Announcement.OPENING_FINAL_WARNING,
+            ):
+                if trace is None or trace.actuator is not ActuatorStep.OFF:
+                    continue
+                if not trace.stopped:
+                    if trace.hold_compressor:
+                        self._deferred_final[room.room_id] = announcement
+                    continue
+            timed.append((room, announcement))
+        return timed
+
+    def _silenced(self, room: RoomConfig) -> bool:
+        """Whether this room must not speak now (DR-070).
+
+        The room's current configuration is read, not the copy the warning
+        was queued with, so a room whose unit has just reported is judged
+        on that.
+        """
+        current = self.rooms.get(room.room_id, room)
+        return (
+            room.room_id in self._switched_off
+            or current.capabilities is None
+            or self._sleeping(current)
+        )
 
     def _note_announce_failure(self, key: str, message: str) -> None:
         """Log an announcement failure the first time it happens."""
@@ -2314,6 +2463,56 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         by idle time.
         """
         return dict(self._action_source)
+
+    def _unit_mode(self, room: RoomConfig) -> str | None:
+        """The mode the room's unit is in, or None where none reports one.
+
+        0.9.6, DR-072. A working mode on any head wins: a room with one head
+        cooling is being cooled.
+        """
+        modes = [
+            state.state
+            for entity_id in room.climate_entity_ids
+            if (state := self.hass.states.get(entity_id)) is not None
+            and state.state not in _NON_NUMERIC
+        ]
+        if not modes:
+            return None
+        for mode in modes:
+            if mode in WORKING_MODES:
+                return mode
+        return modes[0]
+
+    def _unit_setpoint(self, room: RoomConfig) -> float | None:
+        """The setpoint the room's units report, or None (DR-081).
+
+        A unit holding a range reports its middle. The mean across heads.
+        """
+        values: list[float] = []
+        for entity_id in room.climate_entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in _NON_NUMERIC:
+                continue
+            single = self._attribute(state, ATTR_TEMPERATURE)
+            if single is not None:
+                values.append(single)
+                continue
+            low = self._attribute(state, "target_temp_low")
+            high = self._attribute(state, "target_temp_high")
+            if low is not None and high is not None:
+                values.append((low + high) / 2.0)
+        return round(sum(values) / len(values), 1) if values else None
+
+    def _unit_reading(self, room: RoomConfig, attribute: str) -> float | None:
+        """The mean of a numeric attribute across the room's units, or None."""
+        values = [
+            value
+            for entity_id in room.climate_entity_ids
+            if (state := self.hass.states.get(entity_id)) is not None
+            and state.state not in _NON_NUMERIC
+            and (value := self._attribute(state, attribute)) is not None
+        ]
+        return sum(values) / len(values) if values else None
 
     def _is_drying(self, room: RoomConfig) -> bool:
         """Whether the unit is in dry mode."""
@@ -2478,7 +2677,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         replaces the instantaneous reading; without one, the instantaneous
         reading is used unchanged, exactly as before this fix.
         """
-        outdoor = self._number(self.outdoor_entity_id)
+        outdoor = self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
         if self.trajectory is not None:
             forecast_mean = self.trajectory.mean_between(
                 now, now + timedelta(hours=DEFAULT_HORIZON_HOURS)
@@ -2553,6 +2752,13 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._shortfall_since.pop(room_id, None)
                 self._grace_reason.pop(room_id, None)
                 self._free_cooling_advised.pop(room_id, None)
+                self._free_cooling_since.pop(room_id, None)
+                self._deferred_final.pop(room_id, None)
+                self._fallback_reason.pop(room_id, None)
+                self._unit_mode_seen.pop(room_id, None)
+                self._sun_was_up.pop(room_id, None)
+                self._heading_home_reason.pop(room_id, None)
+                self._heading_home.pop(room_id, None)
                 self._regulators.pop(room_id, None)
                 self._previous_mode.pop(room_id, None)
                 self._mode_changed_at.pop(room_id, None)
@@ -2565,41 +2771,77 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._raw_presence.pop(room_id, None)
                 self._comfort_mode_reason.pop(room_id, None)
                 self.store.forget_room(room_id)
-                if device := registry.async_get_device(
-                    identifiers={(DOMAIN, room_id)}
+                # 0.9.6. A device belongs to one config entry; removing the
+                # room removes its device. The lookup and the removal used
+                # until 0.9.6 stop working in Home Assistant 2027.8.
+                if device := registry.async_get_device_by_identifier(
+                    (DOMAIN, room_id), self.config_entry.entry_id
                 ):
-                    registry.async_update_device(
-                        device_id=device.id,
-                        remove_config_entry_id=self.config_entry.entry_id,
-                    )
+                    registry.async_remove_device(device.id)
         self.previous_rooms = current
 
     def _inputs_for(self, room: RoomConfig, now: datetime) -> RoomInputs:
         """Assemble everything the evaluator is allowed to see."""
         interval = self._interval_at(now)
         constraints = interval.constraints if interval else frozenset()
+
+        # Presence first, and the Comfort mode settled against it, before
+        # anything below asks whether the room is sleeping (DR-058).
+        presence = self._graced_presence(room, now)
+        self._update_comfort_mode(room, presence)
+        self._end_heading_home(room, presence, now)
+
         plan = self._precondition_plan(room, now)
         if plan is not None and not plan.start_now:
             self._precondition_reason[room.room_id] = plan.reason
         else:
             self._precondition_reason.pop(room.room_id, None)
 
-        # Presence first, and the Comfort mode settled against it, before
-        # anything below asks whether the room is sleeping (DR-058).
-        presence = self._graced_presence(room, now)
-        self._update_comfort_mode(room, presence)
-
         capabilities = self._capabilities(room)
         unaided = self._unaided_inputs(room, now)
+        temperature_c = self._number(
+            room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
+        )
+        relative_humidity = self._number(
+            room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
+        )
+        temperature_from_unit = False
+        self._fallback_reason.pop(room.room_id, None)
+        if temperature_c is None:
+            # 0.9.6, DR-074. The room's sensor is unavailable. The unit's own
+            # reading is used rather than leaving an off unit off for as long
+            # as the sensor is down (living room, 13 October), and the trace
+            # says so. Its sensor sits in the unit, not the room.
+            unit_c = self._unit_reading(room, "current_temperature")
+            if unit_c is not None:
+                temperature_c = unit_c
+                temperature_from_unit = True
+                self._fallback_reason[room.room_id] = (
+                    f"room temperature from the air conditioner's own sensor, "
+                    f"{unit_c:.1f} C: {room.temperature_entity_id} is not reporting"
+                )
+        if relative_humidity is None:
+            unit_rh = self._unit_reading(room, "current_humidity")
+            if unit_rh is not None:
+                relative_humidity = unit_rh
+                temperature_from_unit = True
+                note = self._fallback_reason.get(room.room_id)
+                self._fallback_reason[room.room_id] = (
+                    (note + "; " if note else "")
+                    + f"room humidity from the air conditioner's own sensor, "
+                    f"{unit_rh:.0f}%: {room.humidity_entity_id} is not reporting"
+                )
+        since = self._free_cooling_since.get(room.room_id)
 
         return RoomInputs(
             now=now,
-            temperature_c=self._number(
-                room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
-            ),
-            relative_humidity=self._number(
-                room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
-            ),
+            temperature_c=temperature_c,
+            relative_humidity=relative_humidity,
+            temperature_from_unit=temperature_from_unit,
+            unit_mode=self._unit_mode(room),
+            free_cooling_advised=self._free_cooling_advised.get(room.room_id, False),
+            free_cooling_wait_over=since is not None
+            and now - since >= FREE_COOLING_WAIT,
             temperature_entity_id=room.temperature_entity_id,
             humidity_entity_id=room.humidity_entity_id,
             k_rh_cooling_per_hour=self._learned(room.room_id, "k_rh_cooling"),
@@ -2858,10 +3100,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         cycle's own target. Falls back to the pooled-only figure when either
         half is not yet known, which is every room's first cycle.
         """
-        commanded = commanded_setpoint(
-            self._regulators.get(room.room_id, RegulatorState()),
-            self._last_target.get(room.room_id),
-        )
+        commanded = self._unit_setpoint(room)  # DR-081
         reading = self._number(room.temperature_entity_id, INDOOR_TOLERANCE)
         if commanded is None or reading is None:
             return self._learned(room.room_id, "k_sensible")
@@ -3495,7 +3734,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             )
 
     def _fresh(
-        self, entity_id: str, state: State, tolerance: timedelta, room_id: str | None
+        self,
+        entity_id: str,
+        state: State,
+        tolerance: timedelta | None,
+        room_id: str | None,
     ) -> bool:
         """Whether a state is recent enough to act on.
 
@@ -3509,6 +3752,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         hours read as two hours stale, and the room held with no reading.
         `last_reported` moves on every report, changed or not. A sensor that
         reports nothing at all is still caught.
+
+        0.9.6, DR-070. Room temperature and humidity have no age limit
+        (`INDOOR_TOLERANCE` is None), so they pass here at any age and only
+        an unavailable or unknown state makes them absent.
         """
         verdict = assess(
             max(state.last_updated, state.last_reported), dt_util.utcnow(), tolerance
@@ -3526,7 +3773,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _number(
         self,
         entity_id: str | None,
-        tolerance: timedelta = INDOOR_TOLERANCE,
+        tolerance: timedelta | None = INDOOR_TOLERANCE,
         room_id: str | None = None,
     ) -> float | None:
         """A numeric reading, or None where there is none or it is stale."""
@@ -3578,7 +3825,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _warn_about_opening(
         self, room: RoomConfig, inputs: RoomInputs, now: datetime
     ) -> None:
-        """Queue the spoken warnings for an open window or door (DR-050)."""
+        """Queue the spoken warnings for an open window or door (DR-050).
+
+        0.9.6, DR-073. Nothing is said for an opening made while outdoor air
+        was judged better than the room's: that is what was advised, and the
+        unit is stopped for it without a warning.
+        """
         warnings = self._opening_warnings.setdefault(
             room.room_id, OpeningWarningState()
         )
@@ -3588,7 +3840,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             now=now,
             grace=timedelta(minutes=room.opening_grace_minutes),
             warning_grace=room.grace.warning_grace,
-            announce=room.grace.announce,
+            announce=room.grace.announce and not inputs.free_cooling_advised,
         )
         if announcement is not Announcement.NONE:
             self._pending_announcements.append((room, announcement))

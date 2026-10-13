@@ -39,6 +39,10 @@ DEADLINE_MARGIN = timedelta(minutes=15)
 #: that has not converged has no opinion to defer to.
 DEADLINE_ALWAYS_START = timedelta(minutes=30)
 
+#: 0.9.6, DR-080. How long after its deadline a heading-home request stands
+#: when nobody has arrived. Judgement, not measurement.
+HEADING_HOME_EXPIRY = timedelta(hours=1)
+
 #: How long the band takes to move between the occupied and sleep bands. One
 #: hour: long enough that the compressor works gently, short enough that the
 #: room is on the sleep band well before anyone is actually asleep.

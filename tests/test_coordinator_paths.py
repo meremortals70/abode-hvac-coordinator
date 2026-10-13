@@ -9,6 +9,7 @@ that owns it is called directly against that real coordinator.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
@@ -17,6 +18,7 @@ import pytest
 from freezegun import freeze_time
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -31,6 +33,7 @@ from custom_components.abode_hvac_coordinator.const import (
     CONF_HOUSE_LOAD_ENTITY,
     CONF_OUTDOOR_HUMIDITY_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_SLEEP_SCHEDULE_ENTITY,
     CONF_VACANT_AFTER,
     CONF_WARNING_GRACE,
     CONF_WINDOW_DIRECTION,
@@ -46,10 +49,15 @@ from custom_components.abode_hvac_coordinator.coordinator import (
 from custom_components.abode_hvac_coordinator.grace import Announcement
 from custom_components.abode_hvac_coordinator.models import (
     ActuatorStep,
+    ComfortMode,
     DecisionTrace,
     Mode,
+    RoomInputs,
 )
-from custom_components.abode_hvac_coordinator.regulate import CompressorState
+from custom_components.abode_hvac_coordinator.regulate import (
+    CompressorState,
+    PidSetpoint,
+)
 from custom_components.abode_hvac_coordinator.thermal import (
     Coefficient,
     ThermalModel,
@@ -63,7 +71,7 @@ from custom_components.abode_hvac_coordinator.weather import (
 
 import voluptuous as vol
 from real_tts import ENGINE, real_tts_speak
-from test_living_room_night import _ceiling, _setup, _setup_power
+from test_living_room_night import _UNIT, _ceiling, _setup, _setup_power
 
 _GROUP = "climate.test"
 
@@ -590,6 +598,413 @@ async def test_a_room_with_nowhere_to_speak_is_silent(
     async_mock_service(hass, "climate", "set_hvac_mode")
     await _leave(hass, coordinator, 17)
     assert not spoken
+
+
+# ---------------------------------------------------------------------------
+# DR-070 - a room speaks only while it is run and awake
+# ---------------------------------------------------------------------------
+
+
+async def test_a_room_with_automatic_control_off_says_nothing_when_it_empties(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """13 October: the Office, not under automatic control, still said it
+    was turning its air conditioning off."""
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    await coordinator.async_set_room_switched_off("test_room", True)
+    await hass.async_block_till_done()
+    await _leave(hass, coordinator, 17)
+    assert not spoken
+
+
+async def test_a_room_asleep_by_its_schedule_says_nothing_when_it_empties(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    hass.states.async_set("binary_sensor.test_sleep", "on")
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        room_extra=_announcing(
+            **{CONF_SLEEP_SCHEDULE_ENTITY: "binary_sensor.test_sleep"}
+        ),
+    )
+    spoken = await real_tts_speak(hass)
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    await _leave(hass, coordinator, 17)
+    assert not spoken
+
+
+@pytest.mark.parametrize(
+    "announcement", [Announcement.FIRST_WARNING, Announcement.FREE_COOLING]
+)
+async def test_a_room_on_sleep_says_nothing_and_speaks_again_once_awake(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, announcement: Announcement
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    room = coordinator.rooms["test_room"]
+    coordinator._remember_comfort_mode("test_room", ComfortMode.SLEEP)
+    coordinator._pending_announcements.append((room, announcement))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert not spoken
+
+    coordinator._remember_comfort_mode("test_room", ComfortMode.SCHEDULE)
+    coordinator._pending_announcements.append((room, announcement))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert len(spoken) == 1
+
+
+async def test_free_cooling_advice_is_not_spoken_with_automatic_control_off(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    room = coordinator.rooms["test_room"]
+    coordinator._switched_off.add("test_room")
+    coordinator._pending_announcements.append((room, Announcement.FREE_COOLING))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert not spoken
+
+    coordinator._switched_off.discard("test_room")
+    coordinator._pending_announcements.append((room, Announcement.FREE_COOLING))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert len(spoken) == 1
+
+
+async def test_a_room_waiting_for_its_unit_says_nothing(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    room = replace(coordinator.rooms["test_room"], capabilities=None)
+    coordinator.rooms["test_room"] = room
+    coordinator._pending_announcements.append((room, Announcement.FIRST_WARNING))
+    await coordinator._async_announce()
+    await hass.async_block_till_done()
+    assert not spoken
+
+
+# ---------------------------------------------------------------------------
+# DR-081 - the model learns against the setpoint the unit reports
+# ---------------------------------------------------------------------------
+
+
+async def test_learning_uses_the_setpoint_the_unit_reports(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Until 0.9.6 the interval was filed against target plus trim, which the
+    room loop has not sent since 0.9.0, and against the coordinator's figure
+    whatever the unit had been set to by hand."""
+    coordinator = await _setup(hass, mock_config_entry)
+    seen = []
+    model_class = type(coordinator.model_for("test_room"))
+    original = model_class.observe
+
+    def spy(self, obs):
+        seen.append(obs)
+        return original(self, obs)
+
+    start = dt_util.utcnow()
+    with patch.object(model_class, "observe", autospec=True, side_effect=spy):
+        for minutes in (10, 12, 14, 16):
+            with freeze_time(start + timedelta(minutes=minutes)):
+                hass.states.async_set(
+                    "climate.test", "cool", {**_UNIT, "temperature": 18.0},
+                    force_update=True,
+                )
+                hass.states.async_set(
+                    "sensor.test_temperature", str(25.9 - minutes / 100),
+                    force_update=True,
+                )
+                await coordinator.async_refresh()
+                await hass.async_block_till_done()
+    assert seen
+    assert {obs.commanded_setpoint_c for obs in seen} == {18.0}
+
+
+async def test_a_unit_reporting_a_range_is_read_at_its_middle(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    room = coordinator.rooms["test_room"]
+    hass.states.async_set(
+        "climate.test",
+        "heat_cool",
+        {**_UNIT, "target_temp_low": 21.0, "target_temp_high": 25.0},
+    )
+    assert coordinator._unit_setpoint(room) == 23.0
+    hass.states.async_set("climate.test", "unavailable", _UNIT)
+    assert coordinator._unit_setpoint(room) is None
+
+
+# ---------------------------------------------------------------------------
+# DR-075 - the setpoint is rounded the way the room loop works
+# ---------------------------------------------------------------------------
+
+
+async def test_the_setpoint_rounds_the_way_the_loop_works(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """A room 0.1 C below its target while the loop is still cooling: the
+    room against its target says heat, which rounded up to the next whole
+    degree on 13 October."""
+    coordinator = await _setup(hass, mock_config_entry)
+    room = coordinator.rooms["test_room"]
+    now = dt_util.utcnow()
+    inputs = RoomInputs(now=now, temperature_c=20.7, relative_humidity=60.0)
+    trace = DecisionTrace(room_id="test_room", at=now, mode=Mode.SLEEP)
+    trace.target_dry_bulb_c = 20.8
+    trace.actuator = ActuatorStep.NONE
+    pid = PidSetpoint(
+        setpoint_c=20.4,
+        approach_c=0.3,
+        feed_forward_c=0.3,
+        wanted_rate_c_per_hour=0.2,
+        unit_rate_c_per_hour=0.1,
+        reason="regulation: test",
+        direction="cool",
+    )
+    with patch.object(coordinator, "_room_loop_setpoint", return_value=(20.4, pid)):
+        coordinator._regulate(room, inputs, trace, now)
+    assert trace.commanded_dry_bulb_c == 20.0
+
+
+# ---------------------------------------------------------------------------
+# DR-077 - a warning is said only when it is true
+# ---------------------------------------------------------------------------
+
+
+async def test_a_room_whose_unit_is_off_is_not_told_it_is_running(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """13 October: "empty for 10 minutes and the air conditioning is still
+    running" for a unit that was not."""
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.states.async_set("climate.test", "off", _UNIT)
+    await _leave(hass, coordinator, 17)
+    assert not spoken
+
+
+async def test_turning_off_is_said_only_with_the_off_command(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    room = coordinator.rooms["test_room"]
+    trace = DecisionTrace(room_id="test_room", at=dt_util.utcnow(), mode=Mode.UNOCCUPIED)
+    trace.actuator = ActuatorStep.OFF
+    trace.hold_compressor = True
+    coordinator._pending_announcements.append((room, Announcement.FINAL_WARNING))
+    await coordinator._async_announce({"test_room": trace})
+    await hass.async_block_till_done()
+    assert not spoken
+    assert coordinator._deferred_final == {"test_room": Announcement.FINAL_WARNING}
+
+    # The guard lets the stop through: said now.
+    trace.hold_compressor = False
+    trace.stopped = True
+    await coordinator._async_announce({"test_room": trace})
+    await hass.async_block_till_done()
+    assert [c.data["message"] for c in spoken] == [
+        "Turning the Test Room air conditioning off."
+    ]
+    assert coordinator._deferred_final == {}
+
+
+async def test_a_held_warning_is_dropped_when_the_room_no_longer_stops(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_announcing())
+    spoken = await real_tts_speak(hass)
+    coordinator._deferred_final["test_room"] = Announcement.OPENING_FINAL_WARNING
+    trace = DecisionTrace(room_id="test_room", at=dt_util.utcnow(), mode=Mode.OCCUPIED)
+    trace.actuator = ActuatorStep.COMPRESSOR
+    await coordinator._async_announce({"test_room": trace})
+    await hass.async_block_till_done()
+    assert not spoken
+    assert coordinator._deferred_final == {}
+
+
+# ---------------------------------------------------------------------------
+# DR-082 - no wait for a warning nobody will hear
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("targets", "unit", "waits"),
+    [
+        (["media_player.kitchen"], "cool", True),
+        ([], "cool", False),
+        (["media_player.kitchen"], "off", False),
+    ],
+)
+async def test_the_warning_wait_only_where_a_warning_is_said(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    targets: list[str],
+    unit: str,
+    waits: bool,
+) -> None:
+    hass.states.async_set("media_player.kitchen", "idle")
+    coordinator = await _setup(
+        hass,
+        mock_config_entry,
+        room_extra=_announcing(**{CONF_ANNOUNCE_TARGETS: targets}),
+    )
+    await real_tts_speak(hass)
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.states.async_set("climate.test", unit, _UNIT)
+    await _leave(hass, coordinator, 11)
+    state = hass.states.get("sensor.test_room_mode")
+    assert state is not None
+    assert (state.state != "unoccupied") is waits, state.state
+
+
+# ---------------------------------------------------------------------------
+# DR-073 - outdoor air judged better
+# ---------------------------------------------------------------------------
+
+
+async def test_the_free_cooling_wait_runs_from_the_first_advice(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    room = coordinator.rooms["test_room"]
+    start = dt_util.utcnow()
+    advised = DecisionTrace(room_id="test_room", at=start, mode=Mode.OCCUPIED)
+    advised.free_cooling_advised = True
+    coordinator._announce_free_cooling(room, advised)
+    later = replace(advised, at=start + timedelta(minutes=5))
+    coordinator._announce_free_cooling(room, later)
+    assert coordinator._inputs_for(room, start + timedelta(minutes=5)).free_cooling_advised
+    assert not coordinator._inputs_for(
+        room, start + timedelta(minutes=5)
+    ).free_cooling_wait_over
+    assert coordinator._inputs_for(
+        room, start + timedelta(minutes=10)
+    ).free_cooling_wait_over
+
+    ended = replace(advised, at=start + timedelta(minutes=11))
+    ended.free_cooling_advised = False
+    coordinator._announce_free_cooling(room, ended)
+    inputs = coordinator._inputs_for(room, start + timedelta(minutes=12))
+    assert not inputs.free_cooling_advised
+    assert not inputs.free_cooling_wait_over
+
+
+async def test_an_opening_made_on_the_advice_is_not_warned_about(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(
+        hass, mock_config_entry, room_extra=_announcing(opening_entity_ids=[])
+    )
+    room = coordinator.rooms["test_room"]
+    now = dt_util.utcnow()
+    opened = RoomInputs(
+        now=now,
+        opening_open=True,
+        opening_open_since=now - timedelta(minutes=30),
+        free_cooling_advised=True,
+    )
+    coordinator._warn_about_opening(room, opened, now)
+    assert coordinator._pending_announcements == []
+    coordinator._warn_about_opening(
+        room, replace(opened, free_cooling_advised=False), now
+    )
+    assert coordinator._pending_announcements == [
+        (room, Announcement.OPENING_FINAL_WARNING)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# DR-074 - the unit's own reading stands in for a room sensor that is down
+# ---------------------------------------------------------------------------
+
+
+async def test_an_unavailable_room_sensor_is_replaced_by_the_units_reading(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    hass.states.async_set(
+        "climate.test", "off", {**_UNIT, "current_temperature": 26.0}
+    )
+    hass.states.async_set("sensor.test_temperature", "unavailable")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    trace = coordinator.data["test_room"]
+    assert trace.room_c == 26.0
+    assert trace.hci is not None
+    assert any("air conditioner's own sensor, 26.0 C" in r for r in trace.reasons)
+    # Nothing is learned from it.
+    assert "test_room" not in coordinator._previous
+
+
+async def test_the_units_humidity_stands_in_too_where_it_reports_one(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    hass.states.async_set(
+        "climate.test",
+        "off",
+        {**_UNIT, "current_temperature": 26.0, "current_humidity": 58},
+    )
+    hass.states.async_set("sensor.test_temperature", "unavailable")
+    hass.states.async_set("sensor.test_humidity", "unavailable")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    trace = coordinator.data["test_room"]
+    assert trace.hci is not None
+    assert any("humidity from the air conditioner's own sensor, 58%" in r for r in trace.reasons)
+
+
+async def test_with_no_unit_reading_the_room_still_says_what_is_missing(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    hass.states.async_set("sensor.test_temperature", "unavailable")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    trace = coordinator.data["test_room"]
+    assert any("not reporting" in r for r in trace.rejected)
+
+
+# ---------------------------------------------------------------------------
+# A removed room's device goes with it, through the calls Home Assistant
+# keeps after 2027.8
+# ---------------------------------------------------------------------------
+
+
+async def test_a_removed_rooms_device_is_removed(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry)
+    registry = dr.async_get(hass)
+    device = registry.async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, "old_room")},
+    )
+    coordinator.previous_rooms = {*coordinator.previous_rooms, "old_room"}
+    coordinator._async_remove_stale_devices({"test_room"})
+    assert registry.async_get(device.id) is None
+    assert registry.async_get_device_by_identifier(
+        (DOMAIN, "test_room"), mock_config_entry.entry_id
+    ) is not None
 
 
 # ---------------------------------------------------------------------------

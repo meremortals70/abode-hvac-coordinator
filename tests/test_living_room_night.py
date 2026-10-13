@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from freezegun import freeze_time
 from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.const import ATTR_ENTITY_ID
@@ -601,14 +602,39 @@ async def test_a_sensor_reporting_the_same_value_for_hours_is_still_read(
     """03:32-06:00: the room's temperature did not change, and at 05:33 the
     room was left with no reading for 27 minutes."""
     coordinator = await _setup(hass, mock_config_entry, temperature="23.7")
-    freezer.tick(INDOOR_TOLERANCE + timedelta(hours=1))
+    freezer.tick(timedelta(hours=3))
     hass.states.async_set("sensor.test_temperature", "23.7")
     assert coordinator._number("sensor.test_temperature") == 23.7  # type: ignore[attr-defined]
 
 
-async def test_a_sensor_that_has_gone_silent_is_still_caught(
+# ---------------------------------------------------------------------------
+# DR-070 - a room sensor that reports only on change is trusted until it is
+# unavailable
+# ---------------------------------------------------------------------------
+
+
+async def test_a_room_sensor_silent_for_hours_is_still_read(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, freezer
 ) -> None:
-    coordinator = await _setup(hass, mock_config_entry, temperature="23.7")
-    freezer.tick(INDOOR_TOLERANCE + timedelta(hours=1))
+    """13 October: the living room's Eve Room reported at 17:42 and next at
+    21:05, because the room did not change. The room was left with no
+    reading and its air conditioner idle."""
+    coordinator = await _setup(hass, mock_config_entry, temperature="25.8")
+    assert INDOOR_TOLERANCE is None
+    freezer.tick(timedelta(hours=3, minutes=23))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator._number("sensor.test_temperature") == 25.8  # type: ignore[attr-defined]
+    assert coordinator._number("sensor.test_humidity") is not None  # type: ignore[attr-defined]
+    trace = coordinator.data["test_room"]
+    assert trace.stale_feeds == []
+    assert trace.hci is not None
+
+
+@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+async def test_a_room_sensor_that_is_unavailable_is_no_reading(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, state: str
+) -> None:
+    coordinator = await _setup(hass, mock_config_entry, temperature="25.8")
+    hass.states.async_set("sensor.test_temperature", state)
     assert coordinator._number("sensor.test_temperature") is None  # type: ignore[attr-defined]

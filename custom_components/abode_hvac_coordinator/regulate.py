@@ -119,6 +119,14 @@ DEFAULT_STEP_C = 0.1
 MIN_RUN = timedelta(minutes=10)
 MIN_OFF = timedelta(minutes=5)
 
+#: 0.9.6, DR-075. How far the rate the unit must supply has to go past zero,
+#: in degrees per hour, before the room loop changes the way it works. Until
+#: 0.9.6 the way was taken from the room against its target, so a room 0.1 C
+#: either side of it swung the setpoint between 18 and 23 C (living room,
+#: 13 October). 0.5 C per hour is a room about a quarter of a degree past its
+#: target with nothing else moving it. Judgement, not measurement.
+DIRECTION_MARGIN_C_PER_HOUR = 0.5
+
 
 @dataclass(slots=True)
 class RegulatorState:
@@ -157,6 +165,9 @@ class RegulatorState:
     room_c: float | None = None
     room_at: datetime | None = None
     room_rate_c_per_hour: float = 0.0
+    #: 0.9.6, DR-075. The way the room loop last worked, "cool" or "heat",
+    #: so it changes only once the room has clearly gone past its target.
+    pid_direction: str | None = None
 
     def trim_for(self, direction: str) -> float:
         """The trim that applies to a direction of travel."""
@@ -464,6 +475,8 @@ class PidSetpoint:
     wanted_rate_c_per_hour: float
     unit_rate_c_per_hour: float
     reason: str
+    #: 0.9.6, DR-075. The way the loop is working this cycle.
+    direction: str = "cool"
 
 
 def pid_setpoint(
@@ -484,6 +497,14 @@ def pid_setpoint(
     Returns None where the loop cannot be built from what is known - no
     drift estimate, or no usable learned curve - and the caller falls back to
     the solved target plus the trim. An unconverged coefficient is not a zero.
+
+    0.9.6, DR-075. `direction` is only where the loop starts. The way it
+    works is decided by the rate the unit must supply - the room's drift
+    against the rate it is asked to move at - and changes only once that
+    has gone `DIRECTION_MARGIN_C_PER_HOUR` the other way. Until 0.9.6 it
+    followed the room against its target, so the term that holds the room
+    against its drift dropped from about 1 C to nothing as the room crossed
+    the target by a tenth of a degree.
     """
     if direction not in ("cool", "heat"):
         return None
@@ -495,12 +516,20 @@ def pid_setpoint(
     wanted = -led_error / ARRIVAL_HOURS  # degrees per hour, toward target
 
     # The unit has to supply what the room is asked to do, less what the room
-    # does by itself. For cooling that is a negative rate; magnitude and sign
-    # are handled here once so the learned curve only ever sees a magnitude.
-    if direction == "cool":
-        needed = drift_c_per_hour - wanted
+    # does by itself. Positive: cooling is needed. The learned curve only
+    # ever sees a magnitude.
+    cooling_needed = drift_c_per_hour - wanted
+    previous = state.pid_direction or direction
+    if previous == "cool":
+        direction = (
+            "heat" if cooling_needed < -DIRECTION_MARGIN_C_PER_HOUR else "cool"
+        )
     else:
-        needed = wanted - drift_c_per_hour
+        direction = (
+            "cool" if cooling_needed > DIRECTION_MARGIN_C_PER_HOUR else "heat"
+        )
+    state.pid_direction = direction
+    needed = cooling_needed if direction == "cool" else -cooling_needed
 
     hold = 0.0
     if drift_c_per_hour != 0.0:
@@ -531,6 +560,7 @@ def pid_setpoint(
         feed_forward_c=round(hold, 2),
         wanted_rate_c_per_hour=round(wanted, 2),
         unit_rate_c_per_hour=round(max(needed, 0.0), 2),
+        direction=direction,
         reason=(
             f"regulation: asking {approach:.1f} C {'below' if direction == 'cool' else 'above'} "
             f"the room (holds {hold:.1f}, closes {error:+.1f} C in "

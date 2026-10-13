@@ -10,6 +10,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from freezegun import freeze_time
 from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -100,6 +101,54 @@ async def test_clear_override_puts_an_empty_room_back_to_unoccupied(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
     await hass.async_block_till_done()
     assert coordinator.data["test_room"].mode is Mode.UNOCCUPIED
+
+
+async def test_heading_home_ends_once_the_room_is_occupied(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.9.6, DR-080. Until 0.9.6 only clear_override ended one, and the room
+    stayed in Precondition, overriding presence, until then."""
+    coordinator = await _loaded(hass, mock_config_entry, presence="off")
+    await hass.services.async_call(
+        DOMAIN, SERVICE_HEADING_HOME, {ATTR_ROOM_ID: "test_room"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert "test_room" in coordinator._heading_home
+    hass.states.async_set("binary_sensor.test_presence", "on")
+    start = dt_util.utcnow()
+    for minutes in (1, 3, 5):
+        with freeze_time(start + timedelta(minutes=minutes)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+    assert "test_room" not in coordinator._heading_home
+    trace = coordinator.data["test_room"]
+    assert trace.mode is not Mode.PRECONDITION
+
+    # Leaving again turns the room off, as for any room.
+    hass.states.async_set("binary_sensor.test_presence", "off")
+    for minutes in range(6, 30):
+        with freeze_time(start + timedelta(minutes=minutes)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+    assert coordinator.data["test_room"].mode is Mode.UNOCCUPIED
+
+
+async def test_heading_home_ends_an_hour_past_its_deadline(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    coordinator = await _loaded(hass, mock_config_entry, presence="off")
+    deadline = dt_util.utcnow() + timedelta(minutes=20)
+    coordinator.async_request_heading_home("test_room", deadline)
+    with freeze_time(deadline + timedelta(minutes=59)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert coordinator.data["test_room"].mode is Mode.PRECONDITION
+    with freeze_time(deadline + timedelta(minutes=61)):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    trace = coordinator.data["test_room"]
+    assert trace.mode is Mode.UNOCCUPIED
+    assert any("an hour past its deadline" in r for r in trace.reasons)
 
 
 @pytest.mark.parametrize("service", [SERVICE_HEADING_HOME, SERVICE_CLEAR_OVERRIDE])
