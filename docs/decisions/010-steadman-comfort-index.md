@@ -34,7 +34,7 @@ opinion; `docs/known-limitations.md` says so.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `hci.py:162` - `comfort_index` - the indoor index
 - `hci.py:219` - `apparent_temperature` - the outdoor form, with wind

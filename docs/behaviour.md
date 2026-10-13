@@ -60,7 +60,8 @@ decision follows and not a state the running integration reaches.
 ### The warnings
 
 Where the room has announcements on and media players to announce through (the
-same two settings the empty-room warnings use), an open window or door is
+same two settings the empty-room warnings use), spoken through the house's
+text-to-speech engine (DR-069), an open window or door is
 announced twice, once each however long it stays open:
 
 - **A first warning** one warning grace before the stop. The warning grace is

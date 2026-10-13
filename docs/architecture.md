@@ -427,9 +427,10 @@ than run the compressor.
 | A reading's age is measured from when it was last reported | Built, tested. New in 0.9.3 (DR-066) |
 | The power budget measures the rest of the house, averages its readings over fifteen minutes, and holds a running room ten minutes before turning it off | Built, tested. New in 0.9.4 (DR-067) |
 | A room's occupancy is kept across a restart | Built, tested. New in 0.9.4 (DR-068) |
+| Spoken warnings through one text-to-speech engine; a failed warning never stops an evaluation | Built, tested. New in 0.9.5 (DR-069). Before it no warning was ever spoken |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.4 it is 940 tests (608 over the pure modules),
+pure modules. At 0.9.5 it is 945 tests (609 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two

@@ -40,7 +40,7 @@ forever.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `modes.py:441` - `select_actuator` - the ordering
 - `modes.py:562-569` - `cover_position is None` - unknown position skips covers

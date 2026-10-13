@@ -36,7 +36,7 @@ At most five minutes of learning is lost to a crash.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `store.py:104` - `def _schedule_learned_save` - one pending save
 - `store.py:116` - `def _save_choice_soon` - choices within five seconds

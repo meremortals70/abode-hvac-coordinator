@@ -45,12 +45,12 @@ commanded setpoint is held at the room's own reading.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms**, as amended by DR-062 and DR-063 and DR-067. Precool was rationed in 0.8.12; the
+Checked against: 0.9.5. **Conforms**, as amended by DR-062 and DR-063 and DR-067. Precool was rationed in 0.8.12; the
 exemption was added in 0.8.13.
 
 - `power.py:99` - `allowable_draw_kw` - the allowance
 - `power.py:135` - `ceiling_bin` - the most permissive bin that fits
-- `coordinator.py:3139` - `_power_ceiling` - the ceiling
-- `coordinator.py:3186-3192` - `Mode.PRECOOL` - precool is not rationed
-- `coordinator.py:3334-3350` - `bin_index is None` - floor at 0.0 C under guidance; off under enforced (DR-063) once the shortfall has lasted ten minutes (DR-067)
+- `coordinator.py:3213` - `_power_ceiling` - the ceiling
+- `coordinator.py:3260-3266` - `Mode.PRECOOL` - precool is not rationed
+- `coordinator.py:3408-3424` - `bin_index is None` - floor at 0.0 C under guidance; off under enforced (DR-063) once the shortfall has lasted ten minutes (DR-067)
 - `power.py:216-229` - `held_setpoint` - the clamp

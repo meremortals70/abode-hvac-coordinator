@@ -49,10 +49,10 @@ approach, not every cycle, to avoid the 0.8.3 anchor fault.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `thermal.py:90` - `BIN_NAMES` - the four bins
 - `thermal.py:116` - `approach_bin` - binning
 - `thermal.py:814` - `DrawModel` - learned draw per group
-- `coordinator.py:2315` - `_process_draw_candidates` - house-load steps
+- `coordinator.py:2389` - `_process_draw_candidates` - house-load steps
 - `forecast.py:46` - `ASSUMED_UNIT_KW` - fallback without a house-load sensor

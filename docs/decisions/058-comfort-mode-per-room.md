@@ -75,7 +75,7 @@ this control by the instruction above, as it was for DR-049 and DR-050.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `models.py:32` - `class ComfortMode` - Schedule, Sleep, Awake
 - `modes.py:56` - `def sleeping` - the one answer to "is the room sleeping"
@@ -83,12 +83,12 @@ Checked against: 0.9.4. **Conforms.**
 - `modes.py:84` - `def comfort_mode_after` - empty ends both; the schedule turning off ends Awake
 - `modes.py:120` - `def comfort_mode_refused` - Sleep or Awake refused in an empty room
 - `modes.py:138` - `asleep = sleeping(inputs.comfort_mode, inputs.sleep_schedule_active)` - the mode decision
-- `coordinator.py:2137` - `def _sleeping` - the coordinator's band lookups
-- `coordinator.py:2145` - `return sleeping(` - the same answer as the mode decision
-- `coordinator.py:1834` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the cheaper-tariff wait
-- `coordinator.py:2639` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the unaided-return projection
-- `coordinator.py:2516` - `self._update_comfort_mode(room, presence)` - settled before anything asks
-- `coordinator.py:1236` - `def _update_comfort_mode` - ends the choice and says why
-- `coordinator.py:570` - `_comfort_modes_from_store(` - read from the store before the first evaluation
+- `coordinator.py:2146` - `def _sleeping` - the coordinator's band lookups
+- `coordinator.py:2154` - `return sleeping(` - the same answer as the mode decision
+- `coordinator.py:1843` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the cheaper-tariff wait
+- `coordinator.py:2713` - `band = room.band_for(Mode.SLEEP if self._sleeping` - the unaided-return projection
+- `coordinator.py:2590` - `self._update_comfort_mode(room, presence)` - settled before anything asks
+- `coordinator.py:1245` - `def _update_comfort_mode` - ends the choice and says why
+- `coordinator.py:579` - `_comfort_modes_from_store(` - read from the store before the first evaluation
 - `store.py:205` - `def set_comfort_mode` - kept across restarts
 - `select.py:134` - `class RoomComfortModeSelect` - always available, always writable

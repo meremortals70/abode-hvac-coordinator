@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; supersedes DR-019 |
+| Status | Accepted; supersedes DR-019; amended by DR-069 in 0.9.5 |
 | Since | 0.9.0 (2026-10-03) |
 | Origin | Instruction, 2026-10-03: the aircon turns off when a door is opened, with no grace period or announcement; "the grace should be five minutes" |
 | Related | DR-016, DR-017, DR-019, DR-045 |
@@ -44,11 +44,11 @@ decision and not a state the running component reaches.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms**, as amended by DR-069.
 
 - `modes.py:277` - `DEFAULT_OPENING_GRACE_MINUTES` - five minutes
 - `modes.py:464` - `if inputs.opening_open:` - hold, then off
 - `grace.py:237` - `def evaluate_opening_warnings` - the first and final warnings, once each
-- `coordinator.py:3504` - `def _warn_about_opening` - queues the warnings for the room's announce targets
+- `coordinator.py:3578` - `def _warn_about_opening` - queues the warnings for the room's announce targets
 - `forms.py:127` - `def opening_grace_from_input` - the room form's grace, five where blank
 - `config_flow.py:53` - `CONF_OPENING_GRACE` - the field on the room form

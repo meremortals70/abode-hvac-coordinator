@@ -183,9 +183,15 @@ controller will not move them on a guess.
 
 ## Announcements are text-to-speech only
 
-The announcement before shutting a room down calls `tts.speak` at the media
-players you choose. There is no notification option, no choice of voice, and no
-way to change the wording without editing the source.
+A warning is spoken through `tts.speak`, with the house's text-to-speech engine
+and the room's own speakers. There is no notification option, no choice of
+voice beyond the engine, and no way to change the wording without editing the
+source.
+
+Before 0.9.5 the call sent the speakers as the target. Home Assistant rejects
+that, so no warning was ever spoken, and each rejected call stopped the rest of
+that evaluation (DR-069). The tests before 0.9.5 used a mock `tts.speak` with no
+schema and passed regardless; they now validate against Home Assistant's own.
 
 ## The comfort index is one opinion
 

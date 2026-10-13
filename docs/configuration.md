@@ -45,7 +45,7 @@ Nothing. Creating the integration takes no settings. One instance only.
 | Wait before stopping | Seeded | 10 minutes. The answering-the-door allowance |
 | Warn before shutting down | Seeded | 3 minutes between the two announcements |
 | Announce before shutting down | No | Off. A house should not start talking uninvited |
-| Announce through | No | Media players. Without any, neither the shutdown warnings nor the free-cooling advisory is announced. With it set, free cooling is announced regardless of the shutdown toggle above |
+| Announce through | No | Media players, spoken through the house's text-to-speech engine (see [Spoken warnings](#spoken-warnings)). Without any, neither the shutdown warnings nor the free-cooling advisory is announced. With it set, free cooling is announced regardless of the shutdown toggle above |
 | Lockout | No | Room actuates normally |
 
 The room id is derived from the room name. Adding a room whose name produces an
@@ -175,6 +175,15 @@ it there is no advice rather than advice you cannot trust.
 Wind is converted from whatever unit your sensor reports. See
 [Free cooling](free-cooling.md).
 
+### Spoken warnings
+
+One field: the text-to-speech engine every room's warnings are spoken through
+(0.9.5, DR-069), for example Home Assistant Cloud or Google Translate. Each room
+chooses its own speakers under **Announce through**. Left empty, the only engine
+Home Assistant has is used. Where there is more than one and none is chosen, no
+warning is spoken, and a repair issue says so; the rooms are still controlled
+as normal.
+
 ### Power
 
 Optional fields, all off by default: battery state-of-charge entity,
@@ -248,8 +257,8 @@ Two places, neither of which requires opening a form:
 
 **The Configure menu** splits into **Rooms** and **Global configuration**, and
 each screen prints everything currently set on it before you choose anything.
-Global configuration covers the tariff entry, outdoor feeds, weather forecast
-and power — none of which belongs to a room.
+Global configuration covers the tariff entry, outdoor feeds, weather forecast,
+power and the spoken-warning engine — none of which belongs to a room.
 
 **Each room's device** carries a **Settings** sensor whose attributes are that
 room's entire configuration, with anything unset stated as "Nothing selected"

@@ -43,9 +43,9 @@ that has been learned (DR-060).
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `modes.py:636` - `def coast_step` - dry where the room's humidity calls for it, otherwise fan, otherwise off
 - `modes.py:677` - `route = _latent_route(judged, overshoot, scratch)` - the same test as dry versus cool
 - `modes.py:671` - `inputs.rebound_relative_humidity > inputs.relative_humidity` - judged after the rebound
-- `coordinator.py:1653` - `if self._capabilities(room)["can_fan_only"]` - a refused restart stays on the fan
+- `coordinator.py:1662` - `if self._capabilities(room)["can_fan_only"]` - a refused restart stays on the fan

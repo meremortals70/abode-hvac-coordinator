@@ -14,7 +14,7 @@ ordering â€” including which conditions stop the unit and which leave it alone â
 tariff windows and constraint handling, setpoint clamping, the setup form
 helpers, the seeded band defaults and lockout reason handling.
 
-940 tests in total across the pure and Home Assistant suites at 0.9.4, run
+945 tests in total across the pure and Home Assistant suites at 0.9.5, run
 against Home Assistant 2026.8.3 on Python 3.14.6. Every module is covered to
 98% or better, and the config flow to 100%, as the quality scale asks. That number is only meaningful
 alongside the version they ran against. Say which every time, and report a run
@@ -28,11 +28,17 @@ passed against the code they were written to catch.
 The Home Assistant surface tests need the test harness:
 
 ```
-pip install pytest-homeassistant-custom-component
+pip install pytest-homeassistant-custom-component mutagen==1.48.1 ha-ffmpeg==3.2.2
 pytest tests
 ```
 
-**Those have never been run.** They are written, not verified.
+The spoken-warning tests set up Home Assistant's own `tts` integration so that
+every `tts.speak` call is checked against its real schema (DR-069). `tts`
+needs `mutagen` and `ffmpeg` needs `ha-ffmpeg`, at the versions their
+manifests pin for Home Assistant 2026.8.3.
+
+CI runs the whole suite on every push and pull request to `main`, against Home
+Assistant 2026.8.3 on Python 3.14.
 
 ## Linting and typing
 

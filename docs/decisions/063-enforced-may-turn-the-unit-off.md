@@ -36,9 +36,9 @@ DR-044 still holds: missing power data never stops a unit.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms**, as amended by DR-067.
+Checked against: 0.9.5. **Conforms**, as amended by DR-067.
 
-- `coordinator.py:3293` - `enforced = room.power_management == POWER_MANAGEMENT_ENFORCED` - the setting decides
-- `coordinator.py:3348` - `"off until the budget allows it"` - enforced turns the unit off
-- `coordinator.py:3351` - `trace.power_ceiling_c = 0.0` - guidance reports only
-- `coordinator.py:3363` - `"room while it coasts"` - a coasting room the budget affords is left alone
+- `coordinator.py:3367` - `enforced = room.power_management == POWER_MANAGEMENT_ENFORCED` - the setting decides
+- `coordinator.py:3422` - `"off until the budget allows it"` - enforced turns the unit off
+- `coordinator.py:3425` - `trace.power_ceiling_c = 0.0` - guidance reports only
+- `coordinator.py:3437` - `"room while it coasts"` - a coasting room the budget affords is left alone

@@ -35,9 +35,9 @@ constants are judgement figures, listed in known limitations.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms**, as amended by DR-067.
+Checked against: 0.9.5. **Conforms**, as amended by DR-067.
 
 - `power.py:444` - `def held_ceiling_bin` - down at once, up when clear
 - `power.py:437` - `BIN_RAISE_HOLD = timedelta(minutes=10)` - the hold
 - `power.py:432` - `BIN_RAISE_MARGIN_KW = 0.3` - the margin
-- `coordinator.py:3286` - `bin_index = held_ceiling_bin(` - used in the budget
+- `coordinator.py:3360` - `bin_index = held_ceiling_bin(` - used in the budget

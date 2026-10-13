@@ -20,6 +20,7 @@ Check `actuator` on the mode sensor. `rejected` says why.
 | `coasting, model predicts the band holds; this unit has no fan-only mode, so it is off` | A unit with no fan-only mode coasts off. One that has it is left on its fan and is not in this list |
 | `humidity is high, so the unit dries rather than blowing over a wet coil` | The room is coasting in dry mode (DR-059). Working as designed |
 | `the unit has just been cooling and this room has not yet learned how much moisture comes back off the coil…` | The weather coast is held back until the room has learned its rebound (DR-060). It learns from the in-band coasts, which still happen |
+| Repair issue: Spoken warnings cannot be given | No text-to-speech engine is chosen and there is not exactly one, or the chosen one has gone. Choose one under Configure → House configuration → Spoken warnings. Rooms are controlled as normal meanwhile (DR-069) |
 | `held at the gentlest setting, and off at HH:MM unless it recovers` | The budget has fallen short. The room keeps running gently and is turned off at that time unless the budget recovers (DR-067) |
 | `enforced, so the unit is off until the budget allows it` | The room's power management is enforced and the battery, with the forecast sun, cannot carry even holding the room (DR-063). Set the room to guidance to keep it running |
 | `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |

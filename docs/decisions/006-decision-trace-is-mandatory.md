@@ -32,7 +32,7 @@ its own decision.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `models.py:341` - `DecisionTrace` - the trace
 - `models.py:446` - `as_attributes` - what is published

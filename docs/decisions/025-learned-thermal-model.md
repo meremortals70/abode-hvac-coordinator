@@ -44,9 +44,9 @@ any change to the learning cadence has to be checked against that.
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms**, as amended by DR-060.
+Checked against: 0.9.5. **Conforms**, as amended by DR-060.
 
 - `thermal.py:200` - `ThermalModel` - per room
 - `thermal.py:54` - `MIN_SAMPLES` - 20
 - `thermal.py:474-475` - `k_solar.converged` - unconverged solar returns None
-- `coordinator.py:2170` - `_compressor_direction` - `hvac_action` first
+- `coordinator.py:2244` - `_compressor_direction` - `hvac_action` first

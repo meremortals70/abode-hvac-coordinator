@@ -33,7 +33,7 @@ decided per room by the occupant (DR-041).
 
 ## In the code
 
-Checked against: 0.9.4. **Conforms.**
+Checked against: 0.9.5. **Conforms.**
 
 - `tariff.py:33` - `KNOWN_CONSTRAINTS` - the recognised set
 - `coordinator.py:1028-1040` - `ISSUE_UNRECOGNISED_CONSTRAINT` - unknown ones reported
