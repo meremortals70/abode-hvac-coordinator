@@ -32,8 +32,8 @@ The horizon is the same one hour the coast test trusts, never further.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `tariff.py:294` - `cheaper_interval_ahead` - the next cheaper interval
-- `coordinator.py:1881` - `_cheaper_window_imminent` - holds until then
-- `modes.py:217-231` - `cheaper_window_imminent` - gated on coasting being permitted
+- `coordinator.py:2058` - `_cheaper_window_imminent` - holds until then
+- `modes.py:156-170` - `cheaper_window_imminent` - gated on coasting being permitted

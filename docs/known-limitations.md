@@ -247,7 +247,7 @@ planned and an enforced room is turned off later in the window than it would
 have been. Sun beyond what the house uses and the battery can store is not
 counted: energy exported in one hour does not pay for a later one.
 
-## Twelve 0.9.3 to 0.9.6 figures are judgement, not measurement
+## Twenty 0.9.3 to 0.9.7 figures are judgement, not measurement
 
 | Figure | Value | What it does |
 |---|---|---|
@@ -263,11 +263,24 @@ counted: energy exported in one hour does not pay for a later one.
 | `DRY_FALLBACK_HYSTERESIS_RH` | 3 points | How far the 65% dry line moves away from the route the unit is on (DR-076) |
 | `DRY_ROUTE_HYSTERESIS` | 1.15 | The same for the learned comparison (DR-076) |
 | `DRY_FALLBACK_MAX_OVERSHOOT_HCI` | 2.0 HCI | Beyond it an unconverged room is cooled whatever the humidity (DR-076) |
+| `RATE_WINDOW` | 15 minutes | How far back the room loop's rate of change is taken from (DR-086) |
+| `QUANTISE_DEADBAND_STEPS` | 0.75 step | How far the loop must move before a new setpoint is sent (DR-086) |
+| `ROUTE_HOLD` | 20 minutes | How long a route, once chosen, is kept (DR-090) |
+| `FALLBACK_DIRECTION_MARGIN_C` | 0.5 C | How far past its target a room must go before the fallback loop turns round (DR-094) |
+| `SENSOR_OFFSET_HOURS` | 30 minutes | How quickly the measured difference between the unit's sensor and the room's follows a change (DR-095) |
+| `MAX_SENSOR_OFFSET_C` | 4 C | The largest such difference believed (DR-095) |
+| `INTEGRATE_WITHIN_C` | 1 C | Outside its band, how close to target a room must be before the trim is learned (DR-097) |
+| `COAST_AT_TARGET_HCI` | 0.25 HCI | How close to its target a room the unit is working on must come before it may coast (DR-098) |
 
 The rebound length is a judgement from one night in one room, where humidity
 rose four to six points in every fan phase (one, from 00:11 to 00:28 on 12
 October 2026, raised the dew point 2.5 C). Confidence that it suits other rooms and
 units: **60%**. The rate within it is learned per room; the length is not.
+
+The 0.9.7 figures were tested in simulation against a model room and a model
+split system, over three nights, an Office working day, a humid evening, a hot
+afternoon and a unit whose sensor reads 3 C low. The simulation is a model,
+not the house; only the live rooms confirm them.
 
 ## While a room runs, its budget does not see new loads in the house
 

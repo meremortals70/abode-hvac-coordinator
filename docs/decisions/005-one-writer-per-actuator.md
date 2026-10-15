@@ -33,7 +33,7 @@ cannot move energy.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.** The only write services called are climate, cover and TTS.
+Checked against: 0.9.7. **Conforms.** The only write services called are climate, cover and TTS.
 
 - `actuator.py:554` - `SERVICE_SET_HVAC_MODE` - climate writes
 - `actuator.py:358` - `_async_move_covers` - cover writes

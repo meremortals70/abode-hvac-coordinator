@@ -36,10 +36,10 @@ Setup at night on battery offers no default, because there is no flow to read.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `config_flow.py:1005` - `async_step_power_grid_sign` - settled at setup
 - `power.py:72` - `implied_sign` - the offered default
 - `power.py:59` - `NO_FLOW_BELOW_W` - zero is no evidence
-- `coordinator.py:3269` - `_check_grid_sign` - contradiction counted, never corrected
-- `coordinator.py:295` - `_GRID_SIGN_DISAGREEMENT_THRESHOLD` - ten in a row
+- `coordinator.py:3482` - `_check_grid_sign` - contradiction counted, never corrected
+- `coordinator.py:301` - `_GRID_SIGN_DISAGREEMENT_THRESHOLD` - ten in a row

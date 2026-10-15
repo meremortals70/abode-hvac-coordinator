@@ -32,7 +32,7 @@ Without a weather entity, the instantaneous reading is used unchanged.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-061 and DR-067.
+Checked against: 0.9.7. **Conforms**, as amended by DR-061 and DR-067.
 
 - `power.py:149` - `solar_offset_kw` - the split
-- `coordinator.py:3360` - `_sustained_solar_kw` - the derating, used where no solar forecast is read (DR-061)
+- `coordinator.py:3573` - `_sustained_solar_kw` - the derating, used where no solar forecast is read (DR-061)

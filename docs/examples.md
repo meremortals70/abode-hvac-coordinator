@@ -18,6 +18,33 @@ actions:
       room_id: office
 ```
 
+## Leaving a room
+
+A script that presses the room's Leave button (DR-088) along with the rest of
+leaving. The Leave button keeps the air conditioning off until someone comes
+back; a scene that turned the unit off would be undone at the next evaluation.
+The entity ids below are examples: use your own.
+
+```yaml
+alias: Leave Office
+sequence:
+  - action: button.press
+    target:
+      entity_id: button.office_leave
+  - action: light.turn_off
+    target:
+      entity_id:
+        - light.office_work
+        - light.office_desk
+  - action: media_player.media_pause
+    target:
+      entity_id: media_player.office_ray
+  - action: lock.lock
+    target:
+      entity_id: lock.office_door
+mode: single
+```
+
 ## Heading home from a phone shortcut
 
 ```yaml

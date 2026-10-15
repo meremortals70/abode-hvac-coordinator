@@ -47,7 +47,8 @@ make: a unit with no horizontal vane has no horizontal vane control. (DR-049)
 
 | Entity | What it is |
 |---|---|
-| `switch.<room>_automatic_control` | On is the normal state. Off stops the automation: the coordinator sends the room nothing and the unit is left exactly as it is, running or not |
+| `switch.<room>_automatic_control` | On is the normal state. Switching it off turns the unit off once (DR-089); after that the coordinator sends the room nothing, and a unit you turn on by hand is yours |
+| `button.<room>_leave` | Turns the room's air conditioning off at once and keeps it off until someone comes back (DR-088) |
 | `switch.<room>_automatic_vane_control` | On is the normal state. Off, the coordinator never sends the room a vane command and the vane controls are yours at any time |
 | `select.<room>_mode` | The unit's mode |
 | `select.<room>_fan_speed` | The unit's fan speed |

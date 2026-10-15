@@ -437,13 +437,29 @@ than run the compressor.
 | Dry or cool holds its route; an unconverged room well above band is cooled | Built, tested. New in 0.9.6 (DR-076) |
 | A warning is said only when it is true | Built, tested. New in 0.9.6 (DR-077) |
 | Dry mode is sent with the room's setpoint and held to it | Built, tested. New in 0.9.6 (DR-078) |
-| Sleep chosen by hand ends when the sleep schedule finishes, or at sunrise | Built, tested. New in 0.9.6 (DR-079) |
+| Sleep chosen by hand ends when the sleep schedule finishes, or at sunrise | Removed in 0.9.7: superseded by DR-083 (DR-079) |
 | A heading-home request ends once the room is occupied, or an hour after its deadline | Built, tested. New in 0.9.6 (DR-080) |
 | The model learns against the setpoint the unit reports | Built, tested. New in 0.9.6 (DR-081) |
 | An empty room waits for its warning only where a warning can be said | Built, tested. New in 0.9.6 (DR-082) |
+| A Comfort mode chosen by the owner stays until the owner changes it | Built, tested. New in 0.9.7 (DR-083) |
+| A change of band ramps across the whole hour | Built, tested. New in 0.9.7 (DR-084) |
+| A room coming out of Sleep is not heated up to its daytime band | Built, tested. New in 0.9.7 (DR-085) |
+| The room loop's rate is a 15-minute trend; a setpoint sent stands through three quarters of a step | Built, tested. New in 0.9.7 (DR-086) |
+| Presence and door or window sensors have no age limit | Built, tested. New in 0.9.7 (DR-087) |
+| Each room has a Leave button | Built, tested. New in 0.9.7 (DR-088) |
+| Switching Automatic control off turns the unit off, once | Built, tested. New in 0.9.7 (DR-089) |
+| A route, once chosen, is kept for 20 minutes, and the comparison is not moved by the component's own command | Built, tested. New in 0.9.7 (DR-090) |
+| Inside its band, a unit leaves a mode whose reason has passed | Built, tested. New in 0.9.7 (DR-091) |
+| The evaluation that sees a band change decides knowing it | Built, tested. New in 0.9.7 (DR-092) |
+| A coast after heating does not dry | Built, tested. New in 0.9.7 (DR-093) |
+| The fallback loop changes direction only half a degree past its target | Built, tested. New in 0.9.7 (DR-094) |
+| The unit's own sensor is measured against the room's and allowed for | Built, tested. New in 0.9.7 (DR-095) |
+| The power trace says "no limit" where there is none | Built, tested. New in 0.9.7 (DR-096) |
+| Inside its band the unit's thermostat holds the target, and the trim is learned there | Built, tested. New in 0.9.7 (DR-097) |
+| A room the unit is working on coasts only once it reaches its target | Built, tested. New in 0.9.7 (DR-098) |
 
 Since 0.8.6 the whole suite runs against a real Home Assistant, not only the
-pure modules. At 0.9.6 it is 995 tests (627 over the pure modules),
+pure modules. At 0.9.7 it is 1052 tests (676 over the pure modules),
 run against Home Assistant 2026.8.3, the version this integration targets, on
 Python 3.14. Until 0.8.14 the build sandbox could only reach Home Assistant
 2025.1.4 on Python 3.12, and running the suite for the first time found two

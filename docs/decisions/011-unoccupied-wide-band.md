@@ -28,6 +28,6 @@ a restart takes (DR-025), the reason for it was gone.
 
 ## In the code
 
-Checked against: 0.9.6. **Superseded; no remnant.** Unoccupied has no band.
+Checked against: 0.9.7. **Superseded; no remnant.** Unoccupied has no band.
 
 - `const.py:235` - `DEFAULT_BANDS` - no unoccupied entry

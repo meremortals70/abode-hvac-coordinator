@@ -32,8 +32,8 @@ hardware (finding 20).
 
 ## In the code
 
-Checked against: 0.9.6. **Superseded; no remnant.** The dead refusal
+Checked against: 0.9.7. **Superseded; no remnant.** The dead refusal
 branches and the `power_available` field were removed in 0.8.13.
 
-- `modes.py:658` - `compressor: heating` - heating reaches the compressor with no power check
-- `modes.py:704` - `compressor: cooling` - cooling likewise
+- `modes.py:639` - `compressor: heating` - heating reaches the compressor with no power check
+- `modes.py:697` - `compressor: cooling` - cooling likewise

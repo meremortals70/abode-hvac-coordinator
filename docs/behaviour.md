@@ -87,6 +87,14 @@ evaluation, at least every 30 seconds and immediately on any sensor change.
 **It starts** when the thermal model predicts the room stays inside its band
 unaided for the next hour, and the tariff window permits coasting.
 
+**A room the unit is working on coasts only at its target (0.9.7, DR-098).**
+While the unit is cooling, drying or heating, the room keeps it working until
+its comfort index is within 0.25 of the middle of its band. Until 0.9.7 it
+coasted as soon as it was anywhere inside the band: the compressor stopped at
+the band's edge, the room was back above it within a quarter of an hour, and
+the unit restarted at its coldest setpoint, seven or eight times a night in
+simulation.
+
 **It stops** the moment any of those stops being true:
 
 - the model no longer predicts the band holds
@@ -122,7 +130,14 @@ drying, judged by the same test that chooses dry over cool, a coasting unit is
 put in dry mode rather than blowing the room's air over a wet coil. The humidity
 judged is the humidity the room will reach once the coil has given its water
 back, where the room has learned that. A restart the short-cycle guard refuses
-leaves the unit on its fan, not off. (DR-059)
+leaves the unit on its fan, not off. (DR-059) After heating there is no wet
+coil, so a coast after heating goes to the fan (0.9.7, DR-093). Dry or fan,
+once chosen, is kept for 20 minutes (DR-090).
+
+**Inside the band, a unit leaves a mode whose reason has passed (0.9.7,
+DR-091).** A unit heating a room that is at or above the middle of its band goes
+to its fan. A unit drying when the room no longer calls for it goes back to
+cooling at the room's setpoint.
 
 **The coil's water is counted before a coast.** For fifteen minutes after the
 compressor stops, the room's humidity rises as water comes back off the coil.
@@ -184,6 +199,22 @@ Because the compressor decision and the occupancy decision are the same
 decision. An external automation calling `climate.turn_off` fights the
 controller: the controller re-evaluates 30 seconds later and turns it back on,
 because as far as it knows the room is occupied and out of band.
+
+## You leave the room: the Leave button
+
+Each room has a **Leave** button (0.9.7, DR-088). Pressing it turns the room's
+air conditioning off at once, without waiting out the minimum run, and keeps it
+off until someone comes back: the presence sensor reading empty and then
+occupied again. A presence sensor that has not yet seen you go does not bring
+it back on. Changing the room's Automatic control, Comfort mode or a
+heading-home request also ends it. It survives a restart. A script can press it
+along with the lights and locks; see [Examples](examples.md).
+
+## Automatic control off
+
+Switching a room's Automatic control off turns its air conditioning off, once,
+straight away (0.9.7, DR-089). After that the component sends the unit nothing:
+turn it on by hand and it is yours until Automatic control is back on.
 
 ## A room becomes unoccupied
 
@@ -290,12 +321,20 @@ The band is instead **ramped across the transition over one hour**. The trace
 says how far through the ramp the room is and how long is left. The same
 applies waking up, in the other direction.
 
-**Sleep chosen by hand ends in the morning (0.9.6, DR-079).** A room's Comfort
-mode set to Sleep goes back to Schedule when the room's sleep schedule
-finishes, or, in a room with no sleep schedule, at sunrise. It also ends when
-the room reads empty, as before. Until 0.9.6 it ended only when the room read
-empty, so a room with no presence sensor stayed on Sleep until it was changed
-by hand.
+**A Comfort mode chosen by hand stays until you change it (0.9.7, DR-083).**
+Sleep or Awake stays until you choose another Comfort mode: not the sleep
+schedule, not sunrise, not an empty room. Schedule is the mode that follows the
+schedule. In 0.9.6 Sleep ended at sunrise (DR-079); on 15 October that put the
+living room on its daytime band at 05:12 and its unit into heat.
+
+**The ramp lasts the whole hour (0.9.7, DR-084),** and the evaluation that sees
+the change already knows it (DR-092). Until 0.9.7 the first evaluation after a
+change used the new band in full, and after one evaluation the band stepped.
+
+**A room coming out of Sleep is not heated up to its daytime band (0.9.7,
+DR-085).** It is below that band because it was cooled for sleep, and it warms
+by itself. Its unit is not left cooling either: it goes to its fan. This lasts
+until the ramp is over and the room is inside or above its daytime band.
 
 ## Heading home from four hours away
 

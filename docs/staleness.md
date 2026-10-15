@@ -42,8 +42,9 @@ a setting would mean asking a question nobody can answer.
 |---|---|---|
 | Room temperature and humidity | none (DR-070) | many report only when the reading changes; a steady room is legitimately quiet for hours. Only `unavailable` or `unknown` makes them absent |
 | Outdoor temperature and humidity | 3 hours | often a weather integration on a fifteen- or thirty-minute poll; has to clear a couple of misses |
-| Presence | 6 hours | an mmWave sensor in a room nobody enters legitimately says nothing for a long time |
-| Openings and covers | 26 hours | contact sensors are quiet by nature but heartbeat daily |
+| Presence | none (DR-087) | reports only on change; a room occupied all evening, or empty all day, is legitimately quiet |
+| Openings | none (DR-087) | a door shut all night is not a stale reading |
+| Covers | 26 hours | cover positions heartbeat daily |
 
 They are generous on purpose. This catches a feed that has died, not one that
 reports slowly.

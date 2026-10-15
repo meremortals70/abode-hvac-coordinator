@@ -36,10 +36,10 @@ for it. Until the rates converge at all, the threshold (DR-027) decides.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-076.
+Checked against: 0.9.7. **Conforms**, as amended by DR-076.
 
-- `modes.py:356` - `_latent_route` - both routes projected
-- `modes.py:307` - `DRY_MODE_ADVANTAGE` - 1.25
+- `modes.py:308` - `_latent_route` - both routes projected
+- `modes.py:246` - `DRY_MODE_ADVANTAGE` - 1.25
 - `thermal.py:333` - `_observe_rh_cooling` - measured humidity response
 - `thermal.py:519` - `sensible_rate_at` - the rate for this operating point
 - `hci.py:190` - `relative_humidity_at_constant_vapour_pressure` - the floor

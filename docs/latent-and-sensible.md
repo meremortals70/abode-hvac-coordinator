@@ -41,6 +41,21 @@ Cooling has to be **25% faster** to be chosen. Dry mode runs the compressor at
 lower duty for the same effect, so a near-tie goes to drying — cooling has to
 actually win, not merely draw.
 
+**The cooling rate is read at the room's target (0.9.7, DR-090).** The rate is
+learned per approach. It is looked up at the room's distance from its target,
+not from the unit's current setpoint: that setpoint is the one the component has
+just sent, so each command moved the comparison. On 15 October the cooling rate
+read 1.61, then 0.29 ten seconds after a command, and the living room changed
+between dry and cool thirteen times in 23 minutes.
+
+**A route, once chosen, is kept for 20 minutes (DR-090).** Drying or cooling a
+room above its band, or drying or the fan while it coasts, is reconsidered only
+after the unit has been in that mode for 20 minutes. A unit first seen after a
+restart carries no hold.
+
+**No drying after heating (DR-093).** A coast after heating goes to the fan:
+the coil is warm and dry, so there is no water to keep out of the room.
+
 ## Until the model converges
 
 `k_sensible` and `k_latent` each carry their own variance and sample count. An

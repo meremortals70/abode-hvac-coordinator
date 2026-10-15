@@ -32,8 +32,8 @@ its own decision.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `models.py:355` - `DecisionTrace` - the trace
-- `models.py:463` - `as_attributes` - what is published
+- `models.py:367` - `DecisionTrace` - the trace
+- `models.py:475` - `as_attributes` - what is published
 - `sensor.py:64` - `attributes_fn` - the mode sensor carries it

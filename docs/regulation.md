@@ -43,7 +43,7 @@ The setpoint is now built from four terms:
 |---|---|---|
 | Feed-forward | The approach that just cancels the room's predicted drift, so a room warming at 0.6 °C an hour is held by asking for exactly the effort that stands still against it | The learned loss and solar terms, and the learned rate against approach, read backwards (`approach_for_rate`) |
 | Proportional | The room is asked to close its error over **half an hour** | The same learned curve turns that rate into an approach |
-| Derivative, on the measurement | The error is led by **six minutes** of the room's own rate of change, so the setpoint eases off before the room reaches target and it arrives in band without overshoot | The room's filtered rate of change, updated only when the sensor reading actually moves |
+| Derivative, on the measurement | The error is led by **six minutes** of the room's own rate of change, so the setpoint eases off before the room reaches target and it arrives in band without overshoot | The trend of the room's readings over the last **15 minutes** (a least-squares slope), and no rate until five minutes are held (DR-086) |
 | Integral, **per direction** | Corrects the offset between the unit's sensor and the room's | One trim for cooling and one for heating |
 
 **The trim is per direction.** The offset between the unit's sensor and the
@@ -70,15 +70,38 @@ half a degree. Only the setpoint is sent, never a mode, never to a unit that is
 off, on its fan or drying, and never while an opening is being held for its
 grace. (DR-056)
 
+**Inside the band, the unit's own thermostat holds the target (0.9.7, DR-097).**
+The learned curve brings a room to its band. Inside the band the unit is given
+the room's target, plus the measured difference between its sensor and the
+room's, plus the trim, and its own thermostat holds it there. Used inside the
+band, the curve's feed-forward rested on the room's modelled drift; where that
+was overstated, the unit was asked for 2.2 °C below a room already below its
+target, and the simulated Office was cooled out of its band and then heated.
+
+**The unit's sensor is measured against the room's (0.9.7, DR-095).** While the
+unit's fan is moving room air, its own reading less the room's is filtered over
+half an hour and added to the setpoint the fallback and in-band forms send. The
+unit holds its own reading at the setpoint, so a unit reading 3 °C low is asked
+for 3 °C less. A difference over 4 °C is not believed. The learned curve already
+includes it.
+
+**A setpoint sent stands through three quarters of a step (0.9.7, DR-086).** A
+new setpoint is sent only once the loop's value has moved at least three
+quarters of the unit's step from the one already sent, so a value hovering at a
+half degree does not flip a whole-degree unit back and forth.
+
 **Where the room has not learned enough, nothing changes.** Until the drift and
 the rate against approach have both converged the loop sends the solved target
 plus the trim for the direction, which is exactly what it sent before. An
 unconverged coefficient is not a zero, and the loop does not pretend it is.
+From 0.9.7 this form also turns between cooling and heating only once the room
+is half a degree past its target (DR-094); before, it switched trims each time
+the room crossed it, 19 and 21 °C forty times in one simulated night.
 
 **The derivative term works on the measurement, never the error.** A sensor that
-reports every five or six minutes, as a presence sensor often does, is a
-staircase. The rate is updated only when the reading moves and decays between
-readings, so one step does not read as a rate.
+reports in steps, as the Eve Room does at 0.2 °C, is a staircase. The rate is
+the trend of every reading over the last 15 minutes, so one step does not read
+as a spike. (DR-086)
 
 ### The setpoint is rounded to what the unit can hold
 
@@ -107,11 +130,13 @@ most 24 seconds and whole degrees lasted for hours.
   step an error of 0.4 °C cannot be resolved, and chasing it would flip the
   setpoint by a degree. The room is regulated to within half a step of target.
 
-## Why an integrator and not a calibration offset
+## Why an integrator as well as a measured offset
 
-The obvious alternative is a measured per-room offset. It is wrong the day
-after you measure it: the offset that is right at full compressor is wrong at
-idle, and the one that is right in still air is wrong with the vanes swinging.
+A per-room offset measured once is wrong the day after you measure it: the
+offset that is right at full compressor is wrong at idle, and the one that is
+right in still air is wrong with the vanes swinging. From 0.9.7 the difference
+between the unit's sensor and the room's is measured continuously instead
+(DR-095), and the integrator corrects what that leaves.
 
 An integrator needs no calibration, adapts as conditions change, and converges
 on whatever the true offset is right now. What it costs is discipline.
@@ -122,6 +147,8 @@ on whatever the true offset is right now. What it costs is discipline.
 | 0.3 °C deadband, or half the unit's step if that is more | room sensors quantise at 0.1 and wander more than that with air movement alone, and a unit that holds whole degrees cannot resolve less than half a degree |
 | ±3 °C limit | beyond this the fault is not calibration. The unit is undersized, the sensor is misplaced, or a door is open — and winding further hides it |
 | No integration while the compressor is off | anti-windup, and the important one |
+| Outside the band, no integration more than 1 °C from target | the error of a pull-down is distance still to go, not a bias; a humid evening's pull-down wound the trim to −1.3 °C and the band was then held 1.3 °C cold for three hours (DR-097) |
+| Integration while the band is held by a working unit | until 0.9.7 the trim was frozen inside the band, so a bias there was never corrected (DR-097) |
 
 That last rule is why this is not a textbook PI loop. A room that is coasting,
 unoccupied, or held because a window is open has an error no actuator is

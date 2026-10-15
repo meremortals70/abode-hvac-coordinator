@@ -15,7 +15,7 @@ Check `actuator` on the mode sensor. `rejected` says why.
 | `room is in lockout` | A lockout reason is set. Clear it in Configure |
 | `room unoccupied, air conditioning off` | Working as designed. Use heading home |
 | `an opening in this room is open` | A window or door has been open longer than the room's grace (five minutes unless changed). The unit is off until it closes |
-| `Automatic control is off, nothing is sent to this room` | The room's Automatic control switch is off. The unit is **not** off: it has been left exactly as it was |
+| `Automatic control is off; the unit is the owner's` | The room's Automatic control switch is off. Switching it off turned the unit off once (DR-089). After that nothing is sent, so if the unit is running, someone turned it on by hand |
 | `waiting for the air conditioner to report what it can do` | The room has not yet read what its air conditioner offers, so nothing is sent to it. It starts by itself as soon as the air conditioner reports. See [Configuration](configuration.md#what-the-air-conditioner-can-do) |
 | `coasting, model predicts the band holds; this unit has no fan-only mode, so it is off` | A unit with no fan-only mode coasts off. One that has it is left on its fan and is not in this list |
 | `humidity is high, so the unit dries rather than blowing over a wet coil` | The room is coasting in dry mode (DR-059). Working as designed |
@@ -32,7 +32,11 @@ setpoint it was last given:
 
 | Trace says | Cause |
 |---|---|
-| `within band` | Nothing to do. The unit's own thermostat is holding the setpoint |
+| `within band` | Nothing to do. The unit's own thermostat is holding the room's target, allowing for its own sensor and the trim (DR-097) |
+| `coast: not yet, the unit keeps working until the room reaches its target` | The room is inside its band and the model says it would hold, but the unit is still bringing it to the middle of the band. It coasts once it gets there (DR-098) |
+| `left: the owner has left the room` | The room's Leave button was pressed. It stays off until the presence sensor reads empty and then occupied, or you change the room's controls (DR-088) |
+| `dry: kept, chosen N min ago and held for 20 min` / `cooling was chosen N min ago` | A route is kept for 20 minutes once chosen (DR-090) |
+| `fan: below band on its way out of Sleep, the unit goes to its fan` | The room has come out of Sleep and is cooler than its daytime band. It is neither heated nor cooled (DR-085, DR-091) |
 | `no comfort reading for this room` | Missing temperature or humidity sensor. Comfort is held rather than withdrawn |
 | `no band configured for this mode` | No band for the mode the room is in |
 | `an opening in this room is open, holding the unit as it is…` | A door has just opened. Nothing new is actuated, and the unit is not stopped yet in case it closes |
