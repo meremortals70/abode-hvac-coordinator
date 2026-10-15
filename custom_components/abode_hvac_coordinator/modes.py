@@ -69,73 +69,6 @@ def sleeping(comfort_mode: ComfortMode, schedule_active: bool) -> bool:
     return schedule_active
 
 
-def room_reads_empty(presence: bool | None, raw_presence: bool | None) -> bool:
-    """Whether a room is empty for the purposes of its Comfort mode (DR-058).
-
-    Both readings have to say so. `presence` is after the grace periods, so a
-    person stepping out for a minute does not empty the room. `raw_presence`
-    is the sensor itself: graced presence also reads False for the first
-    minutes after someone walks in, and after a restart, while the start
-    grace runs - a room with a person in it is not empty. An unknown sensor
-    is not absence.
-    """
-    return presence is False and raw_presence is False
-
-
-def comfort_mode_after(
-    comfort_mode: ComfortMode,
-    *,
-    empty: bool,
-    schedule_active: bool,
-    schedule_was_active: bool | None,
-    has_schedule: bool = True,
-    sunrise: bool = False,
-) -> tuple[ComfortMode, str | None]:
-    """Whether a chosen Comfort mode still stands, and why not (DR-058).
-
-    Returns the mode to use and, where it has just gone back to Schedule, the
-    reason. Sleep and Awake both end when the room is empty, as
-    `room_reads_empty` decides. Awake also ends when the sleep schedule goes
-    from on to off, because what it was overriding has finished; a schedule
-    that is simply off ends nothing, or choosing Awake during the day would
-    undo itself.
-
-    0.9.6, DR-079. Sleep ends the same way, when the sleep schedule goes from
-    on to off; in a room with no sleep schedule it ends at sunrise. Until
-    0.9.6 Sleep chosen by hand ended only when the room read empty, so in a
-    room with no presence sensor it never ended: the living room, set to Sleep
-    on the evening of 13 October, would have stayed on its sleep band all of
-    the next day.
-    """
-    if comfort_mode is ComfortMode.SCHEDULE:
-        return comfort_mode, None
-    if empty:
-        return ComfortMode.SCHEDULE, (
-            f"comfort mode {comfort_mode.value} ended: the room is empty, "
-            "back to the schedule"
-        )
-    if schedule_was_active is True and not schedule_active:
-        return ComfortMode.SCHEDULE, (
-            f"comfort mode {comfort_mode.value} ended: the sleep schedule has "
-            "finished, back to the schedule"
-        )
-    if comfort_mode is ComfortMode.SLEEP and not has_schedule and sunrise:
-        return ComfortMode.SCHEDULE, (
-            "comfort mode sleep ended: the sun is up and this room has no "
-            "sleep schedule, back to the schedule"
-        )
-    return comfort_mode, None
-
-
-def comfort_mode_refused(requested: ComfortMode, empty: bool) -> bool:
-    """Whether choosing this Comfort mode now is refused (DR-058).
-
-    Sleep or Awake in a room that reads empty would end on the next
-    evaluation. Refused, with a reason, instead.
-    """
-    return requested is not ComfortMode.SCHEDULE and empty
-
-
 def _sleep_source(inputs: RoomInputs) -> str:
     """What made the room sleep, for the trace."""
     if inputs.comfort_mode is ComfortMode.SLEEP:
@@ -191,6 +124,12 @@ def evaluate_mode(
     if inputs.heading_home:
         trace.reasons.append("heading home, overrides presence")
         return Mode.PRECONDITION, None
+
+    if inputs.left:
+        # 0.9.7, DR-088. The owner said they have left. Nothing runs the room
+        # - not presence, precool or a coast - until someone comes back.
+        trace.reasons.append("left: the owner has left the room")
+        return Mode.UNOCCUPIED, None
 
     base = _occupancy_mode(inputs, trace)
 
@@ -329,6 +268,19 @@ FREE_COOLING_WAIT = timedelta(minutes=10)
 #: (or up). A room still outside its band is not switched from one of these
 #: to its fan.
 WORKING_MODES = frozenset({"cool", "dry", "heat", "heat_cool", "auto"})
+
+#: 0.9.7, DR-090. How long a route, once chosen, is kept: drying or cooling
+#: above the band, drying or the fan while coasting. On 15 October the living
+#: room went dry, cool, dry, cool in three minutes, and thirteen times between
+#: 05:15 and 05:38, because each command moved the next comparison.
+ROUTE_HOLD = timedelta(minutes=20)
+
+#: 0.9.7, DR-098. How close to its target, in comfort index, a room the unit
+#: is working on must come before it may coast. The PID holds the room at its
+#: target; coasting as soon as the room was anywhere inside its band stopped
+#: the compressor at the band's edge, and the room was back above it within a
+#: quarter of an hour.
+COAST_AT_TARGET_HCI = 0.25
 
 #: How near an extreme a cover counts as already there, in percent. A blind at
 #: 3% is shut for our purposes; commanding it to 0 achieves nothing, and
@@ -469,6 +421,20 @@ def _latent_route(
     )
 
 
+def _route_kept(inputs: RoomInputs, routes: tuple[str, ...]) -> str | None:
+    """The route the unit is on, if it is one of `routes` and still held.
+
+    0.9.7, DR-090. A route chosen less than `ROUTE_HOLD` ago is kept. None
+    when the unit is on none of `routes`, or has been for longer, or how
+    long is not known.
+    """
+    if inputs.unit_mode not in routes or inputs.unit_mode_minutes is None:
+        return None
+    if inputs.unit_mode_minutes >= ROUTE_HOLD.total_seconds() / 60.0:
+        return None
+    return inputs.unit_mode
+
+
 def _covers_can_help(demand: str, position: float | None) -> bool:
     """Whether the covers still have travel left in the useful direction.
 
@@ -606,8 +572,7 @@ def select_actuator(
     trace.demand = demand
     if demand is None:
         trace.reasons.append("within band")
-        trace.hold_setpoint = True
-        return ActuatorStep.NONE
+        return _in_band_step(inputs, trace, band, hci)
 
     # --- 1. Covers. Free, and they work in both directions: block gain when
     # the room is too warm, admit it when the room is too cold.
@@ -647,6 +612,22 @@ def select_actuator(
             else "covers: admitting solar gain"
         )
         return ActuatorStep.COVERS
+
+    if demand == "heat" and inputs.waking:
+        # 0.9.7, DR-085. A room that has come out of Sleep is below its
+        # daytime band because it was cooled for sleep. It is not heated up
+        # to it: on 15 October the living room's unit went to heat at 24 C at
+        # 05:12 and woke the house. It warms by itself.
+        #
+        # DR-091. Nor is it left cooling toward the Sleep setpoint: a room
+        # below its band is not cooled further. The unit goes to its fan.
+        trace.rejected.append(
+            "compressor: not heating a room on its way out of Sleep; it warms "
+            "by itself"
+        )
+        if inputs.unit_mode in (None, "off", "fan_only"):
+            return ActuatorStep.NONE
+        return _fan_or_off(inputs, trace, "below band on its way out of Sleep")
 
     if demand == "heat":
         # Fan and dry mode do not heat. Once covers are out, the compressor is
@@ -689,8 +670,20 @@ def select_actuator(
     # either way; what differs is how fast each actuator closes it, and that is
     # the learned rate multiplied by how much the index moves per unit of what
     # that actuator changes.
+    kept = _route_kept(inputs, ("dry", "cool"))
     if not inputs.can_dry:
         trace.rejected.append("dry: this unit has no dry mode")
+    elif kept == "dry":
+        trace.reasons.append(
+            f"dry: kept, chosen {inputs.unit_mode_minutes:.0f} min ago and held "
+            f"for {ROUTE_HOLD.seconds // 60} min"
+        )
+        return ActuatorStep.DRY
+    elif kept == "cool":
+        trace.rejected.append(
+            f"dry: cooling was chosen {inputs.unit_mode_minutes:.0f} min ago and "
+            f"is held for {ROUTE_HOLD.seconds // 60} min"
+        )
     else:
         route = _latent_route(inputs, overshoot, trace)
         if route:
@@ -703,6 +696,48 @@ def select_actuator(
         return ActuatorStep.OFF
     trace.reasons.append("compressor: cooling")
     return ActuatorStep.COMPRESSOR
+
+
+def _fan_or_off(inputs: RoomInputs, trace: DecisionTrace, why: str) -> ActuatorStep:
+    """The unit to its fan where it has one, otherwise off."""
+    if inputs.can_fan_only:
+        trace.reasons.append(f"fan: {why}, the unit goes to its fan")
+        return ActuatorStep.FAN
+    trace.reasons.append(f"off: {why}, and this unit has no fan-only mode")
+    return ActuatorStep.OFF
+
+
+def _in_band_step(
+    inputs: RoomInputs, trace: DecisionTrace, band: ComfortBand, hci: float
+) -> ActuatorStep:
+    """What a room inside its band asks of its unit.
+
+    Normally nothing: the unit keeps its mode and the room loop's setpoint is
+    walked onto it (DR-056).
+
+    0.9.7, DR-091. Not a mode whose reason has passed. A unit heating a room
+    already at or above the middle of its band goes to its fan; in a
+    simulated morning the living room was heated for two hours because
+    "nothing" kept it in heat. A unit left
+    drying once the room no longer calls for it goes back to cooling at the
+    room loop's setpoint; on a humid evening it dried for five hours at 51%.
+    """
+    if inputs.unit_mode == "heat" and hci >= band.midpoint:
+        return _fan_or_off(inputs, trace, "in band and warm enough")
+    if (
+        inputs.unit_mode == "dry"
+        and inputs.can_cool
+        and _route_kept(inputs, ("dry",)) is None
+    ):
+        scratch = DecisionTrace(room_id=trace.room_id, at=trace.at, mode=trace.mode)
+        if _latent_route(inputs, 0.0, scratch) is None:
+            trace.reasons.append(
+                "dry: no longer called for in band; back to cooling at the "
+                "room's setpoint"
+            )
+            return ActuatorStep.COMPRESSOR
+    trace.hold_setpoint = True
+    return ActuatorStep.NONE
 
 
 def coast_step(
@@ -731,7 +766,25 @@ def coast_step(
     A power constraint can still turn a coasting unit off; that is decided
     with the budget in the coordinator (DR-063), not here.
     """
-    if inputs.can_dry and band is not None and hci is not None:
+    kept = _route_kept(inputs, ("dry", "fan_only"))
+    if kept == "dry" and inputs.can_dry:
+        trace.reasons.append(
+            f"dry: kept while coasting, chosen {inputs.unit_mode_minutes:.0f} "
+            f"min ago and held for {ROUTE_HOLD.seconds // 60} min"
+        )
+        return ActuatorStep.DRY
+    if kept == "fan_only" and inputs.can_fan_only:
+        trace.rejected.append(
+            f"compressor: coasting on the fan, chosen {inputs.unit_mode_minutes:.0f} "
+            f"min ago and held for {ROUTE_HOLD.seconds // 60} min"
+        )
+        return ActuatorStep.FAN
+    if inputs.unit_mode == "heat":
+        # 0.9.7, DR-093. After heating the coil is warm and dry: there is no
+        # water to blow back into the room, so there is no case for drying.
+        # On 15 October the living room was coasted from heat into dry.
+        trace.rejected.append("dry: the unit has been heating, its coil is dry")
+    elif inputs.can_dry and band is not None and hci is not None:
         overshoot = max(0.0, hci - band.high)
         # Judged at the humidity the room will reach once the coil has given
         # its water back, where the room has learned that (DR-060): stopping
@@ -890,7 +943,8 @@ def evaluate_room(
         trace.rejected.append("comfort index: temperature or humidity unavailable")
 
     band = band_in_force(config, mode, base)
-    if inputs.previous_mode is not None and inputs.previous_mode is not mode:
+    band_mode = base if mode is Mode.COAST and base is not None else mode
+    if inputs.previous_mode is not None and inputs.previous_mode is not band_mode:
         band, ramp_reason = ramped_band(
             from_band=band_in_force(config, inputs.previous_mode, None),
             to_band=band,
@@ -929,6 +983,30 @@ def evaluate_room(
                 f"clamped to {target_c:.0f} C"
             )
         trace.target_dry_bulb_c = target_c
+
+    if (
+        mode is Mode.COAST
+        and base is not None
+        and band is not None
+        and hci is not None
+        and inputs.unit_mode in WORKING_MODES
+    ):
+        # 0.9.7, DR-098. A room the unit is working on coasts only once it has
+        # reached its target. Until then the room loop keeps the unit working
+        # toward it; the band's edge is not the target.
+        target_hci = band.low if base is Mode.PRECOOL else band.midpoint
+        heating = inputs.unit_mode == "heat"
+        short = (
+            target_hci - hci if heating else hci - target_hci
+        ) - COAST_AT_TARGET_HCI
+        if short > 0:
+            trace.rejected.append(
+                f"coast: not yet, the unit keeps working until the room reaches "
+                f"its target (index {hci:.1f} against {target_hci:.1f})"
+            )
+            mode = base
+            trace.mode = base
+            trace.base_mode = None
 
     trace.actuator = select_actuator(mode, band, hci, inputs, trace)
 

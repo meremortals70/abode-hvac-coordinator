@@ -313,6 +313,11 @@
       "setpoint": {
         "name": "Setpoint"
       }
+    },
+    "button": {
+      "leave": {
+        "name": "Leave"
+      }
     }
   },
   "services": {
@@ -356,9 +361,6 @@
     },
     "control_profile_not_read": {
       "message": "{room} has not yet read what its air conditioning can do, so its controls cannot be used yet."
-    },
-    "comfort_mode_room_empty": {
-      "message": "{room} reads empty, so it cannot be set to {mode}. Sleep and Awake go back to Schedule when a room is empty; choose it once someone is in the room."
     },
     "room_bands_invalid": {
       "message": "The comfort bands for room {room_id} are not valid ({error}). Edit the room's comfort bands under Configure → Rooms."

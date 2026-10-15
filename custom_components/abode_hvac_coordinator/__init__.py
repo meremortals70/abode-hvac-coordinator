@@ -37,6 +37,7 @@ from .coordinator import HvacCoordinator
 from .store import ModelStore
 
 PLATFORMS: list[Platform] = [
+    Platform.BUTTON,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,

@@ -242,8 +242,9 @@ DEFAULT_BANDS: Final = {
 #: happen, but a lockout without an explanation is worse than a generic one.
 FALLBACK_LOCKOUT_REASON: Final = "Locked out"
 #: The reason shown in the trace while a room's Automatic control switch is off.
-#: DR-049: the coordinator sends nothing to the room; the unit is left as it is.
-SWITCHED_OFF_REASON: Final = "Automatic control is off, nothing is sent to this room"
+#: DR-049, DR-089: switching it off turns the unit off once; after that the
+#: coordinator sends nothing and the unit is the owner's.
+SWITCHED_OFF_REASON: Final = "Automatic control is off; the unit is the owner's"
 #: The reason shown while a room's units have not yet reported what they can
 #: do, so there is no profile to build a command from (DR-048).
 PROFILE_UNREAD_REASON: Final = (

@@ -1028,87 +1028,6 @@ class TestComfortModeDecidesSleep(unittest.TestCase):
         self.assertFalse(sleeping(ComfortMode.SCHEDULE, False))
 
 
-class TestComfortModeEnds(unittest.TestCase):
-    """DR-058. When a chosen Comfort mode goes back to Schedule."""
-
-    def _after(self, mode, **kwargs):
-        values = {"empty": False, "schedule_active": False, "schedule_was_active": False}
-        values.update(kwargs)
-        return _modes.comfort_mode_after(mode, **values)
-
-    def test_sleep_and_awake_end_when_the_room_is_empty(self):
-        for mode in (ComfortMode.SLEEP, ComfortMode.AWAKE):
-            after, reason = self._after(mode, empty=True)
-            self.assertIs(after, ComfortMode.SCHEDULE)
-            self.assertIn("the room is empty", reason)
-
-    def test_sleep_ends_when_the_schedule_goes_off(self):
-        """0.9.6, DR-079. It outlasted the schedule until then."""
-        after, reason = self._after(
-            ComfortMode.SLEEP, schedule_active=False, schedule_was_active=True
-        )
-        self.assertIs(after, ComfortMode.SCHEDULE)
-        self.assertIn("sleep schedule has finished", reason)
-
-    def test_sleep_without_a_schedule_ends_at_sunrise_only(self):
-        after, reason = self._after(ComfortMode.SLEEP, has_schedule=False, sunrise=True)
-        self.assertIs(after, ComfortMode.SCHEDULE)
-        self.assertIn("the sun is up", reason)
-        self.assertEqual(
-            self._after(ComfortMode.SLEEP, has_schedule=False, sunrise=False),
-            (ComfortMode.SLEEP, None),
-        )
-        # With a schedule, the schedule decides, not the sun.
-        self.assertEqual(
-            self._after(ComfortMode.SLEEP, has_schedule=True, sunrise=True),
-            (ComfortMode.SLEEP, None),
-        )
-        # Awake is not ended by the sun.
-        self.assertEqual(
-            self._after(ComfortMode.AWAKE, has_schedule=False, sunrise=True),
-            (ComfortMode.AWAKE, None),
-        )
-
-    def test_awake_ends_when_the_schedule_goes_off(self):
-        after, reason = self._after(
-            ComfortMode.AWAKE, schedule_active=False, schedule_was_active=True
-        )
-        self.assertIs(after, ComfortMode.SCHEDULE)
-        self.assertIn("sleep schedule has finished", reason)
-
-    def test_awake_chosen_in_the_day_does_not_undo_itself(self):
-        for was in (False, None):
-            self.assertEqual(
-                self._after(ComfortMode.AWAKE, schedule_was_active=was),
-                (ComfortMode.AWAKE, None),
-            )
-
-    def test_schedule_never_changes(self):
-        self.assertEqual(
-            self._after(ComfortMode.SCHEDULE, empty=True),
-            (ComfortMode.SCHEDULE, None),
-        )
-
-    def test_empty_needs_both_readings(self):
-        empty = _modes.room_reads_empty
-        self.assertTrue(empty(False, False))
-        # Someone has just walked in, or Home Assistant has just started: the
-        # start grace is running, but the sensor sees them.
-        self.assertFalse(empty(False, True))
-        # Stepped out: the stop grace is still holding the room occupied.
-        self.assertFalse(empty(True, False))
-        # Unknown is not absence, and no presence sensor is never empty.
-        self.assertFalse(empty(False, None))
-        self.assertFalse(empty(None, None))
-
-    def test_a_choice_in_an_empty_room_is_refused_and_only_then(self):
-        refused = _modes.comfort_mode_refused
-        self.assertTrue(refused(ComfortMode.SLEEP, True))
-        self.assertTrue(refused(ComfortMode.AWAKE, True))
-        self.assertFalse(refused(ComfortMode.SCHEDULE, True))
-        self.assertFalse(refused(ComfortMode.SLEEP, False))
-
-
 _forms = importlib.import_module("hvac_core.forms")
 _const = importlib.import_module("hvac_core.const")
 
@@ -2815,13 +2734,14 @@ class TestStaleness(unittest.TestCase):
         self.assertEqual(verdict.age, timedelta(days=10))
         self.assertIsNone(verdict.reason)
 
-    def test_every_other_feed_keeps_its_limit(self):
-        for tolerance in (
-            _staleness.OUTDOOR_TOLERANCE,
-            _staleness.PRESENCE_TOLERANCE,
-            _staleness.CONTACT_TOLERANCE,
-            _staleness.POWER_TOLERANCE,
-        ):
+    def test_presence_and_contacts_have_no_age_limit(self):
+        """0.9.7, DR-087. The Office's presence was judged stale after six
+        quiet hours with nobody in it."""
+        self.assertIsNone(_staleness.PRESENCE_TOLERANCE)
+        self.assertIsNone(_staleness.CONTACT_TOLERANCE)
+
+    def test_outdoor_and_power_feeds_keep_their_limit(self):
+        for tolerance in (_staleness.OUTDOOR_TOLERANCE, _staleness.POWER_TOLERANCE):
             self.assertFalse(
                 _staleness.assess(NOW - timedelta(days=2), NOW, tolerance).fresh
             )

@@ -537,6 +537,11 @@ async def test_solar_widens_the_ceiling_beyond_what_the_battery_alone_affords(
     assert state.attributes["power_ceiling_c"] is not None
     assert state.attributes["power_ceiling_c"] > 0.5
     assert state.attributes["power_bin"] == "pulldown"
+    # DR-096. The pull-down bin has no limit, and the trace says so in words
+    # rather than printing its 99 C stand-in or claiming a reduction.
+    budget = [r for r in state.attributes["reasons"] if r.startswith("power budget")]
+    assert any("no limit on the setpoint" in r for r in budget), budget
+    assert not any("99.0" in r or "comfort reduction" in r for r in budget), budget
 
 
 async def test_the_checkbox_off_means_power_management_never_touches_the_room(
@@ -2122,14 +2127,13 @@ async def test_each_room_has_an_automatic_control_switch_that_starts_on(
     assert state.state == "on"
 
 
-async def test_switching_a_room_off_sends_nothing_and_leaves_the_unit_alone(
+async def test_switching_a_room_off_turns_the_unit_off_once(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """DR-049. Off means the automation is off, not the air conditioning.
+    """DR-089, 15 October. Switching Automatic control off turns the aircon off.
 
-    The room is hot and cooling. Turning Automatic control off must not send
-    the unit anything - not an off, not a new setpoint - and the compressor
-    stays recorded as running, because nothing stopped it.
+    The room is hot and cooling. The unit is sent off straight away, the
+    minimum run does not hold it on, and the compressor is recorded as stopped.
     """
     coordinator = await _setup_hot_room(hass, mock_config_entry)
     mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
@@ -2140,11 +2144,53 @@ async def test_switching_a_room_off_sends_nothing_and_leaves_the_unit_alone(
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.state == "lockout", state.attributes
-    assert "Automatic control is off" in " ".join(state.attributes["reasons"])
-    assert not mode_calls, [call.data for call in mode_calls]
+    reasons = " ".join(state.attributes["reasons"])
+    assert "Automatic control is off" in reasons
+    assert "off now: the owner switched Automatic control off" in reasons
+    assert [call.data["hvac_mode"] for call in mode_calls] == ["off"]
     assert not temperature_calls, [call.data for call in temperature_calls]
     assert hass.states.get(_SWITCH).state == "off"  # type: ignore[union-attr]
-    assert coordinator.compressor_state()["climate.test"].running is True
+    assert coordinator.compressor_state()["climate.test"].running is False
+
+
+async def test_after_switching_off_the_owner_can_run_the_unit_by_hand(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """DR-089. The off is sent once. A unit the owner then turns on is theirs."""
+    coordinator = await _setup_hot_room(hass, mock_config_entry)
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    await _switch(hass, "turn_off")
+    assert len(mode_calls) == 1
+
+    hass.states.async_set(
+        "climate.test",
+        "cool",
+        {
+            "hvac_modes": ["off", "cool", "dry", "fan_only"],
+            "hvac_action": "cooling",
+            "temperature": 22.0,
+            "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE.value,
+        },
+    )
+    for minutes in (6, 20, 40):
+        with freeze_time(dt_util.utcnow() + timedelta(minutes=minutes)):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+    assert len(mode_calls) == 1, [call.data for call in mode_calls]
+
+
+async def test_switching_off_a_room_already_off_sends_nothing_more(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Turning the switch off twice is one off, not two."""
+    coordinator = await _setup_hot_room(hass, mock_config_entry)
+    mode_calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    await _switch(hass, "turn_off")
+    with freeze_time(dt_util.utcnow() + timedelta(minutes=2)):
+        await _switch(hass, "turn_off")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert len(mode_calls) == 1, [call.data for call in mode_calls]
 
 
 async def test_a_room_switched_off_is_left_alone_however_hot_it_gets(

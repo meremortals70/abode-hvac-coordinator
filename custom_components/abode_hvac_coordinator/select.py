@@ -26,12 +26,10 @@ from homeassistant.components.climate.const import (
 )
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant, State, callback
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HvacConfigEntry
 from .capabilities import RoomCapabilities
-from .const import DOMAIN
 from .coordinator import HvacCoordinator
 from .entity import HvacRoomControl, HvacRoomEntity
 from .models import ComfortMode, RoomConfig
@@ -157,19 +155,11 @@ class RoomComfortModeSelect(HvacRoomEntity, SelectEntity):
         return self.coordinator.comfort_mode(self._room_id).value
 
     async def async_select_option(self, option: str) -> None:
-        """Set the Comfort mode, unless the room reads empty."""
-        mode = ComfortMode(option)
-        if self.coordinator.comfort_mode_refused(self._room_id, mode):
-            room = self.coordinator.rooms.get(self._room_id)
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="comfort_mode_room_empty",
-                translation_placeholders={
-                    "room": room.name if room is not None else self._room_id,
-                    "mode": option,
-                },
-            )
-        await self.coordinator.async_set_comfort_mode(self._room_id, mode)
+        """Set the Comfort mode. The owner's choice is never refused or
+        undone by the component (0.9.7, DR-083)."""
+        await self.coordinator.async_set_comfort_mode(
+            self._room_id, ComfortMode(option)
+        )
 
 
 class RoomSelect(HvacRoomControl, SelectEntity):

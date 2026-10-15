@@ -55,6 +55,7 @@ solved target plus the trim, exactly as it did before, and says so.
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -95,14 +96,21 @@ ARRIVAL_HOURS = 0.5
 #: setpoint off by this much of the room's current rate.
 LEAD_HOURS = 0.1
 
-#: Time constant of the filter on the room's rate of change, and of its decay
-#: while the sensor reports no change. A sensor that reports every few minutes
-#: gives a stepped signal; this keeps one step from reading as a rate.
-RATE_FILTER_HOURS = 0.1
+#: 0.9.7, DR-086. The room's rate of change is the trend of its readings over
+#: this window, a least-squares slope. A sensor that reports only when the
+#: reading moves gives a staircase: the living room's Eve Room steps 0.2-0.4 C
+#: a few minutes apart, and the step-to-step rate used until 0.9.7 read each
+#: step as about 6 C an hour and swung the setpoint by a degree or more.
+RATE_WINDOW = timedelta(minutes=15)
 
-#: A room sensor reading must move at least this much to count as a new
-#: reading. Below it the value is quantisation, not movement.
-RATE_MIN_CHANGE_C = 0.05
+#: How much of the window must be held before there is a rate at all.
+RATE_MIN_SPAN = timedelta(minutes=5)
+
+#: 0.9.7, DR-086. How far, in steps of what the unit can hold, the room loop's
+#: setpoint must move from the one last sent before a new one is sent. The
+#: unit holds whole degrees; rounding afresh each cycle sent 21 and 22
+#: alternately all night as the loop's answer sat near 21.5.
+QUANTISE_DEADBAND_STEPS = 0.75
 
 #: The largest room rate of change believed. Beyond this the sensor jumped.
 RATE_LIMIT_C_PER_HOUR = 10.0
@@ -126,6 +134,31 @@ MIN_OFF = timedelta(minutes=5)
 #: 13 October). 0.5 C per hour is a room about a quarter of a degree past its
 #: target with nothing else moving it. Judgement, not measurement.
 DIRECTION_MARGIN_C_PER_HOUR = 0.5
+
+#: 0.9.7, DR-094. How far past its target, in degrees, a room has to go before
+#: the fallback loop (no learned curve yet) changes the way it works. DR-075
+#: gave the learned loop this hysteresis and left the fallback without it: the
+#: setpoint swung between the cooling trim and the heating trim each time the
+#: room crossed its target, 19 and 21 C forty times in one simulated night.
+FALLBACK_DIRECTION_MARGIN_C = 0.5
+
+#: 0.9.7, DR-095. How quickly the measured difference between the unit's own
+#: sensor and the room's follows a change, as the time over which a new
+#: reading is fully taken in. The unit reports its own reading every minute,
+#: often in whole degrees, so a single reading is not used as it stands.
+SENSOR_OFFSET_HOURS = 0.5
+
+#: 0.9.7, DR-095. The largest difference that is believed. Anything larger is
+#: a sensor fault or a unit in the wrong room, not an offset to correct for.
+MAX_SENSOR_OFFSET_C = 4.0
+
+#: 0.9.7, DR-097. Outside its band, the trim is learned only while the room is
+#: within this many degrees of its target. Further out the room is being
+#: brought in, not held, and the error is the distance still to go, not a bias
+#: in the setpoint: a humid evening's pull-down wound the trim to -1.3 C, and
+#: the band was then held 1.3 C too cold for three hours while it unwound.
+#: Inside the band the room is being held, and the trim is always learned.
+INTEGRATE_WITHIN_C = 1.0
 
 
 @dataclass(slots=True)
@@ -165,9 +198,20 @@ class RegulatorState:
     room_c: float | None = None
     room_at: datetime | None = None
     room_rate_c_per_hour: float = 0.0
+    #: 0.9.7, DR-086. The readings in the rate window, oldest first.
+    samples: deque[tuple[datetime, float]] = field(default_factory=deque)
+    #: 0.9.7, DR-086. The setpoint last sent, so it is held through the
+    #: quantising deadband.
+    held_setpoint_c: float | None = None
     #: 0.9.6, DR-075. The way the room loop last worked, "cool" or "heat",
     #: so it changes only once the room has clearly gone past its target.
     pid_direction: str | None = None
+    #: 0.9.7, DR-094. The way the fallback loop last worked.
+    loop_direction: str | None = None
+    #: 0.9.7, DR-095. The unit's own reading less the room's, filtered, and
+    #: when it was last updated. None until measured.
+    sensor_offset_c: float | None = None
+    sensor_offset_at: datetime | None = None
 
     def trim_for(self, direction: str) -> float:
         """The trim that applies to a direction of travel."""
@@ -329,10 +373,75 @@ def commanded_setpoint(
 
     This is the fallback form, used until the room has learned enough for
     `pid_setpoint`. The trim is the one for `direction`.
+
+    0.9.7, DR-095. Plus the measured difference between the unit's sensor
+    and the room's, where it has been measured: the unit holds its own
+    reading at the setpoint, so a unit reading 3 C low is asked for 3 C less.
+    Until 0.9.7 the trim alone found it, and a 3 C difference took over two
+    hours. The learned curve of `pid_setpoint` already includes it.
     """
     if target_c is None:
         return None
-    return round(target_c + state.trim_for(direction), 1)
+    offset = state.sensor_offset_c or 0.0
+    return round(target_c + state.trim_for(direction) + offset, 1)
+
+
+def track_sensor_offset(
+    state: RegulatorState,
+    *,
+    unit_c: float | None,
+    room_c: float | None,
+    now: datetime,
+) -> None:
+    """Fold one pair of readings into the measured sensor difference.
+
+    DR-095. Only while the unit's fan is moving room air over its sensor:
+    the caller passes None for `unit_c` otherwise.
+    """
+    if unit_c is None or room_c is None:
+        state.sensor_offset_at = None
+        return
+    sample = unit_c - room_c
+    if abs(sample) > MAX_SENSOR_OFFSET_C:
+        return
+    previous = state.sensor_offset_at
+    state.sensor_offset_at = now
+    if state.sensor_offset_c is None or previous is None:
+        if state.sensor_offset_c is None:
+            state.sensor_offset_c = round(sample, 2)
+        return
+    hours = max(0.0, (now - previous).total_seconds() / 3600.0)
+    weight = min(1.0, hours / SENSOR_OFFSET_HOURS)
+    state.sensor_offset_c = round(
+        state.sensor_offset_c + weight * (sample - state.sensor_offset_c), 2
+    )
+
+
+def loop_direction(
+    state: RegulatorState, target_c: float | None, room_c: float | None
+) -> str | None:
+    """Which way the room loop works, with hysteresis (DR-094).
+
+    It changes only once the room has gone `FALLBACK_DIRECTION_MARGIN_C`
+    past its target. Before the loop has a way, it is the room against its
+    target, and None within 0.01 C of it.
+    """
+    if target_c is None or room_c is None:
+        return state.loop_direction
+    gap = target_c - room_c  # positive: the room is below its target
+    previous = state.loop_direction
+    if previous == "cool":
+        direction = "heat" if gap > FALLBACK_DIRECTION_MARGIN_C else "cool"
+    elif previous == "heat":
+        direction = "cool" if gap < -FALLBACK_DIRECTION_MARGIN_C else "heat"
+    elif gap < -0.01:
+        direction = "cool"
+    elif gap > 0.01:
+        direction = "heat"
+    else:
+        return None
+    state.loop_direction = direction
+    return direction
 
 
 # ---- the unit's own limits -------------------------------------------------
@@ -432,33 +541,38 @@ def effective_deadband(limits: SetpointLimits) -> float:
 
 
 def track_room_rate(state: RegulatorState, room_c: float | None, now: datetime) -> None:
-    """Keep the room's filtered rate of change, from distinct readings only.
+    """Keep the room's rate of change: the trend of its readings (DR-086).
 
-    A sensor that reports every few minutes is a staircase. The rate is only
-    updated when the reading actually moves; between readings it decays, so a
-    stale rate does not keep easing the setpoint off after the room has stopped
-    moving.
+    The least-squares slope of the readings over `RATE_WINDOW`, one sample
+    per evaluation, so a sensor that reports in steps gives the rate it is
+    actually moving at rather than one spike per step. No rate until
+    `RATE_MIN_SPAN` of readings is held.
     """
     if room_c is None:
         return
-    if state.room_c is None or state.room_at is None:
-        state.room_c, state.room_at = room_c, now
+    state.room_c, state.room_at = room_c, now
+    samples = state.samples
+    samples.append((now, room_c))
+    while samples and now - samples[0][0] > RATE_WINDOW:
+        samples.popleft()
+    span = samples[-1][0] - samples[0][0]
+    if span < RATE_MIN_SPAN:
+        state.room_rate_c_per_hour = 0.0
         return
-    elapsed = (now - state.room_at).total_seconds() / 3600.0
-    if elapsed <= 0:
-        return
-    if abs(room_c - state.room_c) >= RATE_MIN_CHANGE_C:
-        raw = (room_c - state.room_c) / elapsed
-        raw = max(-RATE_LIMIT_C_PER_HOUR, min(RATE_LIMIT_C_PER_HOUR, raw))
-        alpha = 1.0 - math.exp(-elapsed / RATE_FILTER_HOURS)
-        state.room_rate_c_per_hour += alpha * (raw - state.room_rate_c_per_hour)
-        state.room_c, state.room_at = room_c, now
-    else:
-        # No new reading. Decay by the time since the last cycle, not since
-        # the last reading, so the decay is the same however often this runs.
-        state.room_rate_c_per_hour *= math.exp(
-            -min(elapsed, 0.01) / RATE_FILTER_HOURS
-        )
+    hours = [(at - samples[0][0]).total_seconds() / 3600.0 for at, _ in samples]
+    values = [value for _, value in samples]
+    mean_h = sum(hours) / len(hours)
+    mean_v = sum(values) / len(values)
+    spread = sum((h - mean_h) ** 2 for h in hours)
+    slope = (
+        sum((h - mean_h) * (v - mean_v) for h, v in zip(hours, values, strict=True))
+        / spread
+        if spread > 0
+        else 0.0
+    )
+    state.room_rate_c_per_hour = max(
+        -RATE_LIMIT_C_PER_HOUR, min(RATE_LIMIT_C_PER_HOUR, slope)
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -82,6 +82,7 @@ class ModelStore:
             "profiles": {},
             "comfort_modes": {},
             "occupancy": {},
+            "left": [],
         }
 
     async def async_load(self) -> None:
@@ -147,6 +148,9 @@ class ModelStore:
             self._data.get("occupancy", {}).pop(room_id, None) is not None
             or removed
         )
+        if room_id in self._data.get("left", []):
+            self._data["left"] = sorted(set(self._data["left"]) - {room_id})
+            removed = True
         if removed:
             self._save_choice_soon()
 
@@ -170,6 +174,25 @@ class ModelStore:
             rooms.discard(room_id)
         self._data["switched_off"] = sorted(rooms)
         self._save_choice_soon()
+
+    def left(self) -> set[str]:
+        """Rooms the owner has left with the Leave button (0.9.7, DR-088).
+
+        Kept across a restart: a room left by hand must not have its unit
+        started by the first evaluation after Home Assistant comes back.
+        """
+        return set(self._data.get("left", []))
+
+    def set_left(self, room_id: str, left: bool) -> None:
+        """Record that a room was left, or has been come back to."""
+        rooms = self.left()
+        if left:
+            rooms.add(room_id)
+        else:
+            rooms.discard(room_id)
+        if sorted(rooms) != sorted(self._data.get("left", [])):
+            self._data["left"] = sorted(rooms)
+            self._save_choice_soon()
 
     def manual_vanes(self) -> set[str]:
         """Rooms whose Automatic vane control the user has switched off.

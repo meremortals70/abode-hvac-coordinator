@@ -720,11 +720,12 @@ async def test_the_vane_choice_survives_a_restart(
 
 
 # ---------------------------------------------------------------------------
-# DR-049 - Automatic control off leaves the unit alone
+# DR-049, DR-089 - Automatic control off turns the unit off once, then
+# leaves it alone
 # ---------------------------------------------------------------------------
 
 
-async def test_turning_automatic_control_off_does_not_turn_the_unit_off(
+async def test_turning_automatic_control_off_turns_the_unit_off_once(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
     coordinator = await _setup(hass, mock_config_entry)
@@ -735,9 +736,8 @@ async def test_turning_automatic_control_off_does_not_turn_the_unit_off(
     # evaluation of the switched-off room has actually run, and then several.
     for minutes in (1, 15, 45):
         await _settle(hass, coordinator, minutes=minutes)
-    assert not mode_calls, [c.data for c in mode_calls]
+    assert [c.data["hvac_mode"] for c in mode_calls] == ["off"]
     assert not temperature_calls, [c.data for c in temperature_calls]
-    assert hass.states.get("climate.test").state == "cool"  # type: ignore[union-attr]
     state = hass.states.get("sensor.test_room_mode")
     assert state is not None
     assert state.state == "lockout"
@@ -1329,48 +1329,33 @@ async def test_a_kept_value_this_build_does_not_know_is_schedule(
     assert coordinator.comfort_mode("test_room").value == "schedule"
 
 
-async def test_sleep_goes_back_to_schedule_once_the_room_is_empty(
+async def test_a_chosen_comfort_mode_stays_when_the_room_empties(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
+    """0.9.7, DR-083. The owner's choice stands until the owner changes it.
+    Until 0.9.7 Sleep and Awake were put back to Schedule by the component
+    when the room read empty."""
     coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
-    await _select(hass, _COMFORT, "sleep")
-    hass.states.async_set("binary_sensor.test_presence", "off")
-    # Inside the stop grace the room is still occupied: nothing ends.
-    await _settle(hass, coordinator, minutes=6)
-    assert coordinator.comfort_mode("test_room").value == "sleep"
-    # Past it, the room is empty and Sleep ends.
-    await _settle(hass, coordinator, minutes=60)
-    assert coordinator.comfort_mode("test_room").value == "schedule"
-    assert hass.states.get(_COMFORT).state == "schedule"  # type: ignore[union-attr]
-    assert coordinator.store.comfort_modes() == {}
-
-
-async def test_the_reason_it_ended_is_in_the_trace(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
-) -> None:
-    coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
-    await _select(hass, _COMFORT, "awake")
-    hass.states.async_set("binary_sensor.test_presence", "off")
-    await _settle(hass, coordinator, minutes=6)
-    await _settle(hass, coordinator, minutes=60)
-    assert (
-        "comfort mode awake ended: the room is empty, back to the schedule"
-        in _trace(hass)["reasons"]
-    )
-
-
-async def test_sleep_or_awake_in_an_empty_room_is_refused_with_a_reason(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
-) -> None:
-    coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
-    hass.states.async_set("binary_sensor.test_presence", "off")
-    await _settle(hass, coordinator, minutes=6)
-    await _settle(hass, coordinator, minutes=60)
     for option in ("sleep", "awake"):
-        with pytest.raises(ServiceValidationError) as err:
-            await _select(hass, _COMFORT, option)
-        assert err.value.translation_key == "comfort_mode_room_empty"
-    assert coordinator.comfort_mode("test_room").value == "schedule"
+        await _select(hass, _COMFORT, option)
+        hass.states.async_set("binary_sensor.test_presence", "off")
+        await _settle(hass, coordinator, minutes=6)
+        await _settle(hass, coordinator, minutes=60)
+        assert coordinator.comfort_mode("test_room").value == option
+        assert coordinator.store.comfort_modes() == {"test_room": option}
+        hass.states.async_set("binary_sensor.test_presence", "on")
+
+
+async def test_a_choice_in_an_empty_room_is_accepted(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """0.9.7, DR-083. Until 0.9.7 it was refused."""
+    coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
+    hass.states.async_set("binary_sensor.test_presence", "off")
+    await _settle(hass, coordinator, minutes=6)
+    await _settle(hass, coordinator, minutes=60)
+    await _select(hass, _COMFORT, "sleep")
+    assert coordinator.comfort_mode("test_room").value == "sleep"
 
 
 async def test_a_room_with_someone_just_arrived_is_not_empty(
@@ -1392,9 +1377,11 @@ async def test_a_room_with_someone_just_arrived_is_not_empty(
     assert coordinator.comfort_mode("test_room").value == "sleep"
 
 
-async def test_awake_overrides_the_schedule_and_ends_when_it_goes_off(
+async def test_a_chosen_comfort_mode_outlasts_the_schedule_both_ways(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
+    """0.9.7, DR-083. The schedule applies only while the Comfort mode is
+    Schedule. Until 0.9.7 it ended Awake, and in 0.9.6 Sleep too."""
     hass.states.async_set(_SLEEP_SWITCH, "on")
     coordinator = await _setup(
         hass,
@@ -1407,46 +1394,27 @@ async def test_awake_overrides_the_schedule_and_ends_when_it_goes_off(
     assert hass.states.get("sensor.test_room_mode").state == "occupied"  # type: ignore[union-attr]
     hass.states.async_set(_SLEEP_SWITCH, "off")
     await _settle(hass, coordinator, minutes=7)
-    assert coordinator.comfort_mode("test_room").value == "schedule"
-
-
-async def test_sleep_ends_when_the_schedule_finishes(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
-) -> None:
-    """0.9.6, DR-079. Until 0.9.6 a chosen Sleep outlasted the schedule and
-    ended only when the room read empty."""
-    hass.states.async_set(_SLEEP_SWITCH, "on")
-    coordinator = await _setup(
-        hass,
-        mock_config_entry,
-        room_extra={**_WITH_SLEEP_BAND, "sleep_schedule_entity_id": _SLEEP_SWITCH},
-    )
+    assert coordinator.comfort_mode("test_room").value == "awake"
     await _select(hass, _COMFORT, "sleep")
-    await _settle(hass, coordinator, minutes=1)
-    assert coordinator.comfort_mode("test_room").value == "sleep"
+    hass.states.async_set(_SLEEP_SWITCH, "on")
+    await _settle(hass, coordinator, minutes=8)
     hass.states.async_set(_SLEEP_SWITCH, "off")
-    await _settle(hass, coordinator, minutes=6)
-    assert coordinator.comfort_mode("test_room").value == "schedule"
-    state = hass.states.get("sensor.test_room_mode")
-    assert state is not None and state.state != "sleep"
+    await _settle(hass, coordinator, minutes=9)
+    assert coordinator.comfort_mode("test_room").value == "sleep"
+    assert hass.states.get("sensor.test_room_mode").state == "sleep"  # type: ignore[union-attr]
 
 
-async def test_sleep_ends_at_sunrise_in_a_room_with_no_schedule(
+async def test_sleep_outlasts_sunrise(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry
 ) -> None:
-    """13-14 October: the living room, with no presence sensor and no
-    schedule, would have stayed on Sleep all of the next day."""
+    """15 October: Sleep was ended at sunrise, 05:12, and the unit went to
+    heat. 0.9.7, DR-083: nothing but the owner ends it."""
     hass.states.async_set("sun.sun", "below_horizon")
     coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
     await _select(hass, _COMFORT, "sleep")
     await _settle(hass, coordinator, minutes=1)
-    assert coordinator.comfort_mode("test_room").value == "sleep"
     hass.states.async_set("sun.sun", "above_horizon")
-    await _settle(hass, coordinator, minutes=1)
-    assert coordinator.comfort_mode("test_room").value == "schedule"
-    # A chosen Sleep in the day is not undone by the sun already being up.
-    await _select(hass, _COMFORT, "sleep")
-    await _settle(hass, coordinator, minutes=1)
+    await _settle(hass, coordinator, minutes=2)
     assert coordinator.comfort_mode("test_room").value == "sleep"
 
 
@@ -1483,33 +1451,6 @@ async def test_comfort_mode_is_in_the_diagnostics_download(
     await _select(hass, _COMFORT, "sleep")
     diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
     assert diagnostics["rooms"]["test_room"]["comfort_mode"] == "sleep"
-
-
-async def test_the_evaluation_that_ends_sleep_projects_against_the_day_band(
-    hass: HomeAssistant, mock_config_entry: MockConfigEntry
-) -> None:
-    """The choice is settled before anything in the cycle asks whether the
-    room is sleeping, so the projections and the mode agree in the very
-    evaluation where Sleep ends, not one cycle later."""
-    coordinator = await _setup(hass, mock_config_entry, room_extra=_WITH_SLEEP_BAND)
-    await _select(hass, _COMFORT, "sleep")
-    hass.states.async_set("binary_sensor.test_presence", "off")
-    await _settle(hass, coordinator, minutes=6)
-    assert coordinator.comfort_mode("test_room").value == "sleep"
-
-    answers: list[bool] = []
-    original = coordinator._sleeping
-
-    def recording(room: object) -> bool:
-        answer = original(room)
-        answers.append(answer)
-        return answer
-
-    coordinator._sleeping = recording
-    await _settle(hass, coordinator, minutes=60)
-    assert coordinator.comfort_mode("test_room").value == "schedule"
-    assert answers
-    assert not any(answers)
 
 
 # ---------------------------------------------------------------------------

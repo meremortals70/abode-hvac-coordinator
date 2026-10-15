@@ -168,13 +168,11 @@ from .models import (
 from .modes import (
     DEFAULT_OPENING_GRACE_MINUTES,
     FREE_COOLING_WAIT,
+    ROUTE_HOLD,
     UNAIDED_RETURN_FALLBACK_MINUTES,
     UNAIDED_RETURN_MARGIN_MINUTES,
     WORKING_MODES,
-    comfort_mode_after,
-    comfort_mode_refused,
     evaluate_room,
-    room_reads_empty,
     sleeping,
 )
 from .power import (
@@ -195,7 +193,6 @@ from .power import (
     mean_recent,
     normalise_grid_import_w,
     plant_allowance_kw,
-    setpoint_direction,
     solar_points_from_forecast,
 )
 from .psychro import dew_point_c
@@ -206,15 +203,24 @@ from .regulate import (
     SetpointLimits,
     arbitrate_cycling,
     commanded_setpoint,
+    INTEGRATE_WITHIN_C,
+    loop_direction,
+    track_sensor_offset,
     effective_deadband,
     integrate,
     note_transition,
+    QUANTISE_DEADBAND_STEPS,
     pid_setpoint,
     quantise_setpoint,
     track_room_rate,
     wants_running,
 )
-from .scheduling import HEADING_HOME_EXPIRY, PreconditionPlan, plan_precondition
+from .scheduling import (
+    HEADING_HOME_EXPIRY,
+    SLEEP_RAMP,
+    PreconditionPlan,
+    plan_precondition,
+)
 from .staleness import (
     CONTACT_TOLERANCE,
     INDOOR_TOLERANCE,
@@ -397,6 +403,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: the band can ramp across a sleep transition instead of stepping.
         self._previous_mode: dict[str, Mode] = {}
         self._mode_changed_at: dict[str, datetime] = {}
+        #: 0.9.7, DR-084. The band each room last changed from.
+        self._ramp_from: dict[str, Mode] = {}
+        #: 0.9.7, DR-085. Rooms out of Sleep and not yet in their daytime band.
+        self._waking: set[str] = set()
         #: Feeds reported stale this evaluation, per room, for the trace.
         self._stale: dict[str, list[str]] = {}
         #: Why a heading-home room is not actuating yet, for the trace.
@@ -548,11 +558,11 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: evaluation, before anything was sent: a warning about a running
         #: unit is only true of one that was on.
         self._unit_mode_seen: dict[str, str | None] = {}
+        #: 0.9.7, DR-090. The mode each room's unit is in and since when, so a
+        #: route chosen is kept for `ROUTE_HOLD`.
+        self._unit_mode_since: dict[str, tuple[str | None, datetime]] = {}
         #: 0.9.6, DR-074. Why a room is reading its unit's own sensor.
         self._fallback_reason: dict[str, str] = {}
-        #: 0.9.6, DR-079. Whether the sun was up at the last evaluation, per
-        #: room, so a chosen Sleep ends at sunrise in a room with no schedule.
-        self._sun_was_up: dict[str, bool | None] = {}
         #: 0.9.6, DR-080. Why a heading-home request ended, for the trace.
         self._heading_home_reason: dict[str, str] = {}
         #: Announcements raised this evaluation, dispatched after it.
@@ -589,6 +599,18 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         #: Read from the store, not from entity state, so it is already known
         #: when the first evaluation runs. DR-047.
         self._switched_off: set[str] = store.switched_off() & set(self.rooms)
+        #: 0.9.7, DR-088. Rooms the owner has left with the Leave button, kept
+        #: across a restart; and, per room, whether the presence sensor has
+        #: since read the room clear, so a return is a fresh arrival.
+        self._left: set[str] = store.left() & set(self.rooms)
+        self._left_seen_clear: dict[str, bool] = {}
+        #: 0.9.7, DR-088. Rooms whose stop the owner has just asked for, so the
+        #: minimum run does not hold the unit on against them.
+        self._owner_stop: set[str] = set()
+        #: 0.9.7, DR-089. Rooms whose Automatic control the owner has just
+        #: switched off: their units are turned off once, then left alone.
+        #: Held in memory only, so a restart never turns a unit off.
+        self._switch_off_pending: set[str] = set()
         #: Rooms whose Automatic vane control the user has switched off: the
         #: coordinator never sends a vane command to them. Read from the store
         #: for the same reason as the line above. DR-049.
@@ -599,19 +621,9 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         self._comfort_modes: dict[str, ComfortMode] = _comfort_modes_from_store(
             store.comfort_modes(), set(self.rooms)
         )
-        #: Whether each room's sleep schedule was on at the last evaluation,
-        #: so Awake ends when the schedule goes off rather than whenever it
-        #: happens to be off. Unknown until a room has been read once.
-        self._schedule_was_on: dict[str, bool] = {}
-        #: Whether each room read empty at the last evaluation, so a Comfort
-        #: mode chosen for an empty room can be refused.
-        self._room_empty: dict[str, bool] = {}
         #: The raw presence reading behind each room's graced presence, read
         #: once per evaluation by `_graced_presence`.
         self._raw_presence: dict[str, bool | None] = {}
-        #: Why a room's Comfort mode has just gone back to Schedule, for the
-        #: trace of the evaluation in which it happened.
-        self._comfort_mode_reason: dict[str, str] = {}
         #: Opening warnings already spoken for each room's current opening.
         #: DR-050.
         self._opening_warnings: dict[str, OpeningWarningState] = {}
@@ -1209,6 +1221,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         Home Assistant's date-time picker sends. Until 0.9.3 it was kept
         naive, and every evaluation then failed comparing it with the clock.
         """
+        self._end_left(room_id)
         self._heading_home[room_id] = (
             None if deadline is None else dt_util.as_utc(deadline)
         )
@@ -1217,12 +1230,50 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """Whether the user has switched this room's automatic control off."""
         return room_id in self._switched_off
 
+    async def async_leave_room(self, room_id: str) -> None:
+        """The owner has left the room (0.9.7, DR-088).
+
+        The room is empty at once, with no vacancy wait and no warnings, its
+        unit is turned off now, ahead of the compressor's minimum run, and it
+        stays off until someone comes back.
+        """
+        self._left.add(room_id)
+        self._left_seen_clear[room_id] = False
+        self.store.set_left(room_id, True)
+        self._heading_home.pop(room_id, None)
+        if (state := self._grace.get(room_id)) is not None:
+            state.occupied = False
+            state.warned_at = None
+        self.store.set_occupancy(room_id, False)
+        self._owner_stop.add(room_id)
+        room = self.rooms.get(room_id)
+        LOGGER.info("%s: left by the owner; off until someone comes back",
+                    room.name if room else room_id)
+        await self.async_refresh()
+
+    def _end_left(self, room_id: str) -> None:
+        """The owner has turned the room back on, or someone has come back."""
+        if room_id in self._left:
+            self._left.discard(room_id)
+            self.store.set_left(room_id, False)
+        self._left_seen_clear.pop(room_id, None)
+
+    def is_room_left(self, room_id: str) -> bool:
+        """Whether the owner has left this room and nobody has come back."""
+        return room_id in self._left
+
     async def async_set_room_switched_off(self, room_id: str, off: bool) -> None:
         """Switch a room's automatic control off or on, and act on it now."""
+        self._end_left(room_id)
         if off:
+            # DR-089. Switching Automatic control off turns the aircon off,
+            # once. After that nothing is sent, so the unit is the owner's.
+            if room_id not in self._switched_off:
+                self._switch_off_pending.add(room_id)
             self._switched_off.add(room_id)
         else:
             self._switched_off.discard(room_id)
+            self._switch_off_pending.discard(room_id)
         self.store.set_switched_off(room_id, off)
         await self.async_request_refresh()
 
@@ -1243,14 +1294,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         """The room's Comfort mode: Schedule unless the user chose otherwise."""
         return self._comfort_modes.get(room_id, ComfortMode.SCHEDULE)
 
-    def comfort_mode_refused(self, room_id: str, mode: ComfortMode) -> bool:
-        """Whether choosing this Comfort mode now is refused (DR-058)."""
-        return comfort_mode_refused(mode, self._room_empty.get(room_id, False))
-
     async def async_set_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
         """Set a room's Comfort mode, keep it, and act on it now (DR-058)."""
+        self._end_left(room_id)
         self._remember_comfort_mode(room_id, mode)
-        self._comfort_mode_reason.pop(room_id, None)
         await self.async_request_refresh()
 
     def _remember_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
@@ -1261,39 +1308,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         else:
             self._comfort_modes[room_id] = mode
             self.store.set_comfort_mode(room_id, mode.value)
-
-    def _update_comfort_mode(self, room: RoomConfig, presence: bool | None) -> None:
-        """End a chosen Comfort mode whose reason has gone (DR-058).
-
-        Run once per evaluation, after presence is read and before anything
-        asks whether the room is sleeping, so every answer in the cycle is the
-        same one. The decision is `modes.comfort_mode_after`.
-        """
-        room_id = room.room_id
-        schedule_active = self._bool(room.sleep_schedule_entity_id) is True
-        current = self.comfort_mode(room_id)
-        empty = room_reads_empty(presence, self._raw_presence.get(room_id))
-        # 0.9.6, DR-079. Sunrise, as the rising edge of `sun.sun`, for a room
-        # with no sleep schedule.
-        sun = self.hass.states.get("sun.sun")
-        sun_up = None if sun is None else sun.state == "above_horizon"
-        sun_was_up = self._sun_was_up.get(room_id)
-        self._sun_was_up[room_id] = sun_up
-        after, reason = comfort_mode_after(
-            current,
-            empty=empty,
-            schedule_active=schedule_active,
-            schedule_was_active=self._schedule_was_on.get(room_id),
-            has_schedule=room.sleep_schedule_entity_id is not None,
-            sunrise=sun_up is True and sun_was_up is False,
-        )
-        self._schedule_was_on[room_id] = schedule_active
-        self._room_empty[room_id] = empty
-        if after is not current:
-            self._remember_comfort_mode(room_id, after)
-            if reason is not None:
-                self._comfort_mode_reason[room_id] = reason
-                LOGGER.info("%s: %s", room.name, reason)
 
     def last_mode(self, room_id: str) -> Mode:
         """The mode a room was last evaluated in."""
@@ -1383,12 +1397,22 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 if room.capabilities is None
                 else None
             )
-            trace = evaluate_room(
+            evaluated = (
                 replace(room, lockout_reason=inactive_reason)
                 if inactive_reason is not None
-                else room,
-                inputs,
+                else room
             )
+            trace = evaluate_room(evaluated, inputs)
+            if self._note_band_change(room.room_id, trace, now):
+                # DR-092. The band has just changed. Decide again knowing it,
+                # so the ramp and waking apply from this evaluation on.
+                inputs = replace(
+                    inputs,
+                    previous_mode=self._ramp_from.get(room.room_id),
+                    mode_changed_at=self._mode_changed_at.get(room.room_id),
+                    waking=room.room_id in self._waking,
+                )
+                trace = evaluate_room(evaluated, inputs)
             self._announce_free_cooling(room, trace)
             trace.model = self.model_for(room.room_id).diagnostics()
             if trace.target_dry_bulb_c is not None:
@@ -1399,8 +1423,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 trace.reasons.append(reason)
             if reason := self._heading_home_reason.pop(room.room_id, None):
                 trace.reasons.append(reason)
-            if reason := self._comfort_mode_reason.pop(room.room_id, None):
-                trace.reasons.append(reason)
             if reason := self._precondition_reason.get(room.room_id):
                 trace.rejected.append(reason)
             if reason := self._demand_reason.pop(room.room_id, None):
@@ -1410,9 +1432,21 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     trace.rejected.append(reason)
             trace.stale_feeds = self._stale.get(room.room_id, [])
             if inactive_reason is not None:
-                self._track_mode(room.room_id, trace.mode, now)
+                self._track_mode(room.room_id, trace, now)
                 self._last_modes[room.room_id] = trace.mode
                 traces[room.room_id] = trace
+                if (
+                    inactive_reason == SWITCHED_OFF_REASON
+                    and room.room_id in self._switch_off_pending
+                ):
+                    # DR-089. The one command a switched-off room is sent.
+                    self._switch_off_pending.discard(room.room_id)
+                    trace.actuator = ActuatorStep.OFF
+                    self._note_owner_stop(room, now)
+                    trace.reasons.append(
+                        "off now: the owner switched Automatic control off"
+                    )
+                    await self.actuator.async_apply(room, trace)
                 continue
             self._power_ceiling(room, inputs, trace, now, capabilities)
             self._warn_about_opening(room, inputs, now)
@@ -1421,7 +1455,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # wanted before the short-cycle guard had its say.
             self._guard_cycling(room, trace, now)
             self._regulate(room, inputs, trace, now)
-            self._track_mode(room.room_id, trace.mode, now)
+            self._track_mode(room.room_id, trace, now)
             self._last_modes[room.room_id] = trace.mode
             traces[room.room_id] = trace
             LOGGER.debug(
@@ -1482,8 +1516,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # `trace.demand` — the ceiling's primary case is a room *inside* its
         # band (demand is None there), where the solved target still exists
         # and still says which way the compressor is being asked to work.
-        direction = setpoint_direction(trace.target_dry_bulb_c, inputs.temperature_c)
+        # 0.9.7, DR-094. With hysteresis: a room a tenth either side of its
+        # target no longer swings the setpoint between the two trims.
+        direction = loop_direction(
+            state, trace.target_dry_bulb_c, inputs.temperature_c
+        )
         trim_direction = direction or "cool"
+        # 0.9.7, DR-095. The unit's own reading against the room's, while its
+        # fan is moving room air over its sensor.
+        unit_mode = inputs.unit_mode
+        track_sensor_offset(
+            state,
+            unit_c=self._unit_reading(room, "current_temperature")
+            if unit_mode not in (None, "off") and not inputs.temperature_from_unit
+            else None,
+            room_c=inputs.temperature_c,
+            now=now,
+        )
 
         # 0.8.10. Whether the power ceiling is actually binding this cycle —
         # would the uncapped commanded setpoint go further than the ceiling
@@ -1506,6 +1555,12 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 uncapped, inputs.temperature_c, direction, trace.power_ceiling_c
             )
 
+        near_target = (
+            trace.target_dry_bulb_c is not None
+            and inputs.temperature_c is not None
+            and abs(inputs.temperature_c - trace.target_dry_bulb_c)
+            <= INTEGRATE_WITHIN_C
+        )
         integrate(
             state,
             target_c=trace.target_dry_bulb_c,
@@ -1517,8 +1572,27 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             # start the guard has just refused, or of a cycle the power
             # ceiling is actively capping, both of which used to wind against
             # a bound the loop was not free to correct.
+            #
+            # 0.9.7, DR-097. And of a room inside its band whose unit is still
+            # working, with the room loop's setpoint walked onto it (DR-056).
+            # Until 0.9.7 the trim was frozen there, so a feed-forward that
+            # overstated the room's drift was never corrected: the simulated
+            # Office was cooled below its band for an hour and then heated.
             regulating=(
-                (trace.actuator is ActuatorStep.COMPRESSOR or trace.hold_compressor)
+                (
+                    (
+                        (
+                            trace.actuator is ActuatorStep.COMPRESSOR
+                            or trace.hold_compressor
+                        )
+                        and near_target
+                    )
+                    or (
+                        trace.actuator is ActuatorStep.NONE
+                        and trace.hold_setpoint
+                        and inputs.unit_mode in WORKING_MODES
+                    )
+                )
                 and not binding
             ),
             direction=trim_direction,
@@ -1575,11 +1649,28 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             elif way == "heat":
                 toward = "up"
             rounded = quantise_setpoint(commanded, limits, toward=toward)
-            if abs(rounded - commanded) >= 0.05:
+            last_sent = state.held_setpoint_c
+            deadband = QUANTISE_DEADBAND_STEPS * limits.rounding_step
+            if (
+                not capped
+                and last_sent is not None
+                and last_sent != rounded
+                and abs(commanded - last_sent) < deadband
+                and quantise_setpoint(last_sent, limits) == last_sent
+            ):
+                # 0.9.7, DR-086. The setpoint already sent stands until the
+                # loop has moved most of a step away from it.
+                trace.reasons.append(
+                    f"setpoint held at {last_sent:.1f} C: the loop's {commanded:.1f} "
+                    f"is within {deadband:.2f} C of it"
+                )
+                rounded = last_sent
+            elif abs(rounded - commanded) >= 0.05:
                 trace.reasons.append(
                     f"setpoint {commanded:.1f} rounded to {rounded:.1f} C, "
                     f"the unit holds {limits.rounding_step:g} C steps"
                 )
+            state.held_setpoint_c = rounded
             commanded = rounded
         trace.commanded_dry_bulb_c = commanded
 
@@ -1601,6 +1692,15 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         target = trace.target_dry_bulb_c
         if target is None:
             return None, None
+        if trace.actuator is ActuatorStep.NONE and trace.hold_setpoint:
+            # 0.9.7, DR-097. Inside the band the unit's own thermostat holds
+            # the room: it is given the target, corrected by the measured
+            # difference between its sensor and the room's and by the trim.
+            # The learned curve is for bringing a room to its band. Used to
+            # hold it there, its feed-forward rested on the room's modelled
+            # drift, and where that was overstated the unit was asked for
+            # 2.2 C below the room with the room already below its target.
+            return commanded_setpoint(state, target, trim_direction), None
         if inputs.temperature_c is not None:
             model = self.model_for(room.room_id)
             drift = model.drift_rate(
@@ -1633,6 +1733,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         return SetpointLimits(
             profile.target_temp_step, profile.min_temp, profile.max_temp
         ), None
+
+    def _note_owner_stop(self, room: RoomConfig, now: datetime) -> None:
+        """Record a stop the owner asked for (DR-088, DR-089).
+
+        Like the off button on the remote, it is not held to the minimum run.
+        An outdoor unit a neighbouring room still wants is noted as running.
+        """
+        for group in room.groups:
+            compressor = self._compressors.setdefault(group, CompressorState())
+            if compressor.running and not any(
+                self._room_wants.get(other.room_id, False)
+                for other in self.rooms.values()
+                if other.room_id != room.room_id and group in other.groups
+            ):
+                note_transition(compressor, running=False, now=now)
+                self._note_compressor_transition(group, started=False, now=now)
+        self._room_wants[room.room_id] = False
 
     def _guard_cycling(
         self,
@@ -1670,6 +1787,14 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             group: self._compressors.setdefault(group, CompressorState())
             for group in groups
         }
+        if room.room_id in self._owner_stop:
+            # 0.9.7, DR-088. The owner asked for the room off. Like the off
+            # button on the remote, it is not held to the minimum run.
+            self._owner_stop.discard(room.room_id)
+            if trace.actuator is ActuatorStep.OFF:
+                self._note_owner_stop(room, now)
+                trace.reasons.append("off now: the owner has left the room")
+                return
         wants = wants_running(
             trace.actuator,
             previous_want=self._room_wants.get(room.room_id),
@@ -1728,12 +1853,64 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 trace.hold_setpoint = False
             return
 
-    def _track_mode(self, room_id: str, mode: Mode, now: datetime) -> None:
-        """Remember the mode and when it last changed, for the band ramp."""
-        if self._previous_mode.get(room_id) is not mode:
-            if room_id in self._previous_mode:
-                self._mode_changed_at[room_id] = now
-            self._previous_mode[room_id] = mode
+    def _note_band_change(
+        self, room_id: str, trace: DecisionTrace, now: datetime
+    ) -> bool:
+        """Record a change of band. True when this evaluation changed it.
+
+        0.9.7, DR-084. The band, not the mode: a coast keeps the band of the
+        mode it displaced. What the room changed from is kept for the whole
+        ramp. Until 0.9.7 the previous evaluation's mode was passed instead,
+        so the ramp lasted one evaluation and the band then stepped.
+
+        0.9.7, DR-085. A room leaving Sleep is marked waking.
+
+        0.9.7, DR-092. Called straight after the first evaluation, so that the
+        evaluation which sees the change can be run again with it. Until then
+        the first evaluation after a change used the new band in full, with no
+        ramp and no waking: on 15 October that one evaluation put the living
+        room's unit into heat at 05:12.
+        """
+        mode = (
+            trace.base_mode
+            if trace.mode is Mode.COAST and trace.base_mode is not None
+            else trace.mode
+        )
+        current = self._previous_mode.get(room_id)
+        if current is mode:
+            return False
+        self._previous_mode[room_id] = mode
+        if current is None:
+            return False
+        self._ramp_from[room_id] = current
+        self._mode_changed_at[room_id] = now
+        if current is Mode.SLEEP and mode is not Mode.SLEEP:
+            self._waking.add(room_id)
+        return True
+
+    def _track_mode(self, room_id: str, trace: DecisionTrace, now: datetime) -> None:
+        """Keep the band record current and end waking once it is done.
+
+        A room stops waking once the ramp is over and it is inside or above
+        its daytime band. 0.9.7, DR-092: until then the ramping band counted,
+        so waking ended within a minute and the room was heated as the ramp
+        passed it.
+        """
+        self._note_band_change(room_id, trace, now)
+        mode = (
+            trace.base_mode
+            if trace.mode is Mode.COAST and trace.base_mode is not None
+            else trace.mode
+        )
+        changed_at = self._mode_changed_at.get(room_id)
+        ramp_over = changed_at is None or now - changed_at >= SLEEP_RAMP
+        if mode is Mode.SLEEP or (
+            trace.hci is not None
+            and mode is not Mode.LOCKOUT
+            and ramp_over
+            and trace.demand in (None, "cool")
+        ):
+            self._waking.discard(room_id)
 
     def _learn(self, room: RoomConfig, inputs: RoomInputs, now: datetime) -> None:
         """Fold the interval since the last usable anchor into the room's model.
@@ -1994,6 +2171,24 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         Announcements raised here are dispatched by the caller, so that this
         stays a pure read of state.
         """
+        if room.room_id in self._left:
+            # 0.9.7, DR-088. Left by the owner. Empty until the sensor has read
+            # the room clear and then sees someone: a fresh arrival.
+            raw = (
+                None
+                if room.presence_entity_id is None
+                else self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
+            )
+            self._raw_presence[room.room_id] = raw
+            if raw is False:
+                self._left_seen_clear[room.room_id] = True
+            if not (raw is True and self._left_seen_clear.get(room.room_id)):
+                self._grace_reason[room.room_id] = (
+                    "left by the owner, off until someone comes back"
+                )
+                return False
+            self._end_left(room.room_id)
+            LOGGER.info("%s: someone has come back after it was left", room.name)
         if room.presence_entity_id is None:
             self._raw_presence.pop(room.room_id, None)
             return None
@@ -2756,20 +2951,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                 self._deferred_final.pop(room_id, None)
                 self._fallback_reason.pop(room_id, None)
                 self._unit_mode_seen.pop(room_id, None)
-                self._sun_was_up.pop(room_id, None)
+                self._unit_mode_since.pop(room_id, None)
+                self._left.discard(room_id)
+                self._left_seen_clear.pop(room_id, None)
+                self._owner_stop.discard(room_id)
+                self._switch_off_pending.discard(room_id)
                 self._heading_home_reason.pop(room_id, None)
                 self._heading_home.pop(room_id, None)
                 self._regulators.pop(room_id, None)
                 self._previous_mode.pop(room_id, None)
                 self._mode_changed_at.pop(room_id, None)
+                self._ramp_from.pop(room_id, None)
+                self._waking.discard(room_id)
                 self._precondition_reason.pop(room_id, None)
                 self._demand_reason.pop(room_id, None)
                 self._previous.pop(room_id, None)
                 self._comfort_modes.pop(room_id, None)
-                self._schedule_was_on.pop(room_id, None)
-                self._room_empty.pop(room_id, None)
                 self._raw_presence.pop(room_id, None)
-                self._comfort_mode_reason.pop(room_id, None)
                 self.store.forget_room(room_id)
                 # 0.9.6. A device belongs to one config entry; removing the
                 # room removes its device. The lookup and the removal used
@@ -2788,7 +2986,6 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # Presence first, and the Comfort mode settled against it, before
         # anything below asks whether the room is sleeping (DR-058).
         presence = self._graced_presence(room, now)
-        self._update_comfort_mode(room, presence)
         self._end_heading_home(room, presence, now)
 
         plan = self._precondition_plan(room, now)
@@ -2832,13 +3029,26 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
                     f"{unit_rh:.0f}%: {room.humidity_entity_id} is not reporting"
                 )
         since = self._free_cooling_since.get(room.room_id)
+        unit_mode = self._unit_mode(room)
+        seen = self._unit_mode_since.get(room.room_id)
+        if seen is None or seen[0] != unit_mode:
+            # The first sight of a unit says nothing about how long it has
+            # been in its mode, so no hold is claimed for it.
+            self._unit_mode_since[room.room_id] = (
+                unit_mode,
+                now if seen is not None else now - ROUTE_HOLD,
+            )
+        unit_mode_minutes = (
+            now - self._unit_mode_since[room.room_id][1]
+        ).total_seconds() / 60.0
 
         return RoomInputs(
             now=now,
             temperature_c=temperature_c,
             relative_humidity=relative_humidity,
             temperature_from_unit=temperature_from_unit,
-            unit_mode=self._unit_mode(room),
+            unit_mode=unit_mode,
+            unit_mode_minutes=unit_mode_minutes,
             free_cooling_advised=self._free_cooling_advised.get(room.room_id, False),
             free_cooling_wait_over=since is not None
             and now - since >= FREE_COOLING_WAIT,
@@ -2871,8 +3081,10 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
             ),
             outdoor_wind_ms=self.outdoor_wind_ms(),
             precondition_ready=plan is None or plan.start_now,
-            previous_mode=self._previous_mode.get(room.room_id),
+            previous_mode=self._ramp_from.get(room.room_id),
             mode_changed_at=self._mode_changed_at.get(room.room_id),
+            waking=room.room_id in self._waking,
+            left=room.room_id in self._left,
             heading_home=room.room_id in self._heading_home,
             precondition_deadline=self._heading_home.get(room.room_id),
             k_sensible_c_per_hour=self._sensible_rate_for(room, now),
@@ -3089,22 +3301,23 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _sensible_rate_for(self, room: RoomConfig, now: datetime) -> float | None:
         """The `k_sensible` figure the dry-versus-cool decision should use.
 
-        0.8.10. Closes the gap disclosed at the 0.8.9 handover:
-        `hours_to_reach` and `energy_for` both went bin-aware in 0.8.9, but
-        this call site kept reading the pooled coefficient regardless of how
-        close the room actually is to its target.
+        The rate at the room's approach to its target (0.8.10): near the band
+        the true rate is a fraction of the pull-down rate.
 
-        Approach here is last cycle's commanded setpoint against the current
-        reading — the same pairing `_learn` anchors an interval on, since
-        `RoomInputs` is assembled before `evaluate_room` has produced this
-        cycle's own target. Falls back to the pooled-only figure when either
-        half is not yet known, which is every room's first cycle.
+        0.9.7, DR-090. The approach is the room's last solved target against
+        its reading. Until 0.9.7 it was the unit's own setpoint against the
+        reading, and that setpoint is the one this component had just sent:
+        each command moved the comparison and the comparison moved the next
+        command. On 15 October the cooling rate read 1.61, then 0.29 ten
+        seconds after heat at 24 C was sent, and the living room changed mode
+        thirteen times in 23 minutes. Falls back to the pooled figure when the
+        target is not yet known, which is every room's first cycle.
         """
-        commanded = self._unit_setpoint(room)  # DR-081
+        target = self._last_target.get(room.room_id)
         reading = self._number(room.temperature_entity_id, INDOOR_TOLERANCE)
-        if commanded is None or reading is None:
+        if target is None or reading is None:
             return self._learned(room.room_id, "k_sensible")
-        return self.model_for(room.room_id).sensible_rate_at(abs(commanded - reading))
+        return self.model_for(room.room_id).sensible_rate_at(abs(target - reading))
 
     def _learned(self, room_id: str, name: str) -> float | None:
         """A learned coefficient, or None until it has converged.
@@ -3682,15 +3895,24 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
         # Whether the room is actually being held back by this right now:
         # enforced, and the room needs correction.
         trace.comfort_reduction_active = enforced and trace.demand is not None
+        # 0.9.7, DR-096. The pull-down bin has no limit; its 99 C stand-in is
+        # not printed, and nothing is said to be reduced when nothing is.
+        unlimited = trace.power_ceiling_c >= self._BIN_CEILING_C[-1]
+        if unlimited:
+            trace.comfort_reduction_active = False
         trace.reasons.append(
             f"power budget: {allowance_kw:.2f} kW allowance, "
-            f"{BIN_NAMES[bin_index]} bin, ceiling "
-            f"{trace.power_ceiling_c:.1f} C approach"
+            f"{BIN_NAMES[bin_index]} bin, "
+            + (
+                "no limit on the setpoint"
+                if unlimited
+                else f"ceiling {trace.power_ceiling_c:.1f} C approach"
+            )
             + (
                 guidance_note
                 if guidance_note
                 else ", comfort reduction in effect"
-                if trace.demand is not None
+                if trace.comfort_reduction_active
                 else ""
             )
         )
@@ -3848,7 +4070,7 @@ class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
     def _bool(
         self,
         entity_id: str | None,
-        tolerance: timedelta = CONTACT_TOLERANCE,
+        tolerance: timedelta | None = CONTACT_TOLERANCE,
         room_id: str | None = None,
     ) -> bool | None:
         """An on/off reading, or None where there is none or it is stale."""

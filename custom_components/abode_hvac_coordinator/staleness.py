@@ -38,6 +38,8 @@ not to police reporting intervals.
 
 ROOM TEMPERATURE AND HUMIDITY HAVE NO AGE LIMIT
 -----------------------------------------------
+(and, since 0.9.7, DR-087, presence and contacts the same way)
+
 0.9.6, DR-070. A room's own temperature and humidity are trusted for as long
 as Home Assistant shows them as available. Many room sensors report only when
 the reading changes: the living room's Eve Room went 3 h 23 min without a
@@ -60,14 +62,14 @@ INDOOR_TOLERANCE: timedelta | None = None
 #: thirty minutes, so the tolerance has to clear a couple of missed polls.
 OUTDOOR_TOLERANCE = timedelta(hours=3)
 
-#: Presence. An mmWave sensor in a room nobody has entered legitimately reports
-#: nothing for a long time, so this is the loosest of the three. Occupancy
-#: grace already absorbs short gaps; this only catches a dead sensor.
-PRESENCE_TOLERANCE = timedelta(hours=6)
+#: Presence. None: no age limit (0.9.7, DR-087). An mmWave sensor in a room
+#: nobody enters says nothing for as long as the room stays empty; the Office's
+#: was judged stale after six quiet hours on 15 October.
+PRESENCE_TOLERANCE: timedelta | None = None
 
-#: Openings and covers. Contact sensors are quiet by nature — a window nobody
-#: opens for a week is normal — but they heartbeat daily.
-CONTACT_TOLERANCE = timedelta(hours=26)
+#: Openings and covers, and the other on/off feeds. None: no age limit (0.9.7,
+#: DR-087). A window nobody opens for a week is normal.
+CONTACT_TOLERANCE: timedelta | None = None
 
 #: Battery charge, solar output and house load, for the power-aware
 #: compressor decision. These describe *right now*, re-checked every cycle

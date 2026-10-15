@@ -284,10 +284,18 @@ class RoomInputs:
     #: the model says the pull can wait. The room is still in PRECONDITION —
     #: the request stands — but nothing actuates yet.
     precondition_ready: bool = True
-    #: The mode the room was in before the current one, and when it changed,
-    #: so the band can be ramped across a sleep transition rather than stepped.
+    #: The band the room last changed from, and when, so the band is ramped
+    #: across the hour after a change rather than stepped. 0.9.7, DR-084: held
+    #: for the whole ramp. Until 0.9.7 this was the previous evaluation's
+    #: mode, so the ramp applied for one evaluation and the band then stepped.
     previous_mode: Mode | None = None
     mode_changed_at: datetime | None = None
+    #: 0.9.7, DR-088. The owner has pressed the room's Leave button and nobody
+    #: has come back: the room is off, whatever else would run it.
+    left: bool = False
+    #: 0.9.7, DR-085. The room has come out of Sleep and has not yet been in
+    #: its daytime band: it is not heated up to it.
+    waking: bool = False
     #: Whether this room has any covers under the controller's direction.
     has_covers: bool = False
     #: What the unit itself can do, read from the climate entity. The decision
@@ -340,6 +348,10 @@ class RoomInputs:
     #: already cooling or drying a room that is still above its band is not
     #: switched to its fan halfway, and it keeps the route it is on.
     unit_mode: str | None = None
+    #: 0.9.7, DR-090. How long, in minutes, the unit has been in `unit_mode`,
+    #: or None where that is not known. A route chosen between drying,
+    #: cooling and the fan is kept for `ROUTE_HOLD` once chosen.
+    unit_mode_minutes: float | None = None
     #: 0.9.6, DR-073. Outdoor air was judged better than the room's at the
     #: last evaluation (free cooling advised).
     free_cooling_advised: bool = False

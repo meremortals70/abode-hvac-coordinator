@@ -99,6 +99,11 @@
       "setpoint": {
         "default": "mdi:thermometer-auto"
       }
+    },
+    "button": {
+      "leave": {
+        "default": "mdi:exit-run"
+      }
     }
   },
   "services": {

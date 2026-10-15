@@ -6,6 +6,67 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.9.7 - 2026-10-15
+
+From the living room on the night of 14–15 October, the owner's instructions of
+15 October, and a root-and-branch review of the component: six simulations of
+the real integration against a model room, checked against the live trace.
+
+### Fixed
+
+- **The compressor started and stopped at the edge of the band.** A room
+  coasted as soon as it was anywhere inside its band, so the unit stopped at the
+  band's edge and restarted, at its coldest setpoint, within a quarter of an
+  hour. A room the unit is working on now coasts only once it reaches its
+  target. In simulation, starts over three nights fell from 29 to 7, and in an
+  Office working day from 11 to 3. (DR-098)
+- **The unit changed between dry and cool every few minutes.** The cooling rate
+  compared with drying was read at the unit's own setpoint, the one the
+  component had just sent, so each command moved the next comparison; the
+  living room changed mode thirteen times between 05:15 and 05:38 on 15
+  October. The rate is now read at the room's target, and a route, once chosen,
+  is kept for 20 minutes. (DR-090)
+- **The room was heated the moment Sleep ended.** The first evaluation after a
+  change of band used the new band in full, with no ramp. It is now decided
+  again knowing the change. (DR-092)
+- **A unit stayed in a mode whose reason had passed.** Inside its band, a unit
+  heating a room past the middle of its band now goes to its fan, and a unit
+  drying a room that no longer calls for it goes back to cooling. (DR-091)
+- **A coast after heating put the unit in dry.** It now goes to the fan.
+  (DR-093)
+- **Before a room had learned, its setpoint swung each time it crossed its
+  target.** The fallback loop now turns round only half a degree past target.
+  (DR-094)
+- **A unit whose sensor reads differently from the room took hours to
+  correct.** The difference is now measured from the unit's own reading.
+  (DR-095)
+- **Inside the band the unit could be asked for far colder than needed, and
+  the trim never corrected it.** Inside the band the unit's own thermostat now
+  holds the room's target, and the trim is learned there; a pull-down far from
+  target no longer winds it. (DR-097)
+- **The band ramp lasted one evaluation.** It now lasts the hour. (DR-084)
+- **The power trace printed "ceiling 99.0 C".** It says "no limit on the
+  setpoint". (DR-096)
+
+### Changed
+
+- **A Comfort mode chosen by hand stays until you change it.** Not the
+  schedule, not sunrise, not an empty room. Supersedes the 0.9.6 sunrise end.
+  (DR-083)
+- **A room coming out of Sleep is not heated up to its daytime band,** nor left
+  cooling: its unit goes to its fan until the room is back in band. (DR-085)
+- **The room loop's rate is the trend over 15 minutes,** and a setpoint sent
+  stands until the loop moves three quarters of a step from it. (DR-086)
+- **Presence and door or window sensors have no age limit.** (DR-087)
+- **Switching Automatic control off turns the unit off,** once; after that the
+  unit is yours. (DR-089)
+
+### Added
+
+- **A Leave button per room.** Turns the room's air conditioning off at once
+  and keeps it off until someone comes back. An example script is in
+  `docs/examples.md`. (DR-088)
+
 ## 0.9.6 - 2026-10-14
 
 From the living room on the night of 13–14 October, the Office on the

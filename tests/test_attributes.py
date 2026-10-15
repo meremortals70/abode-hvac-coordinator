@@ -45,6 +45,7 @@ INHERITED = {
     "async_show_form",
     "async_show_menu",
     "async_request_refresh",
+    "async_refresh",
     "async_set_updated_data",
     "async_on_remove",
     "async_write_ha_state",
@@ -186,7 +187,7 @@ class TestPureModulesStayPure(unittest.TestCase):
         on_disk = {p.stem for p in SRC.glob("*.py")} - {"__init__"}
         impure = {
             "actuator", "config_flow", "coordinator", "diagnostics",
-            "entity", "number", "select", "sensor", "store", "switch",
+            "button", "entity", "number", "select", "sensor", "store", "switch",
         }
         self.assertEqual(
             on_disk - set(PURE_MODULES) - impure,
