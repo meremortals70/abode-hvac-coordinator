@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-057 |
+| Status | Accepted; amends DR-057; amended by DR-093 in 0.9.7 |
 | Since | 0.9.3 (2026-10-12) |
 | Origin | Living room overnight review, 11/12 October 2026, findings 5, 6 and 13. Instructions, 2026-10-12: "with high humidity it should have gone to dry not fan" and "if humidity is low any coasting should be fan only unless constrained by power" |
 | Related | DR-016, DR-022, DR-029, DR-053, DR-057, DR-060, DR-063 |
@@ -43,9 +43,9 @@ that has been learned (DR-060).
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms**, as amended by DR-093 in 0.9.7.
 
-- `modes.py:708` - `def coast_step` - dry where the room's humidity calls for it, otherwise fan, otherwise off
-- `modes.py:749` - `route = _latent_route(judged, overshoot, scratch)` - the same test as dry versus cool
-- `modes.py:743` - `inputs.rebound_relative_humidity > inputs.relative_humidity` - judged after the rebound
-- `coordinator.py:1725` - `if self._capabilities(room)["can_fan_only"]` - a refused restart stays on the fan
+- `modes.py:743` - `def coast_step` - dry where the room's humidity calls for it, otherwise fan, otherwise off
+- `modes.py:802` - `route = _latent_route(judged, overshoot, scratch)` - the same test as dry versus cool
+- `modes.py:796` - `inputs.rebound_relative_humidity > inputs.relative_humidity` - judged after the rebound
+- `coordinator.py:1850` - `if self._capabilities(room)["can_fan_only"]` - a refused restart stays on the fan

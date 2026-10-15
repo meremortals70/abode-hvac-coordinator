@@ -87,12 +87,12 @@ being run. The outdoor apparent temperature is compared in a second place,
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-060.
+Checked against: 0.9.7. **Conforms**, as amended by DR-060.
 
 - `thermal.py:544` - `def project_unaided` - the stepped projection
 - `thermal.py:148` - `def unaided_outlook` - when the room is back in band for good
 - `sun.py:142` - `def solar_position` - the sun at a moment that has not happened yet
-- `coordinator.py:2936` - `def _unaided_inputs` - forecast, sun on the window and the return limit
-- `coordinator.py:1863` - `def _predicted_to_hold` - the in-band hold now read from the projection
-- `modes.py:773` - `def _weather_coast` - the coast decision and its return limit
+- `coordinator.py:3148` - `def _unaided_inputs` - forecast, sun on the window and the return limit
+- `coordinator.py:2040` - `def _predicted_to_hold` - the in-band hold now read from the projection
+- `modes.py:826` - `def _weather_coast` - the coast decision and its return limit
 - `psychro.py:242` - `def weather_works_against_compressor` - the fallback until the model converges

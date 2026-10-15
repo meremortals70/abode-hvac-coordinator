@@ -33,8 +33,8 @@ walks the setpoint back as the room approaches it (DR-056).
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-075.
+Checked against: 0.9.7. **Conforms**, as amended by DR-075.
 
-- `coordinator.py:1573` - `elif way == "cool":` - cooling rounds down (the room loop's way since DR-075)
-- `coordinator.py:1575` - `elif way == "heat":` - heating rounds up
-- `coordinator.py:1577` - `rounded = quantise_setpoint(commanded, limits, toward=toward)` - the rounding
+- `coordinator.py:1647` - `elif way == "cool":` - cooling rounds down (the room loop's way since DR-075)
+- `coordinator.py:1649` - `elif way == "heat":` - heating rounds up
+- `coordinator.py:1651` - `rounded = quantise_setpoint(commanded, limits, toward=toward)` - the rounding

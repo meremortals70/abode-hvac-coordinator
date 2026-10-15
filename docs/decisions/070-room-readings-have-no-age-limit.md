@@ -43,7 +43,7 @@ default is now none.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `staleness.py:57` - `INDOOR_TOLERANCE: timedelta | None = None` - no age limit for room readings
 - `staleness.py:111` - `if tolerance is None or age <= tolerance:` - no limit means fresh

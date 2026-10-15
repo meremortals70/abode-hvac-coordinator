@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-054 |
+| Status | Accepted; amends DR-054; amended by DR-094 in 0.9.7 |
 | Since | 0.9.6 (2026-10-14) |
 | Origin | Living room, 13 October 2026, 21:35–23:25. Instruction, 2026-10-14: "i want you to roll everything into 0.9.6" |
 | Related | DR-054, DR-056, DR-065 |
@@ -26,8 +26,8 @@ The way was taken from the room against its target. With the target about 20.8 C
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms**, as amended by DR-094 in 0.9.7.
 
-- `regulate.py:128` - `DIRECTION_MARGIN_C_PER_HOUR = 0.5` - the margin
-- `regulate.py:522` - `previous = state.pid_direction or direction` - the way is kept
-- `coordinator.py:1569` - `way = pid.direction if pid is not None else direction` - and the rounding follows it
+- `regulate.py:136` - `DIRECTION_MARGIN_C_PER_HOUR = 0.5` - the margin
+- `regulate.py:636` - `previous = state.pid_direction or direction` - the way is kept
+- `coordinator.py:1643` - `way = pid.direction if pid is not None else direction` - and the rounding follows it

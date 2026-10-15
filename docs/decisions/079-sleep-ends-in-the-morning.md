@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-058 |
+| Status | Superseded by DR-083 in 0.9.7; amended DR-058 |
 | Since | 0.9.6 (2026-10-14) |
 | Origin | Review of the component against its intent, 14 October 2026. Instruction, 2026-10-14: "yes" (approving the review fixes) |
 | Related | DR-014, DR-058 |
@@ -26,8 +26,4 @@ A lie-in past the end of the schedule puts the room back on its occupied band; c
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
-
-- `modes.py:117` - `if schedule_was_active is True and not schedule_active:` - the schedule ends it
-- `modes.py:122` - `if comfort_mode is ComfortMode.SLEEP and not has_schedule and sunrise:` - or sunrise, with no schedule
-- `coordinator.py:1288` - `sunrise=sun_up is True and sun_was_up is False,` - sunrise as the rising edge of sun.sun
+Checked against: 0.9.7. **Superseded by DR-083.** The code was removed in 0.9.7: a Comfort mode chosen by hand is no longer ended by the schedule, sunrise or an empty room.

@@ -30,6 +30,6 @@ A sensor that has stopped reporting is still caught: neither time moves.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-070.
+Checked against: 0.9.7. **Conforms**, as amended by DR-070.
 
-- `coordinator.py:3761` - `max(state.last_updated, state.last_reported), dt_util.utcnow(), tolerance` - the age
+- `coordinator.py:3983` - `max(state.last_updated, state.last_reported), dt_util.utcnow(), tolerance` - the age

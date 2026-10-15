@@ -25,7 +25,7 @@ What rooms learned before 0.9.6 is kept and corrected only as new intervals come
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `coordinator.py:2486` - `def _unit_setpoint` - the setpoint the unit reports
-- `coordinator.py:1777` - `commanded = self._unit_setpoint(room)` - recorded with the interval
+- `coordinator.py:2681` - `def _unit_setpoint` - the setpoint the unit reports
+- `coordinator.py:1954` - `commanded = self._unit_setpoint(room)` - recorded with the interval

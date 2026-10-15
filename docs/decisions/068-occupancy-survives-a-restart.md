@@ -36,8 +36,8 @@ reading then starts the usual grace.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `store.py:216` - `def occupancy` - read at startup
-- `store.py:229` - `def set_occupancy` - written when it changes
-- `coordinator.py:2008` - `occupied=self.store.occupancy().get(room.room_id, False)` - the grace starts from it
+- `store.py:239` - `def occupancy` - read at startup
+- `store.py:252` - `def set_occupancy` - written when it changes
+- `coordinator.py:2203` - `occupied=self.store.occupancy().get(room.room_id, False)` - the grace starts from it

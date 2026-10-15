@@ -26,8 +26,8 @@ A room whose unit reads low against the room is cooled less than it needs while 
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `coordinator.py:2815` - `unit_c = self._unit_reading(room, "current_temperature")` - temperature
-- `coordinator.py:2824` - `unit_rh = self._unit_reading(room, "current_humidity")` - humidity
-- `coordinator.py:1767` - `temperature = None if inputs.temperature_from_unit else inputs.temperature_c` - not learned from
+- `coordinator.py:3012` - `unit_c = self._unit_reading(room, "current_temperature")` - temperature
+- `coordinator.py:3021` - `unit_rh = self._unit_reading(room, "current_humidity")` - humidity
+- `coordinator.py:1944` - `temperature = None if inputs.temperature_from_unit else inputs.temperature_c` - not learned from

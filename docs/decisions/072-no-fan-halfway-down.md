@@ -26,8 +26,8 @@ A unit started for a room keeps working until the room is inside its band, then 
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `modes.py:331` - `WORKING_MODES = frozenset` - the modes that count as working the room
-- `modes.py:411` - `elif inputs.unit_mode in WORKING_MODES:` - the fan step skipped
-- `coordinator.py:2467` - `def _unit_mode` - the unit's mode, read each evaluation
+- `modes.py:270` - `WORKING_MODES = frozenset` - the modes that count as working the room
+- `modes.py:363` - `elif inputs.unit_mode in WORKING_MODES:` - the fan step skipped
+- `coordinator.py:2662` - `def _unit_mode` - the unit's mode, read each evaluation

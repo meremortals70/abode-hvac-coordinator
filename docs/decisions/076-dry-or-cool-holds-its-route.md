@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-027 and DR-029 |
+| Status | Accepted; amends DR-027 and DR-029; amended by DR-090 in 0.9.7 |
 | Since | 0.9.6 (2026-10-14) |
 | Origin | Living room, 13 October 2026, 21:05 and 23:51–00:02. Instruction, 2026-10-14: "i want you to roll everything into 0.9.6" |
 | Related | DR-026, DR-027, DR-029, DR-059 |
@@ -26,9 +26,9 @@ The figures are judgements. A room near the line stays on the route it is on a l
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms**, as amended by DR-090 in 0.9.7.
 
-- `modes.py:314` - `DRY_FALLBACK_HYSTERESIS_RH = 3.0` - the hysteresis
-- `modes.py:402` - `if overshoot > DRY_FALLBACK_MAX_OVERSHOOT_HCI:` - too far above band to dry on the fallback
-- `modes.py:410` - `threshold -= DRY_FALLBACK_HYSTERESIS_RH` - the line moves
-- `modes.py:453` - `advantage *= DRY_ROUTE_HYSTERESIS` - and the learned comparison
+- `modes.py:253` - `DRY_FALLBACK_HYSTERESIS_RH = 3.0` - the hysteresis
+- `modes.py:354` - `if overshoot > DRY_FALLBACK_MAX_OVERSHOOT_HCI:` - too far above band to dry on the fallback
+- `modes.py:362` - `threshold -= DRY_FALLBACK_HYSTERESIS_RH` - the line moves
+- `modes.py:405` - `advantage *= DRY_ROUTE_HYSTERESIS` - and the learned comparison

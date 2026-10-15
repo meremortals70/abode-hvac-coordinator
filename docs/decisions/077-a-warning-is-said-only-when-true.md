@@ -26,9 +26,9 @@ A warning can come up to ten minutes after the stop was decided. A room whose un
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `coordinator.py:2333` - `def _timed_announcements` - the rule
-- `coordinator.py:2367` - `self._deferred_final[room.room_id] = announcement` - held until the stop is sent
-- `coordinator.py:2356` - `self._unit_mode_seen.get(room.room_id) in (None, "off")` - only for a unit that was on
+- `coordinator.py:2528` - `def _timed_announcements` - the rule
+- `coordinator.py:2562` - `self._deferred_final[room.room_id] = announcement` - held until the stop is sent
+- `coordinator.py:2551` - `self._unit_mode_seen.get(room.room_id) in (None, "off")` - only for a unit that was on
 - `actuator.py:583` - `trace.stopped = True` - an off actually sent

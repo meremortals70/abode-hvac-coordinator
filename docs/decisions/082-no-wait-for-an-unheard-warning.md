@@ -25,7 +25,7 @@ A room with announcements on but nothing to say is turned off three minutes soon
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `coordinator.py:2019` - `and bool(room.announce_target_entity_ids)` - only with speakers
-- `coordinator.py:2021` - `and self._unit_mode(room) not in (None, "off")` - and a unit that is on
+- `coordinator.py:2214` - `and bool(room.announce_target_entity_ids)` - only with speakers
+- `coordinator.py:2216` - `and self._unit_mode(room) not in (None, "off")` - and a unit that is on

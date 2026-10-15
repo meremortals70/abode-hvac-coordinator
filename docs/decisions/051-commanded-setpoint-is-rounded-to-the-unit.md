@@ -60,10 +60,10 @@ trace reason could name a unit that does not hold what it was sent.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-065.
+Checked against: 0.9.7. **Conforms**, as amended by DR-065.
 
-- `regulate.py:394` - `def quantise_setpoint` - nearest step from the unit's minimum, inside its range, toward a ceiling
-- `regulate.py:424` - `def effective_deadband` - half the step, never under 0.3 C
-- `regulate.py:360` - `def combine_limits` - two heads: coarser step, narrower range
-- `coordinator.py:1577` - `rounded = quantise_setpoint` - the last step before the setpoint is recorded and sent
-- `coordinator.py:1624` - `def _setpoint_limits` - step and range from the stored profile
+- `regulate.py:503` - `def quantise_setpoint` - nearest step from the unit's minimum, inside its range, toward a ceiling
+- `regulate.py:533` - `def effective_deadband` - half the step, never under 0.3 C
+- `regulate.py:469` - `def combine_limits` - two heads: coarser step, narrower range
+- `coordinator.py:1651` - `rounded = quantise_setpoint` - the last step before the setpoint is recorded and sent
+- `coordinator.py:1724` - `def _setpoint_limits` - step and range from the stored profile

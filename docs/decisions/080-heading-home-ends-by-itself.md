@@ -26,8 +26,8 @@ A request with no deadline, in a room with no presence sensor, still stands unti
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `coordinator.py:1313` - `def _end_heading_home` - the rule
-- `coordinator.py:1329` - `elif deadline is not None and now >= deadline + HEADING_HOME_EXPIRY:` - an hour past the deadline
+- `coordinator.py:1327` - `def _end_heading_home` - the rule
+- `coordinator.py:1343` - `elif deadline is not None and now >= deadline + HEADING_HOME_EXPIRY:` - an hour past the deadline
 - `scheduling.py:44` - `HEADING_HOME_EXPIRY = timedelta(hours=1)` - the hour

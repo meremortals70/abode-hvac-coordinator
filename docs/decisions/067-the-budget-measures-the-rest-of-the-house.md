@@ -54,13 +54,13 @@ ten-minute figures are judgement constants, listed in known limitations.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `power.py:490` - `READING_AVERAGE_WINDOW = timedelta(minutes=15)` - the averaging window
 - `power.py:495` - `OFF_HOLD = timedelta(minutes=10)` - how long a shortfall lasts before off
 - `power.py:498` - `def mean_recent` - the average, measured back from the newest reading
 - `power.py:514` - `def hold_before_off` - held at the gentlest bin, then off
 - `power.py:127` - `max(available_kwh, 0.0) / hours_until_clear - max(other_house_draw_kw, 0.0)` - the house's share taken off
-- `coordinator.py:3399` - `def _note_power_samples` - readings kept, and each room's own while it is off
-- `coordinator.py:3431` - `def _rest_of_house_kw` - the rest of the house as measured
-- `coordinator.py:3614` - `bin_index, since = hold_before_off(` - applied to enforced rooms
+- `coordinator.py:3612` - `def _note_power_samples` - readings kept, and each room's own while it is off
+- `coordinator.py:3644` - `def _rest_of_house_kw` - the rest of the house as measured
+- `coordinator.py:3827` - `bin_index, since = hold_before_off(` - applied to enforced rooms

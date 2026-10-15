@@ -25,7 +25,7 @@ Units that ignore the setpoint in dry mode are unaffected. A coasting dry step i
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `actuator.py:408` - `room, trace, DRY_MODES, temperature, active=False` - the setpoint sent
 - `actuator.py:444` - `HVACMode.DRY,` - and walked in band

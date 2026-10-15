@@ -44,11 +44,11 @@ decision and not a state the running component reaches.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-069.
+Checked against: 0.9.7. **Conforms**, as amended by DR-069.
 
-- `modes.py:286` - `DEFAULT_OPENING_GRACE_MINUTES` - five minutes
-- `modes.py:517` - `if inputs.opening_open:` - hold, then off
+- `modes.py:225` - `DEFAULT_OPENING_GRACE_MINUTES` - five minutes
+- `modes.py:483` - `if inputs.opening_open:` - hold, then off
 - `grace.py:237` - `def evaluate_opening_warnings` - the first and final warnings, once each
-- `coordinator.py:3825` - `def _warn_about_opening` - queues the warnings for the room's announce targets
+- `coordinator.py:4047` - `def _warn_about_opening` - queues the warnings for the room's announce targets
 - `forms.py:127` - `def opening_grace_from_input` - the room form's grace, five where blank
 - `config_flow.py:53` - `CONF_OPENING_GRACE` - the field on the room form

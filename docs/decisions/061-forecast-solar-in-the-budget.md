@@ -42,12 +42,12 @@ back to the old budget. The forecast is read every fifteen minutes.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
 - `power.py:311` - `def forecast_slices` - the forecast as hourly slices of the window
 - `power.py:360` - `def forecast_allowance_kw` - the battery walk
 - `power.py:387` - `ceiling_kwh = start + max(headroom_kwh, 0.0)` - no more stored than there is room for
 - `power.py:293` - `def energy_dashboard_solar_forecasts` - the default sources
-- `coordinator.py:934` - `async def _async_refresh_solar_forecast` - read and summed through the energy platform
-- `coordinator.py:3560` - `allowance_kw = forecast_allowance_kw(` - used in the budget
+- `coordinator.py:946` - `async def _async_refresh_solar_forecast` - read and summed through the energy platform
+- `coordinator.py:3773` - `allowance_kw = forecast_allowance_kw(` - used in the budget
 - `config_flow.py:953` - `vol.Optional(CONF_SOLAR_FORECAST_ENTRIES)` - the house-level choice

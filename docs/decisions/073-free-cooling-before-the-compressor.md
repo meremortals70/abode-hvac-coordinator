@@ -27,10 +27,10 @@ An occupied room that could be cooled by opening up waits up to ten minutes befo
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms.**
 
-- `modes.py:326` - `FREE_COOLING_WAIT = timedelta` - the wait
-- `modes.py:964` - `and not inputs.free_cooling_wait_over` - no start while it runs
-- `modes.py:531` - `if inputs.free_cooling_advised:` - an advised opening stops the unit at once
-- `coordinator.py:3843` - `announce=room.grace.announce and not inputs.free_cooling_advised,` - and is not warned about
-- `coordinator.py:1985` - `self._free_cooling_since.setdefault` - when the advice began
+- `modes.py:265` - `FREE_COOLING_WAIT = timedelta` - the wait
+- `modes.py:1042` - `and not inputs.free_cooling_wait_over` - no start while it runs
+- `modes.py:497` - `if inputs.free_cooling_advised:` - an advised opening stops the unit at once
+- `coordinator.py:4065` - `announce=room.grace.announce and not inputs.free_cooling_advised,` - and is not warned about
+- `coordinator.py:2162` - `self._free_cooling_since.setdefault` - when the advice began

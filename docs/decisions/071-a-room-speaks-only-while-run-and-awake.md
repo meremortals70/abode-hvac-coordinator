@@ -39,7 +39,7 @@ back on does not replay what was missed.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms**, as amended by DR-077.
+Checked against: 0.9.7. **Conforms**, as amended by DR-077.
 
-- `coordinator.py:2294` - `if room.announce_target_entity_ids and not self._silenced(room)` - every warning passes through the check
-- `coordinator.py:2372` - `def _silenced` - switched off, waiting for its unit, or asleep
+- `coordinator.py:2489` - `if room.announce_target_entity_ids and not self._silenced(room)` - every warning passes through the check
+- `coordinator.py:2567` - `def _silenced` - switched off, waiting for its unit, or asleep

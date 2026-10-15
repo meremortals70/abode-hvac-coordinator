@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted; amends DR-054 |
+| Status | Accepted; amends DR-054; amended by DR-091 and DR-097 in 0.9.7 |
 | Since | 0.9.1 (2026-10-04) |
 | Origin | Incident, Office, 2026-10-04, from the Home Assistant recorder |
 | Related | DR-017, DR-051, DR-054 |
@@ -51,9 +51,9 @@ curve is still unconverged falls back to the target plus the trim, as before.
 
 ## In the code
 
-Checked against: 0.9.6. **Conforms.**
+Checked against: 0.9.7. **Conforms**, as amended by DR-091 and DR-097 in 0.9.7.
 
 - `thermal.py:510` - `smallest approach at which the unit does the most it does` - the cap
 - `actuator.py:425` - `async def _async_hold_setpoint` - walks the setpoint onto a running unit that is in band
-- `modes.py:609` - `trace.hold_setpoint = True` - set only for the within-band decision
-- `models.py:418` - `hold_setpoint` - the flag on the trace
+- `modes.py:739` - `trace.hold_setpoint = True` - set only for the within-band decision
+- `models.py:430` - `hold_setpoint` - the flag on the trace
