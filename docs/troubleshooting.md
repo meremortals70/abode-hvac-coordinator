@@ -1,204 +1,48 @@
 # Troubleshooting
 
-**Start with the decision trace.** Open `sensor.<room>_mode` and read the
-`reasons` and `rejected` attributes. Nearly every question below is answered
-there, in the room's own words.
+## Where to look first
 
-## The room is doing nothing
+1. **The room's mode sensor attributes** (for a room named Office, `sensor.office`, then **Attributes**). `action` is what the unit is told; `control_reason`, `band_reason` and `limits.reasons` say why. `model.last_reason` says why the model did not learn on its last step, if it did not.
+2. **Settings → System → Repairs** for anything the component needs you to fix.
+3. **Diagnostics:** Settings → Devices & services → Abode HVAC Coordinator → the three dots → **Download diagnostics**. It holds every room's settings, choices, learning, plan and trace, the last 200 commands sent, the learned power draw, the power budget, the tariff and the forecasts. Your home's position is removed.
+4. **The log:** each command sent is logged at INFO, a failed one at WARNING.
 
-Check `actuator` on the mode sensor. `rejected` says why.
+## Repairs
 
-**`off`** means the unit was commanded off:
+| Repair | What it means | How to fix it |
+| --- | --- | --- |
+| A tariff rule is not known | The tariff declares a rule this version does not know. It is shown in each room's trace and never dropped | Update the Abode HVAC Coordinator, or remove the rule from the tariff |
+| The tariff cannot be read | Abode Power Tariffs did not answer. Every hour is priced the same until it does | Check the Abode Power Tariffs entry is loaded, or clear the tariff in Reconfigure |
+| No speech engine | A room announces warnings, but Home Assistant has no speech engine | Add one, or turn announcements off in the room's options |
+| Choose a speech engine | Home Assistant has several speech engines and none is chosen | Reconfigure → Announcements |
+| The solar forecast cannot be read | The solar forecast integration failed | Check that integration, or remove it from the Power screen in Reconfigure |
+| The grid sensor's direction looks wrong | Ten readings in a row contradicted the direction set up | Reconfigure → Grid direction |
+| Grid import during a no-grid-import window | The house imported more than 0.05 kWh in the last window | Check the battery's settings and the rooms' power management |
+| An air conditioner is in two rooms | One climate entity is used by two rooms; both are locked out | Remove it from one room in Configure → Rooms |
+| A room's sensor is missing | Home Assistant has not provided a room's temperature or humidity sensor for 15 minutes: its integration is gone, failed, or no longer offers it | Check the integration it comes from, or choose another sensor in Configure → Rooms → Edit |
+| A room's model has stopped learning | No correction in 24 hours; the repair names the reading that stopped it | Check the room's sensors and its air conditioner |
 
-| Trace says | Cause |
-|---|---|
-| `room is in lockout` | A lockout reason is set. Clear it in Configure |
-| `room unoccupied, air conditioning off` | Working as designed. Use heading home |
-| `an opening in this room is open` | A window or door has been open longer than the room's grace (five minutes unless changed). The unit is off until it closes |
-| `Automatic control is off; the unit is the owner's` | The room's Automatic control switch is off. Switching it off turned the unit off once (DR-089). After that nothing is sent, so if the unit is running, someone turned it on by hand |
-| `waiting for the air conditioner to report what it can do` | The room has not yet read what its air conditioner offers, so nothing is sent to it. It starts by itself as soon as the air conditioner reports. See [Configuration](configuration.md#what-the-air-conditioner-can-do) |
-| `coasting, model predicts the band holds; this unit has no fan-only mode, so it is off` | A unit with no fan-only mode coasts off. One that has it is left on its fan and is not in this list |
-| `humidity is high, so the unit dries rather than blowing over a wet coil` | The room is coasting in dry mode (DR-059). Working as designed |
-| `the unit has just been cooling and this room has not yet learned how much moisture comes back off the coil…` | The weather coast is held back until the room has learned its rebound (DR-060). It learns from the in-band coasts, which still happen |
-| Repair issue: Spoken warnings cannot be given | No text-to-speech engine is chosen and there is not exactly one, or the chosen one has gone. Choose one under Configure → House configuration → Spoken warnings. Rooms are controlled as normal meanwhile (DR-069) |
-| `held at the gentlest setting, and off at HH:MM unless it recovers` | The budget has fallen short. The room keeps running gently and is turned off at that time unless the budget recovers (DR-067) |
-| `enforced, so the unit is off until the budget allows it` | The room's power management is enforced and the battery, with the forecast sun, cannot carry even holding the room (DR-063). Set the room to guidance to keep it running |
-| `preconditioning, but the deadline is far enough out that the pull can wait` | Working as designed |
-| `this unit cannot cool` / `cannot heat` | The room needs a direction the unit does not have |
-| `no grid import permitted…` | The tariff forbids import and the battery cannot carry the room |
+Each repair clears itself once its cause is gone.
 
-**`none`** means nothing was commanded, and the unit is holding whatever
-setpoint it was last given:
+## Stale feeds
 
-| Trace says | Cause |
-|---|---|
-| `within band` | Nothing to do. The unit's own thermostat is holding the room's target, allowing for its own sensor and the trim (DR-097) |
-| `coast: not yet, the unit keeps working until the room reaches its target` | The room is inside its band and the model says it would hold, but the unit is still bringing it to the middle of the band. It coasts once it gets there (DR-098) |
-| `left: the owner has left the room` | The room's Leave button was pressed. It stays off until the presence sensor reads empty and then occupied, or you change the room's controls (DR-088) |
-| `dry: kept, chosen N min ago and held for 20 min` / `cooling was chosen N min ago` | A route is kept for 20 minutes once chosen (DR-090) |
-| `fan: below band on its way out of Sleep, the unit goes to its fan` | The room has come out of Sleep and is cooler than its daytime band. It is neither heated nor cooled (DR-085, DR-091) |
-| `no comfort reading for this room` | Missing temperature or humidity sensor. Comfort is held rather than withdrawn |
-| `no band configured for this mode` | No band for the mode the room is in |
-| `an opening in this room is open, holding the unit as it is…` | A door has just opened. Nothing new is actuated, and the unit is not stopped yet in case it closes |
+The house's **Stale feeds** sensor lists readings too old to use:
 
-## Two rooms fight over one outdoor unit
+| Feed | Too old after | What happens meanwhile |
+| --- | --- | --- |
+| Outdoor temperature, humidity, wind | 3 hours | The forecast's values, or the model's last outdoor temperature, are used |
+| Battery charge, solar, house load, grid | 15 minutes | The power budget sets no limit |
 
-They should not, from 0.8.8. If a room's trace says the short-cycle guard
-refused a start moments after another room on the same outdoor unit started,
-check Configure → the room → the outdoor unit step: both air conditioners must
-name the **same** outdoor unit.
+Fix the sensor or its integration; nothing in this component needs changing.
 
-Diagnostics shows what the controller believes. `compressors` lists one entry
-per outdoor unit — two rooms sharing one should produce a single entry, not
-two, and each room's `outdoor_units` should name it.
+## Common questions
 
-## A room with two air conditioners only drives one
+**The mode sensor says Unavailable.** The room's cycle failed, or a required reading is missing. The log has one ERROR line naming the room, with the cause; it says again at INFO when the room runs again.
 
-Both should be commanded. Check that both are selected in the room's own air
-conditioner field rather than one of them being in a second room.
+**The unit is not doing what I set.** While Automatic control is on, the component re-sends its decision every cycle. Turn Automatic control off to take over.
 
-If the room refuses dry mode when one of its air conditioners has it, that is
-deliberate: a room can only do what **all** its air conditioners can do.
+**A unit control is refused.** The unit's mode, fan speed and setpoint are writable only while Automatic control is off; the vanes only while Automatic vane control is off.
 
-## The comfort index is unavailable
+**The room turns off when nobody is there.** An empty room is off. Without a presence sensor a room always counts as occupied.
 
-The temperature or humidity sensor has no reading, and the air conditioner
-reports nothing to stand in for it (DR-074). Check both in Developer Tools →
-States. A sensor showing `unknown` or `unavailable` will make the index
-unavailable too, deliberately, rather than showing a stale number.
-
-## A room shows no bands and never actuates
-
-A repair issue names the affected rooms. Add bands in Configure, or set a
-lockout reason if the room is deliberately inactive.
-
-## Sleep mode never happens
-
-The room has no sleep schedule configured. Without one the sleep band is dead
-config. Add a Schedule helper and select it as the room's sleep schedule.
-
-## The unit keeps switching between running and off
-
-Check the mode sensor's `hci` and `hci_air_only` while it happens. From 0.9.1 the
-difference between them is a constant 1.0 unless you configured an air-movement
-entity; before that it moved by a full point each time the unit started or
-stopped, and that was the cause. If `hci` still jumps by a point or more with the
-room reading unchanged, something else is moving it, and the `reasons` list says
-what: the sun correction, an air-movement entity, or a heat source. If the room
-temperature itself changes by that much between readings, the room sensor is the
-fault, not the controller.
-
-## Coast never happens
-
-Both the thermal model and the demand forecast are built, so this is almost
-always convergence rather than a fault. The trace says
-`coast: thermal model has not converged for this room`, and it needs 20 samples
-per coefficient with the variance down before it will answer. Until then the
-band is simply held — the hysteresis fallback, working as intended.
-
-Coasting also stops the moment the tariff window does not permit it.
-
-## Precool never happens
-
-Three things must all be true, and the trace names which one failed:
-
-- the tariff declares `precool_opportunity` on the current interval — check
-  `sensor.active_constraints`
-- a weather entity is configured, under Configure → House configuration →
-  Weather forecast
-- the forecast peak over the next ten hours is at least 3 °C above the room
-
-Without a weather entity precool falls back to comparing current conditions,
-which at midday cannot see the afternoon coming. The trace says it is falling
-back rather than simply reporting no demand.
-
-## Covers are never used
-
-Three possible causes, and the trace distinguishes them:
-
-- `covers: none configured for this room` — add them in Configure
-- `covers: cannot tell whether the sun is on this room` — no sun sensor and no
-  `sun.sun` either
-- `covers: no sun on this room to act on` — the sun is not on the glass
-- `covers: already closed against the gain` — working as designed; the ordering
-  has escalated to the next step
-
-If covers never move on a room the sun clearly reaches, the room has no window
-direction set. Choose which way its windows face in Configure.
-
-## The unit never runs in a mode I expected
-
-Read `rejected` on the mode sensor. A unit that does not advertise a mode never
-has it chosen — `dry: this unit has no dry mode`, `compressor: this unit cannot
-heat`. The controller reads `hvac_modes` from the entity itself, so if a mode is
-missing there it does not exist as far as this is concerned.
-
-If the trace says `cool unavailable, using heat_cool instead`, the unit has no
-dedicated cool mode and the fallback was used deliberately.
-
-## The setpoint looks wrong for the temperature
-
-It is not a temperature. The band is in HCI and the setpoint is derived from the
-band **and the humidity**. The same band gives a lower setpoint on a humid
-night. Compare `hci`, `band_low`, `band_high` and `target_dry_bulb_c` together.
-
-If `rejected` contains `clamped`, the band and the measured humidity together
-imply a setpoint outside 5–40 °C. The band needs adjusting.
-
-## The integration will not load
-
-Check the log. Configuration problems raise a message naming the room:
-
-- `Comfort bands for room X are invalid` — a band is malformed or inverted
-- `Room configuration is missing ...` — a required field is absent
-
-A broken tariff does **not** stop the integration. It is logged and ignored, and
-rooms continue on comfort alone.
-
-## Enable debug logging
-
-```yaml
-logger:
-  default: warning
-  logs:
-    custom_components.abode_hvac_coordinator: debug
-```
-
-Every evaluation logs its mode, actuator, index, target and reasons.
-
-## Reporting a problem
-
-Download diagnostics from the device page and attach them. They contain the
-configuration, the tariff, and the current trace for every room — which is
-almost always enough to see what happened without a conversation about it.
-
-## The commanded setpoint is not the number I expected
-
-That is Layer 2 working. `sensor.<room>_commanded_setpoint` carries
-`solved_target_c` and `regulation_trim_c` in its attributes: the first is what
-the comfort index asked for, the second is how far the outer loop has moved it
-to make the room sensor actually get there. See [Regulation](regulation.md).
-
-If the trim has pinned at ±3 °C the trace says the unit is not keeping up. That
-is a real finding, not a tuning problem — look at the room.
-
-## The room decided to stop and did not
-
-Check the mode sensor's `rejected` list for a short-cycle guard entry. It names
-the minutes remaining. Ten minutes minimum run and five minutes minimum off are
-compressor protection and are not configurable.
-
-## A room is holding and its sensors all look fine
-
-Check `sensor.stale_feeds` and the room's own `stale_feeds` trace attribute,
-and the room's `rejected` list for "not reporting". A room's own temperature and
-humidity are only treated as missing when Home Assistant shows them as
-`unavailable` or `unknown` (DR-070); other feeds also when they are too old.
-See [Stale feeds](staleness.md).
-
-## The tariff rate sensor is empty
-
-Either no tariff entry is selected, or the fetch is failing. A repair issue
-distinguishes them and names the reason. The controller keeps the last series
-it read rather than dropping to no tariff on one bad call, so a short outage in
-Abode Power Tariffs changes nothing visible.
+**An enforced room stops during a no-grid-import window.** Its trace's `power.reason` says why: the battery is down to its reserve, or it cannot supply the lowest rate's power.

@@ -1,56 +1,25 @@
 # Use cases
 
-## What this is for
+## Keep rooms comfortable for less
 
-**A house where comfort matters more than cost, but cost still matters.** The
-comfort band is a hard constraint. The tariff decides *when* energy is banked
-and *which* actuator delivers comfort — never whether you get it.
+Each room has a band: a low and a high on the comfort index. The component aims for the centre and counts anywhere inside as comfortable. Inside that leeway it picks the cheapest way to stay there. It might let the weather do the work, close the blinds when the sun is on the glass, dry the air, or run the compressor gently for longer instead of hard and often.
 
-**A house with more than one thing that could deliver comfort.** If all you have
-is a compressor, most of the value here is gone. The point is that blinds, a
-fan, dry mode and the compressor are four different prices for the same outcome,
-and the cheapest one that works should go first.
+Each room's model learns how fast the room warms and cools, what the sun and the people in it add, and how the unit responds. The plans get better as the model learns. The **Learning** sensor shows the week's average forecast error, so you can watch it fall.
 
-**A humid climate.** Dry bulb alone does not describe comfort where humidity
-swings 30 points in a day. A room at 24 °C and 40% and a room at 24 °C and 80%
-are not the same room.
+## Use cheap or solar hours
 
-**Anyone who has been burned by an automation they could not explain.** Every
-decision publishes why it was made, including which cheaper options were
-rejected and on what grounds.
+With [Abode Power Tariffs](https://github.com/meremortals70/abode-power-tariffs) set up, every half-hour of the plan is priced. A cheaper period coming up is part of every plan, so a room can cool a little ahead of an expensive period and coast through it, but only while it stays inside its band.
 
-## Concrete examples
+During a no-grid-import window, a room set to **Enforced** power management is held within what the battery and solar can supply until the window ends. If even its gentlest cooling can't last that long, it keeps cooling gently until the battery is down to its reserve, then stops. **Guidance** shows the same limit without applying it.
 
-**The room nobody is in.** The office is empty and it is 34 °C outside. The
-controller does nothing at all — not a wider band, nothing. When you send a
-heading-home request on the way back, it brings the room to its comfort band
-before you arrive.
+The house's **Demand forecast** sensor gives the energy the rooms' plans will use until the next tariff change, for whatever runs your battery.
 
-**The muggy evening that is not actually hot.** 26 °C and 85% humidity. Dry bulb
-says you are fine. The comfort index says you are not. The load is latent, so
-the controller reaches for dry mode rather than cooling — a fraction of the
-draw for the thing that is actually wrong.
+## A room ready when someone gets home
 
-**The sunny winter morning.** The room is below its band and there is sun on the
-window. The controller opens the blind rather than running the compressor.
+In a room with a presence sensor, the **Precool** button starts cooling an empty room now. The `precool` action can also give a time to be ready by. The component then works out from the room's model when it must start, so the room is in its precool band by that time. Precool ends when someone comes in, when Leave is pressed, when it is cancelled, or an hour after the ready time.
 
-**The free tariff window.** Between 11:00 and 14:00 energy costs nothing and the
-forecast says the afternoon is going to be hot. The controller overshoots the
-low bound to bank thermal mass in the building, so the expensive evening runs
-on stored cold rather than stored electricity.
+## Leave, sleep, and hand back control
 
-## What this is not for
-
-**It is not a thermostat.** If you want to set 22 and have it hold 22, use the
-Generic Thermostat integration. This deliberately does not let you set a
-setpoint.
-
-**It does not manage your battery.** It publishes what it expects to draw. What
-you do with that is yours — see [Architecture](architecture.md) for why.
-
-**It is not a scheduler.** It has no concept of "cool the house at 5pm". It has
-modes driven by presence, tariff and a thermal model.
-
-**It will not save you money on its own.** It will spend less than a naive
-thermostat for the same comfort. It will not spend less than turning the air
-conditioning off.
+- **Leave** turns a room off at once until someone comes back.
+- **Comfort mode** follows the sleep schedule, or stays on Sleep or Awake until you change it.
+- **Automatic control off** sends the unit off once, then leaves it entirely to you.

@@ -1,179 +1,71 @@
 # Entities
 
-Each room is a **device**. Three entities sit under it.
+Entity ids below are for a room named Office; yours follow your room's name.
 
-## `sensor.<room>_mode`
+## Each room
 
-The current mode, and the whole reason behind it.
+| Entity | Example id | What it shows or does |
+| --- | --- | --- |
+| Mode | `sensor.office` | The band rule in force: Locked out, Automatic control off, Left, Unoccupied, Precool, Sleep or Occupied. Its attributes are the full decision trace (below) |
+| Comfort index | `sensor.office_comfort_index` | The room's comfort index now. Attributes: band low, band high, and whether the room is below, in or above the band |
+| Target temperature | `sensor.office_target_temperature` | The centre of the band in force, as a temperature at the room's humidity now. Diagnostic |
+| Commanded setpoint | `sensor.office_commanded_setpoint` | The setpoint last sent; attribute: the setpoint wanted before whole-degree stepping. Diagnostic, disabled by default |
+| Dew point | `sensor.office_dew_point` | The room's dew point. Attributes: outdoor dew point, outdoor apparent temperature, free cooling advised, condensation risk |
+| Settings | `sensor.office_settings` | The number of air conditioners; attributes: every setting of the room (unset ones say so) and what the units can do. Diagnostic, disabled by default |
+| Controller | `sensor.office_controller` | Plan and PID, or the learned controller; attributes: the plan in force and the arbiter's record. Diagnostic |
+| Learning | `sensor.office_learning` | The last week's average error of the model's one-hour forecast, °C. Falls as the model learns. Diagnostic |
+| Comfort in band | `sensor.office_comfort_in_band` | Yesterday's share of occupied time inside the band, %. Diagnostic |
+| Near the centre | `sensor.office_near_the_centre` | Yesterday's share of occupied time within 0.3 of the band's centre, %. Diagnostic |
+| Starts per running hour | `sensor.office_starts_per_running_hour` | Yesterday's compressor starts per hour run. Diagnostic, disabled by default |
+| Cost of comfort | `sensor.office_cost_of_comfort` | Yesterday's cost of the energy the room used, in your currency. Diagnostic |
+| Automatic control | `switch.office_automatic_control` | On: the component runs the room. Off: the unit is sent off once, then the room's controls are yours |
+| Automatic vane control | `switch.office_automatic_vane_control` | On: the component sets the vertical vane. Off: the vanes are yours. Configuration |
+| Comfort mode | `select.office_comfort_mode` | Schedule (follow the sleep schedule), Sleep or Awake. Stays until you change it |
+| Unit mode | `select.office_unit_mode` | The unit's mode now. Writable only while Automatic control is off |
+| Fan speed | `select.office_fan_speed` | The unit's fan speed now. Writable only while Automatic control is off. Only if the unit has fan speeds |
+| Vertical vane | `select.office_vertical_vane` | Writable while Automatic vane control is off. Only if the unit has vane positions |
+| Horizontal vane | `select.office_horizontal_vane` | Writable while Automatic vane control is off. Only if the unit has horizontal vane positions |
+| Setpoint | `number.office_setpoint` | The unit's setpoint now, in the unit's range and step. Writable only while Automatic control is off |
+| Leave | `button.office_leave` | Turns the room off at once until someone comes back |
+| Precool | `button.office_precool` | Starts Precool now. Only in rooms with a presence sensor |
 
-- **State:** one of `lockout`, `unoccupied`, `occupied`, `sleep`,
-  `precondition`, `precool`, `coast`
-- **Device class:** enum
-- **Always available** once the room has been evaluated
+The unit controls show the unit's live value as soon as it changes. Changing one while the component runs the room is refused with a message saying so.
 
-Attributes:
+### The decision trace
 
-| Attribute | Meaning |
-|---|---|
-| `room_id` | The room's id, for use in actions |
-| `evaluated_at` | When this decision was made |
-| `mode` | Same as the state |
-| `base_mode` | The mode coast displaced, when coasting |
-| `hci` | Comfort index at evaluation time |
-| `band_low`, `band_high` | The band in force |
-| `band_position` | `below`, `within` or `above` |
-| `target_dry_bulb_c` | What the air conditioner would be asked for |
-| `demand` | `cool`, `heat`, or none |
-| `actuator` | `off`, `none`, `covers`, `fan`, `dry` or `compressor`. `off` means the unit was commanded off; `none` means nothing was commanded and the unit keeps what it was last given |
-| `reasons` | Why it is doing this |
-| `rejected` | What was considered and ruled out, with why |
-| `model` | The room's learned coefficients, their variance, sample count and whether each has converged |
-| `hci_air_only` | The index before the radiant, still-air and heat-load corrections |
-| `radiant_fraction` | How much solar load is reaching the room, 0 to 1 |
-| `room_c` | The room temperature the decision was made against |
-| `approach_c`, `feed_forward_c`, `wanted_rate_c_per_hour` | What the room loop asked of the unit: how far from the room's own reading, the part of that which holds the room against its drift, and the rate the room was asked to move at. Empty where the room has not learned enough for the loop |
-| `unaided_return_minutes`, `unaided_return_limit_minutes` | When the weather is projected to bring the room back into band, and how long it was allowed. Empty where no projection was made |
-| `setpoint_step_c` | The unit's step the setpoint was rounded to |
+The mode sensor's attributes say what the room is doing and why, every 30 seconds:
 
-**`reasons` and `rejected` are the point of this integration.** Between them
-they explain every decision, including which cheaper actuators were skipped and
-on what grounds.
+| Attribute | What it holds |
+| --- | --- |
+| `room_id` | The room's id, for the `precool` and `cancel_precool` actions |
+| `action` | What the unit is told: off, none (left as it is), rest, dry, cool or heat |
+| `band_rule`, `band_reason`, `band` | The band in force, why, its low, high, centre (index and °C) and where the room sits in it |
+| `comfort_index`, `occupied`, `sleeping`, `waking`, `precool`, `automatic_control` | The room now |
+| `in_charge`, `control_reason` | Which controller is in charge, and its reason |
+| `plan` | The plan in force: each half-hour's action and rate, the forecast index, minutes outside the band, its costs, and the first actions not taken with the reason |
+| `pid` | The PID's terms and gains |
+| `model` | What the model has learned: figures, their uncertainty, the sensor's noise, the forecast error, trust, the unit's delay and lag, and why the last step did not learn, if it did not |
+| `power` | The power budget: allowance, ceiling ("no limit" where none applies) and reason |
+| `delivery` | The setpoints wanted, free-cooling advice, condensation risk and reasons |
+| `limits` | Every rule that changed the step, constraints in force, missing readings and reasons |
+| `compressors` | Each head's compressor state, and which source said so |
+| `stale` | Feeds too old to use |
 
-## The room's controls
+`plan`, `pid`, `model`, `power`, `delivery`, `limits`, `compressors` and `stale` are not kept in the recorder's history, because they change every 30 seconds.
 
-Each room device carries controls built from what its air conditioners offered
-when the room was set up. A control exists only where there was a choice to
-make: a unit with no horizontal vane has no horizontal vane control. (DR-049)
+## The house
 
-| Entity | What it is |
-|---|---|
-| `switch.<room>_automatic_control` | On is the normal state. Switching it off turns the unit off once (DR-089); after that the coordinator sends the room nothing, and a unit you turn on by hand is yours |
-| `button.<room>_leave` | Turns the room's air conditioning off at once and keeps it off until someone comes back (DR-088) |
-| `switch.<room>_automatic_vane_control` | On is the normal state. Off, the coordinator never sends the room a vane command and the vane controls are yours at any time |
-| `select.<room>_mode` | The unit's mode |
-| `select.<room>_fan_speed` | The unit's fan speed |
-| `select.<room>_vertical_vane` | The vertical vane position |
-| `select.<room>_horizontal_vane` | The horizontal vane position, on units that have one |
-| `number.<room>_setpoint` | The unit's setpoint, in the range and step the unit offered |
+Under the device **Abode HVAC Coordinator**:
 
-**They show the unit's live state**, so a change at the wall or the remote
-appears at once. A control **refuses a change** while the coordinator owns it:
-mode, fan speed and setpoint while Automatic control is on, and the vanes while
-Automatic vane control is on. The refusal says which switch to turn off. A change
-that is accepted goes to every air conditioner in the room, and is recorded in
-the command log.
-
-A native Home Assistant entity cannot be greyed out and still show its value, so
-the grey appearance is a dashboard card; see
-[Examples](examples.md#greying-out-the-controls-while-the-automation-owns-them).
-
-## `sensor.<room>_comfort_index`
-
-- **State:** the comfort index, one decimal
-- **Unit:** `HCI` — deliberately not `°C`
-- **State class:** measurement, so it is recorded and graphable
-- **Unavailable** when the temperature or humidity sensor has no reading
-
-Attributes: `band_low`, `band_high`, `band_position`.
-
-## `sensor.<room>_target_dry_bulb`
-
-The dry bulb setpoint derived from the band and the measured humidity.
-
-- **State:** temperature in °C
-- **Device class:** temperature
-- **Category:** diagnostic
-- **Unavailable** when there is no band or no humidity reading
-
-This is what the air conditioner would be asked for. Watching it against the
-comfort index is the clearest way to see the humidity correction working: the
-same band produces a lower setpoint on a humid night.
-
-## `sensor.<room>_commanded_setpoint`
-
-What was actually sent to the unit, which is not the same as the solved target.
-Layer 2 trims the setpoint until the **room** sensor reaches the target, because
-the unit regulates against its own return-air thermistor and that is not where
-anyone sits.
-
-Its attributes carry `solved_target_c` and `regulation_trim_c`, so the
-difference is visible rather than silent. A trim settling at −1.8 means Layer 2
-has found a real 1.8 °C offset between your sensor and the unit's, and is
-correcting it every cycle. See [Regulation](regulation.md).
-
-## `sensor.<room>_dew_point`
-
-The room's dew point. Its attributes carry the outdoor apparent temperature, the outdoor dew point,
-`free_cooling_advised` and `condensation_risk`.
-
-Dew point is per room because condensation is per room: an ensuite and a
-closed-up bedroom sweat at different setpoints. It is not a comfort metric —
-comfort is the index, which already carries humidity.
-
-Free cooling is an advisory, not an action: this controller owns the air
-conditioner and the covers, not your windows. See
-[Free cooling](free-cooling.md).
-
-## `sensor.abode_hvac_coordinator_demand_forecast`
-
-One per installation, not per room. Projected HVAC energy over the next eight
-hours, in kWh, with a per-window and per-room breakdown in its attributes.
-
-This is the published contract with whatever owns the battery. **It carries no
-vendor concepts.** See [Demand forecast](demand-forecast.md).
-
-## The coordinator device
-
-Everything house-wide appears as a sensor on a single **Abode HVAC Coordinator**
-device, so a setting you entered once is visible without reopening the form
-that set it.
-
-| Sensor | Shows |
-|---|---|
-| Demand forecast | Projected kWh over the horizon, with per-window and per-room breakdown |
-| Tariff rate | The rate label in force now; the collapsed periods, the source entry, when the series was fetched and how far it reaches, in its attributes |
-| Active constraints | Which constraints apply in the current interval |
-| Projected cost | The forecast energy priced per period, in dollars |
-| Outdoor temperature | The configured outdoor feed |
-| Outdoor apparent temperature | What outdoors feels like, on the comfort index scale, with wind |
-| Outdoor dew point | Computed from the outdoor feeds, where both are configured |
-| Forecast peak | The hottest hour the forecast can see, with when it falls |
-| Stale feeds | How many feeds answered with a reading too old to act on, and which |
-| Rooms configured | How many, and which |
-
-Prices, feed-in rates, the daily supply charge and the per-window price sensors
-are **not here**. They belong to Abode Power Tariffs, which publishes them
-itself. Two copies of a price is one copy that goes stale.
-
-## Per-room settings sensor
-
-Each room device carries a **Settings** sensor. Its state is a one-line summary;
-its attributes are that room's entire configuration, with anything unset stated
-as "Nothing selected" rather than left blank.
-
-It exists so a configuration can be read without opening the form that set it.
-
-## Repair issues
-
-| Issue | Raised when |
-|---|---|
-| Rooms with no comfort bands | A room has no bands and no lockout reason, so it can never actuate |
-| Tariff constraints not acted on | A declared constraint is for another system to consume |
-| The tariff could not be read | Abode Power Tariffs did not return a plan. The last series is kept and used until a fetch succeeds |
-| The weather forecast could not be read | Precool falls back to current conditions. The last forecast is kept |
-
-Neither is an error. Both exist so that a room quietly doing nothing is visible
-rather than mysterious.
-
-## Diagnostics
-
-**Device page → three-dot menu → Download diagnostics.**
-
-Contains every room's configuration (including what its air conditioners
-offered and the two switches), which tariff entry is being read and when its
-series was last fetched, unrecognised constraints, the learned thermal model,
-the current decision trace for every room, and **the last 200 mode and
-setpoint commands sent to any unit**, newest last. A change to a unit with no
-matching entry was not sent by this integration. Entity IDs are included: they are how
-your configuration is identified, and a diagnostics download without them cannot
-explain a wrong decision.
+| Entity | Example id | What it shows |
+| --- | --- | --- |
+| Demand forecast | `sensor.abode_hvac_coordinator_demand_forecast` | kWh the rooms' plans will use until the next tariff change. Attributes: `until`, `to_tariff_change` (false when the plans end first) and the kWh in each tariff interval |
+| Tariff rate now | `sensor.abode_hvac_coordinator_tariff_rate_now` | The price now, per kWh; attributes: the rate's name and the intervals read |
+| Constraints in force | `sensor.abode_hvac_coordinator_constraints_in_force` | How many tariff rules are in force now, with the list |
+| Projected cost | `sensor.abode_hvac_coordinator_projected_cost` | What the demand forecast is priced at |
+| Outdoor temperature | `sensor.abode_hvac_coordinator_outdoor_temperature` | The outdoor reading in use |
+| Outdoor apparent temperature | `sensor.abode_hvac_coordinator_outdoor_apparent_temperature` | How outdoors feels, with humidity and wind |
+| Outdoor dew point | `sensor.abode_hvac_coordinator_outdoor_dew_point` | |
+| Forecast peak | `sensor.abode_hvac_coordinator_forecast_peak` | The highest temperature in the hourly forecast |
+| Stale feeds | `sensor.abode_hvac_coordinator_stale_feeds` | How many feeds are too old to use, with the list. Diagnostic |
+| Rooms configured | `sensor.abode_hvac_coordinator_rooms_configured` | Diagnostic |

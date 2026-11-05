@@ -1,185 +1,66 @@
 # Examples
 
-## Heading home when you leave work
+Replace the room id with the one shown as `room_id` on your room's mode sensor.
+
+## Precool when someone heads home, ready on arrival
 
 ```yaml
-alias: Precondition office on the way home
-triggers:
-  - trigger: zone
-    entity_id: person.jason
-    zone: zone.work
-    event: leave
-conditions:
-  - condition: time
-    after: "15:00:00"
-actions:
-  - action: abode_hvac_coordinator.heading_home
-    data:
-      room_id: office
+automation:
+  - alias: "Office ready when Jason heads home"
+    triggers:
+      - trigger: zone
+        entity_id: person.jason
+        zone: zone.work
+        event: leave
+    actions:
+      - action: abode_hvac_coordinator.precool
+        data:
+          room_id: 3f2b9c0e8d5a4b7c9e1f2a3b4c5d6e7f
+          ready_by: "{{ (now() + timedelta(minutes=40)).isoformat() }}"
 ```
 
-## Leaving a room
+The room starts when its model says it must, so it is in its precool band 40 minutes from now.
 
-A script that presses the room's Leave button (DR-088) along with the rest of
-leaving. The Leave button keeps the air conditioning off until someone comes
-back; a scene that turned the unit off would be undone at the next evaluation.
-The entity ids below are examples: use your own.
+## A Precool button on a dashboard
 
 ```yaml
-alias: Leave Office
-sequence:
-  - action: button.press
-    target:
-      entity_id: button.office_leave
-  - action: light.turn_off
-    target:
-      entity_id:
-        - light.office_work
-        - light.office_desk
-  - action: media_player.media_pause
-    target:
-      entity_id: media_player.office_ray
-  - action: lock.lock
-    target:
-      entity_id: lock.office_door
-mode: single
+type: button
+entity: button.office_precool
+name: Cool the office
+tap_action:
+  action: toggle
 ```
 
-## Heading home from a phone shortcut
+## Tell me when a repair is raised
 
 ```yaml
-alias: Heading home button
-triggers:
-  - trigger: event
-    event_type: mobile_app_notification_action
-    event_data:
-      action: HEADING_HOME
-actions:
-  - action: abode_hvac_coordinator.heading_home
-    data:
-      room_id: living_room
+automation:
+  - alias: "Abode HVAC needs attention"
+    triggers:
+      - trigger: event
+        event_type: repairs_issue_registry_updated
+        event_data:
+          action: create
+          domain: abode_hvac_coordinator
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          title: "Abode HVAC Coordinator"
+          message: "Something needs fixing: Settings → System → Repairs."
 ```
 
-## Clear the override once you have arrived and settled
+## Hand a room back for the evening
 
 ```yaml
-alias: Clear office override after arrival
-triggers:
-  - trigger: state
-    entity_id: binary_sensor.office_presence
-    to: "on"
-    for: "00:30:00"
-actions:
-  - action: abode_hvac_coordinator.clear_override
-    data:
-      room_id: office
+automation:
+  - alias: "Office manual after 9 pm"
+    triggers:
+      - trigger: time
+        at: "21:00:00"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.office_automatic_control
 ```
 
-Presence takes over from there, so the override has done its job.
-
-## Sleep schedule
-
-Create a **Schedule** helper covering your sleeping hours and select it as the
-room's sleep schedule. Nothing else is needed — the room moves to its sleep band
-when the schedule is on.
-
-For a schedule that varies, an `input_boolean` driven by your own automation
-works identically.
-
-## Notify when a room reaches for the compressor
-
-Useful while you are learning whether the cheaper steps are being used properly.
-
-```yaml
-alias: Office went to compressor
-triggers:
-  - trigger: state
-    entity_id: sensor.office_mode
-    attribute: actuator
-    to: compressor
-actions:
-  - action: notify.mobile_app_phone
-    data:
-      title: Office compressor
-      message: >
-        {{ state_attr('sensor.office_mode','reasons') | join('; ') }}
-        (rejected: {{ state_attr('sensor.office_mode','rejected') | join('; ') }})
-```
-
-## Dashboard card showing the decision
-
-```yaml
-type: entities
-title: Office
-entities:
-  - entity: sensor.office_comfort_index
-  - entity: sensor.office_mode
-  - entity: sensor.office_target_dry_bulb
-  - type: attribute
-    entity: sensor.office_mode
-    attribute: band_position
-    name: Position in band
-  - type: attribute
-    entity: sensor.office_mode
-    attribute: demand
-    name: Demand
-```
-
-## Greying out the controls while the automation owns them
-
-The room's mode, fan speed and setpoint controls refuse changes while
-**Automatic control** is on, and the vane controls refuse them while **Automatic
-vane control** is on. A native entity cannot be greyed out and still show its
-value, so the controls always show the unit's live state and the grey look comes
-from the card: a conditional card that shows the controls only while the room
-can be changed by hand.
-
-```yaml
-type: vertical-stack
-cards:
-  - type: entities
-    title: Office
-    entities:
-      - entity: switch.office_automatic_control
-      - entity: switch.office_automatic_vane_control
-  - type: conditional
-    conditions:
-      - entity: switch.office_automatic_control
-        state: "off"
-    card:
-      type: entities
-      title: Office, by hand
-      entities:
-        - entity: select.office_mode
-        - entity: select.office_fan_speed
-        - entity: number.office_setpoint
-  - type: conditional
-    conditions:
-      - entity: switch.office_automatic_vane_control
-        state: "off"
-    card:
-      type: entities
-      title: Office vanes
-      entities:
-        - entity: select.office_vertical_vane
-```
-
-To show the live state while the automation owns it, put the same entities in a
-second card that is shown when the switch is `on`, and add `secondary_info` or a
-muted theme to it.
-
-## Gauge with the comfort scale
-
-```yaml
-type: gauge
-entity: sensor.office_comfort_index
-min: 15
-max: 35
-needle: true
-severity:
-  green: 23.5
-  yellow: 27.5
-  red: 31
-```
-
-The thresholds come from the band table in [Comfort index](comfort-index.md).
+The unit is sent off once; after that its controls are yours until Automatic control is turned back on.

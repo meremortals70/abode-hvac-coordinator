@@ -1,126 +1,82 @@
-# Installation
+# Installation and removal
 
-## Requirements
+## Before you start
 
-- Home Assistant **2026.6.0** or later
-- One `climate` entity per room you want controlled
-- A temperature sensor and a humidity sensor per room
+- Home Assistant 2026.9.4 or later, with the recorder (it is on by default).
+- Each air conditioner shown in Home Assistant as a climate entity, on and reporting.
+- Each room's own temperature and humidity sensors.
+- Optional:
+  - an [Abode Power Tariffs](https://github.com/meremortals70/abode-power-tariffs) entry for prices;
+  - a weather entity with an hourly forecast;
+  - outdoor temperature, humidity and wind sensors;
+  - battery charge, solar power, house load and grid power sensors;
+  - a speech engine and speakers for spoken warnings.
 
-No external dependencies. The integration makes no network calls and installs no
-Python packages.
+## Install through the Marketplace (Home Assistant 2026.11 and later)
 
-## Install
+From 2026.11, HACS is built into Home Assistant as the **Marketplace**, under **Settings**. An existing HACS install, with its custom repositories, is moved into it on the first start after upgrading.
 
-### With HACS (recommended)
+1. Open **Settings → Marketplace** and accept its warning about community content.
+2. Connect GitHub in the Marketplace when it asks: adding a repository by its link needs a GitHub connection.
+3. Add `https://github.com/meremortals70/abode-hvac-coordinator` as an **Integration**.
+4. Install **Abode HVAC Coordinator**, then restart Home Assistant.
 
-HACS does not know about this repository until you tell it. That is what a
-"custom repository" is — a repository HACS watches that is not on its default
-list.
+## Install through HACS (before 2026.11)
 
-1. Open **HACS** in the Home Assistant sidebar
-2. Click the **three-dot menu** at the top right of the HACS page
-3. Choose **Custom repositories**
-4. In **Repository**, paste:
-   ```
-   https://github.com/meremortals70/abode-hvac-coordinator
-   ```
-5. In **Type**, choose **Integration**
-6. Click **Add**, then close the dialog
+1. In HACS, open the menu (three dots, top right) and choose **Custom repositories**.
+2. Add `https://github.com/meremortals70/abode-hvac-coordinator` with the type **Integration**.
+3. Find **Abode HVAC Coordinator** in HACS and download it.
+4. Restart Home Assistant.
 
-HACS now watches this repository. To install what it found:
+## Install by hand
 
-7. Back on the HACS page, search for **Abode HVAC Coordinator**
-8. Click it, then **Download**
-9. Accept the version it offers
-10. **Restart Home Assistant** — Settings → System → top right → Restart
+1. Copy `custom_components/abode_hvac_coordinator` from this repository into your Home Assistant `config/custom_components/` folder.
+2. Restart Home Assistant.
 
-Nothing appears until you restart. That catches people out every time.
+## Set it up
 
-### Updating later
+**Settings → Devices & services → Add integration → Abode HVAC Coordinator.** Only one can be set up.
 
-HACS shows an update when a new **release** is published. If you know there is a
-newer version and HACS is not offering it, open the repository in HACS and use
-**Redownload** — that fetches the current state regardless.
+The house screens come first. Any field can be left empty and filled in later with **Reconfigure**.
 
-### Without HACS
+1. **Tariff:** the Abode Power Tariffs entry. Left empty, every hour is priced the same.
+2. **Outdoor:** outdoor temperature, humidity and wind sensors.
+3. **Forecast:** the weather entity.
+4. **Power:** battery charge and size, rated discharge, solar, house load, reserve margin, grid power, and solar forecast sources (shown only when an integration offers a solar forecast).
+5. **Grid direction:** shown only when you chose a new grid sensor. Say whether a positive reading means importing or exporting.
+6. **Announcements:** the speech engine. Left empty, the only one Home Assistant has is used.
 
-1. Download the repository as a ZIP and unpack it
-2. Copy the folder `custom_components/abode_hvac_coordinator/` into your Home
-   Assistant configuration directory, so you end up with
-   `config/custom_components/abode_hvac_coordinator/manifest.json`
-3. Restart Home Assistant
+Then the first room:
 
-## Set up
+1. **The room:** its name, air conditioners, temperature and humidity sensors, and any of the optional settings. Each air conditioner's live state is read now, so it must be reporting. An air conditioner can belong to only one room.
+2. **Each air conditioner** gets its own screen: the outdoor unit it shares (if any) and its compressor frequency sensor (if any). Heads given the same outdoor-unit name share one compressor.
+3. **Comfort:** the occupied, sleep and precool bands, and power management.
 
-1. **Settings → Devices & Services → Add Integration**
-2. Search for **Abode HVAC Coordinator** and select it
-3. Describe your first room and its entities
-4. Set its comfort bands
+Every field is explained in [configuration](configuration.md).
 
-Setup finishes with one working room. Add further rooms from **Configure**.
+When you save, the room is created with its device and entities. Its model is seeded from the recorder's history in the background, so it does not start from nothing.
 
-**Only one instance can be created.** A second attempt aborts with "already
-configured". Rooms live inside the single entry.
+## Add, edit and remove rooms
 
-## Add, edit or remove a room
+**Settings → Devices & services → Abode HVAC Coordinator → Configure → Rooms.**
 
-**Settings → Devices & Services → Abode HVAC Coordinator → Configure**
+- **Add a room** opens the same three screens. The room appears at once, without a restart.
+- **Edit a room** opens them pre-filled. What the room has learned is kept.
+- **Remove a room** removes its device and entities, and what it has learned.
 
-A menu offers add, edit and remove. Editing prefills the room's current
-settings. Removing a room takes its device and entities with it.
+**Learning** in the same menu seeds a room from history again, or resets what a room has learned and then seeds it.
 
-Adding and editing are the same two steps. First the room and its entities:
+## Check it works
 
-| Field | Required | What it does |
-|---|---|---|
-| Room name | Yes | Becomes the device name. The room id is derived from it |
-| Air conditioner | Yes | The `climate` entity for this room |
-| Temperature sensor | No | Without it, no comfort index and no actuation |
-| Humidity sensor | No | Without it, no comfort index and no actuation |
-| Presence sensor | No | Without it, presence reads unknown and the room holds occupied |
-| Sleep schedule | No | Without it, the sleep band is never used |
-| Sun on this room's windows | No | Without it, falls back to sun above horizon |
-| Windows and doors | No | Any one open suspends the room |
-| Blinds | No | Without any, covers are never used |
-| Lockout | No | Leave on "Not locked out". Choosing any reason means the room is never actuated |
+1. Open the room's device. The mode sensor (named after the room) should show `Occupied`, `Sleep`, `Unoccupied` or similar, not `Unavailable`.
+2. Open the mode sensor's attributes. `action` is what the unit is being told (`cool`, `rest` and so on) and `control_reason` says why.
+3. After the first 5 minutes, `plan` appears in the attributes. After the first hour, the **Learning** sensor has a value.
+4. **Settings → System → Repairs** lists anything the component needs you to fix.
 
-Then the comfort bands, in HCI. These arrive prefilled with sensible defaults —
-occupied 24–27, sleep 21–24 — and are meant to be adjusted. Clear both boxes of
-a mode you do not want: an office with no sleeping hours should clear the sleep
-pair. See [Comfort index](comfort-index.md) for what the numbers mean.
+## Remove the integration
 
-**House-wide settings live under Configure → House configuration**, separately
-from any room: which Abode Power Tariffs entry to read, the outdoor
-temperature, humidity and wind feeds, and a weather entity for the forecast.
-Each screen states what is lost if you leave it empty.
+1. **Settings → Devices & services → Abode HVAC Coordinator → the three dots → Delete.** This removes every room's device and entities, and the component's stored learning (`.storage/abode_hvac_coordinator`).
+2. In the Marketplace (or HACS before 2026.11), uninstall **Abode HVAC Coordinator**, or delete `config/custom_components/abode_hvac_coordinator` if you installed by hand.
+3. Restart Home Assistant.
 
-Repeat Configure for each room. Adding a room with a name that slugs to an
-existing room id replaces that room.
-
-## Verify it is working
-
-Each room becomes a **device** with its own entities. Check
-**Settings → Devices & Services → Abode HVAC Coordinator → devices**:
-
-- `sensor.<room>_mode` — should show a mode, not `unknown`
-- `sensor.<room>_comfort_index` — should show a number
-- `sensor.<room>_target_dry_bulb` — should show a temperature
-- `sensor.<room>_commanded_setpoint` — what was actually sent, which will differ
-  from the target once the outer loop has learned your unit's offset
-
-Open the mode sensor's attributes. The `reasons` and `rejected` lists explain
-the current decision. If they do not make sense, that is a bug worth reporting.
-
-## Remove
-
-**Settings → Devices & Services → Abode HVAC Coordinator → three-dot menu → Delete**
-
-This removes the config entry, every room device, every entity, and the stored
-thermal model state. Nothing is left behind in `.storage`.
-
-To remove a single room rather than everything, delete its device from the
-device page. The delete button is enabled only once the room is no longer in
-the configuration.
-
-To uninstall completely, delete the entry first, then remove
-`custom_components/abode_hvac_coordinator/` and restart.
+The air conditioners are left as they were last set. Turn them off or back to your own settings if you want.

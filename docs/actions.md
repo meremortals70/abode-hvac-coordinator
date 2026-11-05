@@ -1,74 +1,43 @@
 # Actions
 
-Two actions. Both take a room id, which is the slug of the room name — a room
-called "Main Bedroom" has the id `main_bedroom`. It appears in the `room_id`
-attribute of every one of that room's sensors.
+The room id is shown as `room_id` in the attributes of the room's mode sensor (for a room named Office, `sensor.office`).
 
-## `abode_hvac_coordinator.heading_home`
+## `abode_hvac_coordinator.precool`
 
-Brings a room to its comfort band ahead of arrival. **This is the only thing
-that overrides an unoccupied room being off.**
+Starts Precool in an empty room with a presence sensor: it runs to the centre of its precool band. Precool ends once the room counts as occupied, when Leave is pressed, when `cancel_precool` is called, or an hour after `ready_by`. A room still counts as occupied for its empty grace after the last person leaves, so Precool started in that time ends at once.
 
-| Field | Required | Type | Meaning |
-|---|---|---|---|
-| `room_id` | Yes | string | The room to bring to comfort |
-| `deadline` | No | datetime | When it should have got there |
+| Field | Required | What it does |
+| --- | --- | --- |
+| `room_id` | Yes | The room |
+| `ready_by` | No | The time the room must be in its precool band by. The room starts when the model says it must. Left out, Precool starts now |
 
 ```yaml
-action: abode_hvac_coordinator.heading_home
+action: abode_hvac_coordinator.precool
 data:
-  room_id: office
+  room_id: 3f2b9c0e8d5a4b7c9e1f2a3b4c5d6e7f
+  ready_by: "2026-11-02 17:30:00"
 ```
 
-With a deadline:
+## `abode_hvac_coordinator.cancel_precool`
+
+Ends Precool in a room.
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `room_id` | Yes | The room |
 
 ```yaml
-action: abode_hvac_coordinator.heading_home
+action: abode_hvac_coordinator.cancel_precool
 data:
-  room_id: office
-  deadline: "2026-08-09T17:30:00+10:00"
+  room_id: 3f2b9c0e8d5a4b7c9e1f2a3b4c5d6e7f
 ```
 
-The action takes **no target**. There is one comfort definition per room and it
-is the band. Preconditioning drives to the middle of the occupied band; a room
-with no occupied band configured is left alone and the trace says so.
+## Errors
 
-The deadline is acted on. The thermal model estimates how long the pull takes,
-adds a fifteen-minute margin, and the room waits until then rather than starting
-the moment the request arrives — so a deadline four hours out costs nothing
-until it is close. The room is in `PRECONDITION` the whole time and the trace
-says how long it is waiting.
+Each is shown with a message saying what is wrong:
 
-Three cases start immediately regardless: no deadline given, a deadline inside
-thirty minutes, or a thermal model that has not converged enough to estimate.
-The last is the important one — an early start wastes energy, a late one
-defeats the request.
-
-Raises an error naming the room if no such room is configured.
-
-## `abode_hvac_coordinator.clear_override`
-
-Drops a heading-home request. The room returns to whatever presence and the
-tariff say it should be doing.
-
-| Field | Required | Type |
-|---|---|---|
-| `room_id` | Yes | string |
-
-```yaml
-action: abode_hvac_coordinator.clear_override
-data:
-  room_id: office
-```
-
-Clearing a room that has no override is not an error.
-
-## Triggers
-
-The integration defines no custom triggers. Use standard state triggers on the
-entities it creates — see [Entities](entities.md) and [Examples](examples.md).
-
-## Conditions
-
-The integration defines no custom conditions. Use standard state conditions on
-its entities.
+| Error | When |
+| --- | --- |
+| The integration is not loaded | No Abode HVAC Coordinator entry is running |
+| No room has the id … | The `room_id` is not one of your rooms |
+| … has no presence sensor | `precool` in a room without a presence sensor. Precool needs one to know when someone comes in |

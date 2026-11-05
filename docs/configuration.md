@@ -1,318 +1,85 @@
 # Configuration
 
-## The rule
-
-**A setting exists only if a user cannot get a correct result without it.**
-
-Anything derivable is derived. Anything that only tunes internals is fixed in
-code or learned. This is not minimalism for its own sake: a configuration
-reference running to dozens of individually defensible options is collectively
-unusable, and that failure is what this project was started to avoid.
-
-Applied consistently, it means the entire comfort configuration is one number
-pair per room per mode.
-
-## What you configure
-
-### The entry
-
-Nothing. Creating the integration takes no settings. One instance only.
-
-### Per room
-
-| Setting | Required | Effect if absent |
-|---|---|---|
-| Room name | Yes | — |
-| Air conditioner | Yes | — |
-| Temperature sensor | No | No comfort index, no actuation |
-| Humidity sensor | No | No comfort index, no actuation |
-| Presence sensor | No | Presence reads unknown; room holds occupied |
-| Sleep schedule | No | Sleep band is never used |
-| Which way the windows face | No | Blinds are never used, because the controller cannot tell when the sun is on the glass |
-| Eave or soffit depth | No | No overhang shading; a window under an eave is treated as fully exposed |
-| Eave height above the glass | No | As above; both measurements are needed together |
-| Sun-on-window sensor | No | Overrides the direction, for a room too complex for one compass point |
-| Illuminance sensor | No | Recorded only; not acted on |
-| Heat source in the room | No | Equipment heat is not counted toward comfort. A binary sensor that is on while a workstation, server or dryer is running — heat a wall sensor barely sees and a person sitting next to it certainly does |
-| Outdoor unit, per air conditioner | No | Each air conditioner is treated as having its own compressor. See [Outdoor units](#outdoor-units) |
-| Fan or air movement | No | Still air is assumed. Only a binary sensor, fan or switch you name here, that is on while the room's air is moving (a ceiling fan, say), takes a point off the index. The air conditioner's own state is never used for this (DR-055) |
-| Windows and doors | No | No opening interlock. When one is configured and open for longer than the grace below, the room's air conditioner is switched off |
-| Wait this long with a window or door open before stopping | Seeded | 5 minutes. The unit is left alone for this long after an opening opens, in case it closes again. With announcements on, a warning is spoken 3 minutes before it stops and another as it does. Set per room |
-| Blinds | No | Covers are never used |
-| — blinds that report no position | — | The cover step is skipped, and the trace says so. See [Actuator ordering](actuator-ordering.md#covers-with-no-reported-position-are-skipped) |
-| Allow blind control | Seeded (on) | Off keeps this room's blinds untouched even with blinds configured — for a semi-transparent blind kept for privacy or glare, not shading |
-| Wait before starting | Seeded | 2 minutes. Filters out grab-and-go visits |
-| Wait before stopping | Seeded | 10 minutes. The answering-the-door allowance |
-| Warn before shutting down | Seeded | 3 minutes between the two announcements |
-| Announce before shutting down | No | Off. A house should not start talking uninvited |
-| Announce through | No | Media players, spoken through the house's text-to-speech engine (see [Spoken warnings](#spoken-warnings)). Without any, neither the shutdown warnings nor the free-cooling advisory is announced. With it set, free cooling is announced regardless of the shutdown toggle above |
-| Lockout | No | Room actuates normally |
-
-The room id is derived from the room name. Adding a room whose name produces an
-existing id replaces that room rather than duplicating it.
-
-**Lockout is a single dropdown.** The first option, "Not locked out", is the
-default; choosing any other option is what switches lockout on. One field, one
-screen, and no free text box that could be filled in by accident.
-
-The list offers six built-in reasons and accepts one you type. A reason you type
-is stored for the whole installation and offered for every room from then on.
-
-#### What the air conditioner can do
-
-**You are not asked.** When a room is added or edited, the form reads each
-air conditioner in it and keeps what it found: its HVAC modes, fan speeds,
-vertical and horizontal vane positions, temperature range and step, and whether
-it takes one target or a range. Everything the room does with that air
-conditioner afterwards, and every control it offers, is built from that list.
-(DR-048)
-
-- **A room cannot be added for an air conditioner that is not reporting.** If any
-  air conditioner in the room is unavailable or missing, the form says so and
-  nothing is saved. There would be nothing to build the room's commands or
-  controls from.
-- **A room with two air conditioners gets only what both can do:** the modes and
-  fan speeds they share, the narrower temperature range, the coarser step.
-- **Editing a room reads it again.** That is how a changed unit, such as a new
-  Wi-Fi dongle or new firmware, is picked up.
-- **Rooms configured before 0.9.0 are read once, the first time Home Assistant
-  starts on 0.9.0, and the result is kept.** Until their air conditioner has
-  reported, nothing is sent to the room and its trace says it is waiting for the
-  air conditioner to report; it carries on by itself as soon as it does. No
-  configuration is migrated and nothing needs re-adding.
-
-The list is only as accurate as the integration that publishes the climate
-entity. The Intesis integration, for one, reports a setpoint step of 1.0
-whatever the unit is. That happens to be right for the Office unit, which holds
-whole degrees only.
-
-#### One air conditioner per room
-
-Two rooms cannot be pointed at the same climate entity. Each solves its own
-setpoint from its own comfort band and would command that entity on every
-cycle, and each keeps its own record of what it last sent — so neither errors,
-nothing appears in the log, and the unit does whatever arrived last.
-
-Since 0.8.6 the room form refuses a climate entity another room already
-claims. If a configuration saved before 0.8.6 already contains one, both rooms
-are locked out on load, their traces name the conflict, and a repair issue
-lists the entity and the rooms. Give each room its own entity, or remove all
-but one of the rooms.
-
-A ducted system genuinely does serve several rooms from one indoor unit. This
-controller cannot drive one: its output is a dry-bulb target per room, and a
-ducted system has a single setpoint with a damper per zone. That is a different
-control law, not a configuration.
-
-### Comfort bands
-
-One low and one high, per mode, per room, in HCI.
-
-**Every room is seeded with the same defaults**, so a fresh install is sensible
-with no configuration at all:
-
-| Mode | Seeded band |
-|---|---|
-| Occupied | 24 – 27 |
-| Sleep | 21 – 24 |
-| Precool | 24 – 27 |
-
-They arrive prefilled in the form and are meant to be changed. They come from
-the ASHRAE 55 comfort zone converted onto the comfort index scale — nothing
-about any particular house is seeded.
-
-| Mode | Configurable |
-|---|---|
-| Occupied | Yes |
-| Sleep | Yes |
-| Precool | Yes |
-| Unoccupied | **No — an unoccupied room is off** |
-| Precondition | **No — uses the occupied band** |
-| Coast | **No — uses the band of the mode it displaced** |
-| Lockout | **No — never actuates** |
-
-Clear a mode's bounds and the room is never actuated in that mode — an office
-with no sleeping hours should clear the sleep pair. Both bounds must be supplied
-together; a low at or above its high is rejected at setup.
-
-**There is no global setting and no inheritance.** Every room is configured
-independently. Inheritance is what makes configuration feel complicated, and it
-removes no controls.
-
-### Tariff
-
-One field: which [Abode Power Tariffs](https://github.com/meremortals70/abode-power-tariffs)
-entry to read. Periods, prices, feed-in and the daily supply charge are entered
-once, there, and read from here. Nothing about the plan is stored in this
-integration. See [Tariff](tariff.md).
-
-Leaving it empty is valid and is not a degraded mode. The controller runs on
-comfort alone: rooms are still held to their bands, coasting still works, and
-what is lost is the precool window, the no-import rule and the costed forecast.
-
-### Outdoor feeds
-
-Three feeds. Temperature is used by the thermal model; humidity and wind are
-used only for the free-cooling advice.
-
-| Feed | Required | Without it |
-|---|---|---|
-| Outdoor temperature | For the thermal model | No drift prediction, no coasting, no forecast |
-| Outdoor humidity | No | No free-cooling advice at all |
-| Outdoor wind speed | No | Still air assumed, so a breezy evening is judged as calm |
-
-### Weather forecast
-
-One field: a weather entity with an hourly forecast. It drives precool, which
-has to know whether a load is coming rather than whether one is here. Without
-it precool compares current conditions, which at midday cannot see the
-afternoon. See [Forecast-driven precool](forecast-driven-precool.md).
-
-Humidity is not optional in spirit. Cooler outdoor air can still be wetter, and
-temperature alone is exactly the trap the advice exists to catch — so without
-it there is no advice rather than advice you cannot trust.
-
-Wind is converted from whatever unit your sensor reports. See
-[Free cooling](free-cooling.md).
-
-### Spoken warnings
-
-One field: the text-to-speech engine every room's warnings are spoken through
-(0.9.5, DR-069), for example Home Assistant Cloud or Google Translate. Each room
-chooses its own speakers under **Announce through**. Left empty, the only engine
-Home Assistant has is used. Where there is more than one and none is chosen, no
-warning is spoken, and a repair issue says so; the rooms are still controlled
-as normal.
-
-A room says nothing while its Automatic control is off or while it is asleep,
-by its Comfort mode or its sleep schedule (0.9.6, DR-071).
-
-### Power
-
-Optional fields, all off by default: battery state-of-charge entity,
-battery capacity in kWh, solar output entity, house load entity and a
-reserve margin in kWh, then the battery's maximum discharge power, a grid
-power sensor and the solar production forecast. None of them is required,
-and this integration never writes to any of them — it only reads.
-
-| Field | Required | Without it |
-|---|---|---|
-| Battery state of charge | For power-aware operation | `no_grid_import` is read but not acted on |
-| Battery capacity (kWh) | For power-aware operation | As above |
-| Solar output | For power-aware operation | As above |
-| House load | For power-aware operation | As above |
-| Reserve margin (kWh, not a percentage: 5% of a 13 kWh battery is 0.65) | For power-aware operation | As above |
-| Battery maximum discharge power (kW) | No | The budget is bounded by stored energy only |
-| Grid power sensor | No | No breach figure is measured afterwards |
-| Solar production forecast | No | The forecasts the Energy dashboard uses are read until this step is saved. Saved with none chosen, only the solar being produced now is counted |
-
-The first five must be set together before any of it engages — a partial
-configuration behaves exactly as no configuration. The reserve margin is the
-one global figure; each room otherwise assesses its own need against the
-shared live readings without reference to what any other room is doing.
-
-**Turning this on cannot cost you comfort on a guess.** A room is held back,
-or under Enforced turned off, only when the budget can be worked out and comes
-out short. A budget that cannot be worked out — no battery reading, or a tariff
-series that does not reach the end of the window — leaves the room running as
-normal. See [Tariff](tariff.md#it-fails-open).
-
-**The solar production forecast (0.9.3, DR-061)** lists every forecast Home
-Assistant's Energy dashboard can use, from any integration that provides one
-(Forecast.Solar and Open-Meteo Solar Forecast both do). Choose one per array if
-you have more than one; their hourly forecasts are added together. The sun
-forecast between now and the end of a no-import window then counts towards the
-budget, so the morning's generation is counted at sunrise rather than only once
-it arrives. A forecast that cannot be read is named in a repair issue, the rest
-are used, and with none read the budget falls back to the solar being produced
-now. The forecasts are read every fifteen minutes.
-
-This is a house-level setting. Whether power management may hold a room back,
-or turn its unit off, is set per room: guidance never turns the unit off;
-enforced turns it off where even holding the room cannot be afforded (DR-063).
-
-## What you do not configure, and why
-
-| Not exposed | Why |
-|---|---|
-| Setpoints | Derived from the band and measured humidity |
-| Regulation gain, deadband and trim limit | Layer 2 tuning. Wrong numbers here produce a hunting compressor, and the right ones do not depend on your house. See [Regulation](regulation.md) |
-| Minimum compressor run and off times | Equipment protection, not preference |
-| Feed staleness tolerances | A property of what a feed measures, not of your device. See [Stale feeds](staleness.md) |
-| Sleep band ramp duration | Internal |
-| Dry-mode advantage ratio | The learned rates decide this; see [Drying against cooling](latent-and-sensible.md) |
-| Precool demand margin and lookahead | Internal |
-| Precondition deadline margin | Internal |
-| Thermal model parameters | Learned |
-| Fan margin, dry threshold, solar gain threshold | Internal tuning. See [Actuator ordering](actuator-ordering.md) |
-| Evaluation interval | Internal |
-| Hysteresis | Learned, with a fixed fallback |
-| Which actuator to use | That is the decision you installed this to make |
-| Occupancy grace defaults | Seeded per room and editable, because the right value depends on the room |
-
-If one of these turns out to be something a user genuinely cannot work without,
-that is a bug in the derivation, and the fix is better derivation rather than
-another setting.
-
-## Seeing what is configured
-
-Two places, neither of which requires opening a form:
-
-**The Configure menu** splits into **Rooms** and **Global configuration**, and
-each screen prints everything currently set on it before you choose anything.
-Global configuration covers the tariff entry, outdoor feeds, weather forecast,
-power and the spoken-warning engine — none of which belongs to a room.
-
-**Each room's device** carries a **Settings** sensor whose attributes are that
-room's entire configuration, with anything unset stated as "Nothing selected"
-rather than left blank.
-
-The house-wide settings are sensors on the **Abode HVAC Coordinator** device.
-
-## Changing configuration
-
-Any change reloads the integration. Entities are recreated and the mode is
-re-evaluated immediately. Learned model state survives a reload; it is keyed by
-room id, so renaming a room to a new id starts its learning again.
-
-
-## Outdoor units
-
-Two separate questions, and neither implies the other.
-
-**How many air conditioners are in this room?** Answered on the room form.
-Almost every room has one. Select two where a single room is served by two
-indoor units — one comfort band, one target, one commanded setpoint, sent to
-both.
-
-**Which outdoor unit is each one on?** Asked on the step after it, one dropdown
-per air conditioner. The default is that it has its own, which is correct for
-most houses and needs no action.
-
-Answer it only where two air conditioners share the compressor outside. Type a
-name to create one; names already used by other rooms appear in the list, so
-the second room on a shared unit picks rather than retypes.
-
-The question is per air conditioner rather than per room because a room with
-two of them can have them on two separate outdoor units, and so has two
-different answers to give. For a room with one, it is a single dropdown.
-
-### What it changes
-
-The minimum run and minimum off times protect a **compressor**, not a room.
-Without this, two rooms with an air conditioner each on one outdoor unit refuse
-and hold each other's transitions: starting the second while the first is
-already running is treated as a compressor start, and stopping one while the
-other is still calling is treated as a compressor stop. Both are wrong.
-
-Nothing else changes. There is no arbitration between rooms and no sequencing
-of starts — each room still decides its own comfort independently.
-
-### What it is not
-
-Two air conditioners in one room is not this. Select both in the room's own
-field instead.
-
-Ducted is still out of scope. One indoor unit serving several rooms is refused
-at the form, and this does not change that: what is shared here is the
-compressor outside, not the indoor unit.
+Everything is set up from the UI. The house's settings are changed with **Reconfigure**, which reloads the integration. The rooms are changed in **Configure → Rooms**, without a reload.
+
+## House screens
+
+| Screen | Field | What it does | Default |
+| --- | --- | --- | --- |
+| Tariff | Abode Power Tariffs entry | The tariff that prices every half-hour of the plan, and its rules (such as no grid import) | None: every hour is priced the same |
+| Outdoor | Outdoor temperature sensor | Read by every room's model | None: the weather forecast's temperature for the hour now is used, and the rooms still learn from it. Without either, a room cannot learn |
+| | Outdoor humidity sensor | The outdoor dew point, and free-cooling advice | None: the weather forecast's humidity for the hour now |
+| | Wind speed sensor | The outdoor apparent temperature | None |
+| Forecast | Weather entity | The hourly forecast the plan looks ahead with, read every 30 minutes | None: the readings now are used for every hour |
+| Power | Battery charge sensor | The battery's charge, % | None |
+| | Battery size | Usable capacity, kWh. Shown once a battery charge sensor is chosen (Home Assistant 2026.11 and later) | None |
+| | Rated maximum discharge | The most the battery can supply, kW. Shown with the battery charge sensor, as above | None: no limit |
+| | Solar power sensor | Solar output now | None |
+| | House load sensor | The whole house's power use. The air conditioners' power draw is learned from its steps | None: each unit is taken as drawing 1.2 kW |
+| | Reserve margin | Energy always left in the battery, kWh. Shown with the battery charge sensor, as above | None |
+| | Grid power sensor | Power to or from the grid. Checks that no-grid-import windows are kept | None |
+| | Solar forecast sources | Which solar forecasts to use (shown only if an integration offers one, and from 2026.11 only once a solar power sensor is chosen) | None: the Energy dashboard's |
+| Grid direction | A positive reading means | Importing or exporting. Asked only for a new grid sensor; pre-filled from the readings where they show it | — |
+| Announcements | Speech engine | The engine spoken warnings use | None: the only one Home Assistant has |
+
+From Home Assistant 2026.11, a field that has no effect without another is shown only once that other field is filled in, and is not saved while hidden. Before 2026.11 every field is shown.
+
+The **power budget** runs only during a no-grid-import window, and only when battery charge, battery size, reserve margin, solar and house load are all set and reading. Otherwise nothing is limited.
+
+## Room screen 1: the room
+
+| Field | What it does | Default |
+| --- | --- | --- |
+| Name | The room's name, on its device and in spoken warnings | Required |
+| Air conditioners | Every head in the room. Each one's live state is read when you save, and only what every head can do is sent | Required |
+| Temperature sensor | The room's own temperature sensor; the model learns from it | Required |
+| Humidity sensor | The room's own humidity sensor; the comfort index uses it | Required |
+| Presence sensor | Whether someone is in. Needed for Precool | None: always occupied |
+| Sleep schedule | A schedule, input boolean or binary sensor that is on while the room sleeps | None |
+| Sun on window sensor | A binary sensor that is on while the sun is on the glass | None: worked out from the sun and the window direction |
+| Doors and windows | With one open, nothing new is started, and the unit stops after the wait below | None |
+| Blinds | The room's covers | None |
+| Allow blind control | Lets the plan close the blinds when the sun is on the glass | On |
+| Windows face | N, NE, E, SE, S, SW, W or NW | None: the sun is not counted unless a sun sensor says so |
+| Overhang projection | How far an eave or awning sticks out, m (0–10). Shown once the window direction is chosen (2026.11 and later) | None |
+| Overhang height | How far the overhang is above the bottom of the window, m (0–10). Shown with the window direction, as above | None |
+| Wait before counting occupied | Minutes of presence before the room counts as occupied | 2 |
+| Wait before counting empty | Minutes without presence before the room counts as empty | 10 |
+| Warning before switching off | Minutes between a spoken warning and the unit stopping | 3 |
+| Announce before switching off | Speak a warning before stopping for an empty room or an open door or window | Off |
+| Announce through | The speakers for the warnings. Shown once Announce is on (2026.11 and later) | None |
+| Stop for an open door or window after | Minutes a door or window may stay open before the unit stops | 5 |
+| Lockout reason | A reason to keep the room off. Choose one or type your own | Not locked out |
+
+The screen refuses an air conditioner that is already in another room, one that is not reporting, heads whose setpoint ranges do not overlap, and heads where one takes only a low and high setpoint and another cannot take them.
+
+## Room screen 2: each air conditioner
+
+One screen for each head.
+
+| Field | What it does | Default |
+| --- | --- | --- |
+| Outdoor unit | A name for the outdoor unit this head shares. Heads with the same name share one compressor, in this room or another | None: its own outdoor unit |
+| Compressor frequency sensor | A sensor of the compressor's frequency, Hz. Tells the component exactly when the compressor runs | None |
+
+## Room screen 3: comfort
+
+The comfort index is the temperature plus a part for humidity: index = temperature + 0.33 × vapour pressure (hPa) − 4. At 60 % humidity an index of 23 is about 22 °C, and 26 about 24 °C.
+
+| Field | What it does | Default |
+| --- | --- | --- |
+| Occupied low, high | The band while someone is in and awake (0–50, steps of 0.5) | 23, 26 |
+| Sleep low, high | The band while the room sleeps | 20, 23 |
+| Precool low, high | The band during Precool | 23, 26 |
+| Power management | Off: never limited. Guidance: the power limit is shown, never applied. Enforced: the room is held within the house's power budget during a no-grid-import window | Off |
+
+A band whose low is not below its high is refused.
+
+Under **Enforced**, a room whose gentlest cooling can't last to the end of the no-grid-import window keeps cooling at its lowest rate until the battery is down to its reserve or can't supply it, and only then stops.
+
+## Options after setup
+
+**Configure** opens a summary of the setup and two menus:
+
+- **Rooms:** add, edit or remove a room.
+- **Learning:** seed a room from the recorder's history, which replaces what it has learned with what its history teaches (a history that teaches nothing leaves it as it was), or reset what a room has learned and then seed it.
