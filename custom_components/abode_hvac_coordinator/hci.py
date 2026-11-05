@@ -1,327 +1,156 @@
-"""Home Comfort Index (HCI).
+"""The comfort index: how the room feels (Section 4.1).
 
-Pure functions. This module imports nothing from Home Assistant so it can be
-unit tested on its own.
+HCI = T + 0.33 e - 4.00
 
-WHAT THE INDEX IS
------------------
-HCI is the Steadman shaded apparent temperature with wind set to zero:
-
-    AT = Ta + 0.33 * e - 0.70 * ws - 4.00          (Steadman / BoM, shade)
-    e  = (RH / 100) * 6.105 * exp(17.27 * Ta / (237.7 + Ta))
-
-Indoors ws = 0, so:
-
-    HCI = Ta + 0.33 * e - 4.00
-
-Ta is indoor dry bulb in degrees C, RH is indoor relative humidity in percent,
-e is water vapour pressure in hPa.
-
-WHY AIR TEMPERATURE AND HUMIDITY ARE NOT ENOUGH
-------------------------------------------------
-A person in a room exchanges heat four ways: conduction and convection to the
-air, evaporation of sweat, and **radiant exchange with the surfaces around
-them**. Ta and RH describe the first two. They say nothing about the third.
-
-Sun coming through glass is radiant. It warms the person and the floor and the
-desk directly, and only slowly warms the air. So a room can read 24 C on a wall
-sensor while someone sitting in it is uncomfortably hot, and the air-only index
-will insist they are fine.
-
-A blind reduces this. It does not remove it. A 50% blind passes roughly half
-the radiant load, which is why "the blind is down" is not the same as "there is
-no solar gain".
-
-Still air matters for the same reason in reverse. Steadman's wind-zero case
-still assumes the small air movement of a normally ventilated room. A room with
-the fan off, the door shut and the windows closed has less than that, so both
-convective and evaporative loss are worse than the formula assumes.
-
-The corrections below are physically motivated and approximately scaled. They
-are not measured against any particular room, and they are the part of this
-module most likely to need adjusting against how a room actually feels.
-
-WHY THIS FORMULA AND NOT HEAT INDEX OR HUMIDEX
-----------------------------------------------
-Both of those are undefined below roughly 26-27 C. The sleep band is 18-20, so
-they cannot express it. Steadman AT is continuous across the whole range this
-house operates in and collapses toward dry bulb as the air dries out.
-
-The -4.00 constant is kept so the scale matches the convention the BoM feed
-already uses. It is a constant offset: it shifts every HCI number by the same
-amount and changes no decision. The band defaults are set against this scale.
-
-THE OUTDOOR APPARENT TEMPERATURE IS NEVER AN INPUT TO THIS COMPUTATION.
-Not to the index, not to the dry-bulb target solved from it, not to the thermal
-model. The index is built from indoor temperature and indoor relative humidity
-and nothing else. Architecture proposal v0.3, section 5.
-
-It is *compared* against the index in exactly one place — the free-cooling test
-in `psychro.py`, which has to answer how a room will feel with outdoor air in
-it. That is legitimate because `apparent_temperature()` below is this same
-expression with the wind term restored, so the two are one quantity under two
-conditions. A test asserts they stay identical at zero wind.
-
-Never an input. Once a comparison.
+Steadman's shade apparent temperature with the wind term at zero, in the
+form the Bureau of Meteorology publishes [R2][D010], from the room's
+measured temperature and humidity only. Nothing is added to it: the sun,
+people and appliances reach the index only through the temperature and
+humidity they cause, which the model learns (decision of 27 October 2026).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import StrEnum
 
-# Steadman constants.
-_VAPOUR_A = 6.105
-_VAPOUR_B = 17.27
-_VAPOUR_C = 237.7
+from .const import (
+    BLIND_CLOSED_TRANSMISSION,
+    BLIND_FULLY_BLOCKING_AT,
+    INDEX_SOLVE_HIGH_C,
+    INDEX_SOLVE_LOW_C,
+    INDEX_SOLVE_MAX_HALVINGS,
+    INDEX_SOLVE_TOLERANCE,
+)
+
+# Bureau of Meteorology saturation vapour pressure, hPa [R2]
+_E0 = 6.105
+_A = 17.27
+_B = 237.7
+# Steadman's shade apparent temperature [R2][D010]
 _E_COEFF = 0.33
-_OFFSET = -4.00
-
-# Bounds on the derived dry bulb setpoint, in degrees C. These are a hard limit
-# on what will ever be asked of an air conditioner, not just solve bounds: a
-# band and a humidity that together imply 45 C are a configuration error, and
-# the controller clamps and records it rather than passing it to the hardware.
-# Callers detect a clamp by comparing the result to these values.
-SOLVE_MIN_C = 5.0
-SOLVE_MAX_C = 40.0
-_SOLVE_TOLERANCE = 0.001
-_SOLVE_MAX_ITERATIONS = 60
+_OFFSET = 4.00
+_WIND_COEFF = 0.70
 
 
-def vapour_pressure_hpa(temp_c: float, relative_humidity: float) -> float:
-    """Water vapour pressure in hPa from dry bulb and relative humidity."""
-    saturation = _VAPOUR_A * math.exp(
-        (_VAPOUR_B * temp_c) / (_VAPOUR_C + temp_c)
-    )
-    return (relative_humidity / 100.0) * saturation
+def saturation_vapour_pressure(t_c: float) -> float:
+    """Saturation vapour pressure in hPa at t_c [R2]."""
+    return _E0 * math.exp(_A * t_c / (_B + t_c))
 
 
-#: How much hotter unshaded sun through glass makes a person feel, in HCI, at
-#: full exposure. Solar gain through a window is on the order of several
-#: hundred watts per square metre; against a person's roughly 100 W metabolic
-#: output, a few degrees of felt temperature is the right order of magnitude.
-#: Approximate, and the first thing to adjust if a sunlit room feels wrong.
-SUN_RADIANT_HCI = 3.0
-
-#: How much hotter a room with no air movement at all feels, in HCI, relative
-#: to the lightly ventilated room Steadman's wind-zero case assumes.
-STILL_AIR_HCI = 1.0
-
-#: Steadman's wind coefficient, in HCI per metre per second. The Bureau of
-#: Meteorology's non-radiation apparent temperature is
-#: `AT = Ta + 0.33e - 0.70ws - 4.00`, which is exactly the index below with
-#: this term restored. Indoors it is dropped because wind is zero; outdoors it
-#: is the difference between a still 26 C and a breezy one.
-WIND_COEFF = 0.70
-
-#: How much hotter a running heat load in the room makes it feel, in HCI. A
-#: workstation and its monitors put out a few hundred watts, most of it into
-#: the person sitting in front of it.
-HEAT_LOAD_HCI = 1.0
-
-#: Cover position, in percent open, at or below which a cover is treated as
-#: blocking essentially all the radiant load. Not zero: blinds leak at the
-#: edges, and a fully closed blind still re-radiates what it absorbed.
-COVER_FULLY_BLOCKING = 5.0
-
-#: The fraction of radiant load a fully closed cover still passes, by
-#: absorbing it and re-radiating into the room.
-CLOSED_COVER_TRANSMISSION = 0.15
+def vapour_pressure(t_c: float, rh: float) -> float:
+    """Vapour pressure e in hPa from temperature (C) and RH (%) [R2][D010]."""
+    return rh / 100.0 * saturation_vapour_pressure(t_c)
 
 
-def radiant_load(
-    *,
-    direct_sun: bool | None,
-    cover_position: float | None,
-    has_covers: bool,
-) -> float:
-    """How much of the solar radiant load reaches the room, 0.0 to 1.0.
+def rh_at_temperature(e_hpa: float, t_c: float) -> float:
+    """Relative humidity (%) at t_c of air holding vapour pressure e [Der].
 
-    A room with no covers, or with them fully open, takes all of it. A closed
-    cover still passes some: it absorbs the energy and re-radiates it inward,
-    which is why a room behind a shut blind on a hot afternoon is still warm.
-
-    A semi-transparent blind at 50% passes roughly half. This is where the
-    "the blind is down so there is no sun" assumption breaks, and it is the
-    reason cover position is an input here rather than a boolean.
+    The same water in the air at another temperature.
     """
-    if not direct_sun:
-        return 0.0
-    if not has_covers or cover_position is None:
+    return 100.0 * e_hpa / saturation_vapour_pressure(t_c)
+
+
+def blind_transmission(open_fraction: float | None) -> float:
+    """The blinds' transmission tau_blind [Set].
+
+    None means no blind, or a blind whose position is unknown: 1. At or
+    below 5 % open: 0.15. Otherwise 0.15 + 0.85 x the open fraction.
+    """
+    if open_fraction is None:
         return 1.0
-    if cover_position <= COVER_FULLY_BLOCKING:
-        return CLOSED_COVER_TRANSMISSION
-    # Linear between fully closed and fully open. Cruder than the physics, and
-    # closer than treating a half-closed blind as either extreme.
-    open_fraction = cover_position / 100.0
-    return CLOSED_COVER_TRANSMISSION + open_fraction * (
-        1.0 - CLOSED_COVER_TRANSMISSION
-    )
+    if open_fraction <= BLIND_FULLY_BLOCKING_AT:
+        return BLIND_CLOSED_TRANSMISSION
+    return BLIND_CLOSED_TRANSMISSION + (1.0 - BLIND_CLOSED_TRANSMISSION) * open_fraction
 
 
-def comfort_index(
-    temp_c: float,
-    relative_humidity: float,
-    *,
-    radiant: float = 0.0,
-    still_air: bool = False,
-    heat_load: bool = False,
-) -> float:
-    """Return the HCI for indoor conditions.
-
-    With no corrections this is Steadman shaded apparent temperature at zero
-    wind. The corrections add what air temperature and humidity cannot see: sun
-    on the person, no air movement, and equipment heating the room.
-
-    `radiant` is the fraction of solar load reaching the room, from
-    `radiant_load()`.
-    """
-    base = (
-        temp_c + _E_COEFF * vapour_pressure_hpa(temp_c, relative_humidity) + _OFFSET
-    )
-    base += radiant * SUN_RADIANT_HCI
-    if still_air:
-        base += STILL_AIR_HCI
-    if heat_load:
-        base += HEAT_LOAD_HCI
-    return base
+def comfort_index(t_c: float, rh: float) -> float:
+    """The room's comfort index, HCI = T + 0.33 e - 4.00 [D010][R2][D055]."""
+    return t_c + _E_COEFF * vapour_pressure(t_c, rh) - _OFFSET
 
 
-def relative_humidity_at_constant_vapour_pressure(
-    from_temp_c: float, from_relative_humidity: float, to_temp_c: float
-) -> float:
-    """The RH a parcel of air reads at a new temperature, moisture unchanged.
-
-    Used by the dry-versus-cool comparison (finding 17, replacing
-    `sensitivity_to_temperature`/`sensitivity_to_humidity`, both deleted in
-    0.8.9) as the floor case for a room whose `k_rh_cooling` has not yet
-    converged: assume the coil removes no moisture at all, so only the
-    temperature fall changes what the sensor reads.
-
-    Vapour pressure is held fixed and the saturation curve does the rest:
-    `RH' = 100 * e / es(T')`. This is the "1.0 derivative" the review pointed
-    at — cooling credited with no condensation — expressed without a
-    derivative, so it does not need re-deriving if the index formula changes.
-    """
-    e = vapour_pressure_hpa(from_temp_c, from_relative_humidity)
-    if _VAPOUR_C + to_temp_c <= 0:
-        # Outside the Magnus formula's domain; the exponent would overflow and
-        # take the evaluation down. Only a diverged learned rate gets here.
-        return from_relative_humidity
-    saturation_at_to = _VAPOUR_A * math.exp(
-        (_VAPOUR_B * to_temp_c) / (_VAPOUR_C + to_temp_c)
-    )
-    if saturation_at_to <= 0:
-        return from_relative_humidity
-    return 100.0 * e / saturation_at_to
+def outdoor_apparent_temperature(t_c: float, rh: float, wind_ms: float) -> float:
+    """AT_out = T + 0.33 e - 0.70 w - 4.00, wind in m/s [D010][R2]."""
+    return t_c + _E_COEFF * vapour_pressure(t_c, rh) - _WIND_COEFF * wind_ms - _OFFSET
 
 
-def apparent_temperature(
-    temp_c: float, relative_humidity: float, wind_ms: float = 0.0
-) -> float:
-    """Outdoor apparent temperature, on the same scale as the comfort index.
-
-    The Bureau of Meteorology's non-radiation form of Steadman apparent
-    temperature. `comfort_index` above is this same expression with the wind
-    term dropped, which is why an outdoor figure and an indoor one can be
-    compared directly: they are one formula evaluated under two conditions,
-    not two indices that happen to use the same units.
-
-    Radiation is not included. The Bureau publishes a radiation form as well,
-    but it needs net absorbed radiation per unit body area, which no household
-    weather feed supplies, and inventing it would make the outdoor figure less
-    trustworthy than the indoor one it is being compared against.
-    """
-    return (
-        temp_c
-        + _E_COEFF * vapour_pressure_hpa(temp_c, relative_humidity)
-        - WIND_COEFF * max(wind_ms, 0.0)
-        + _OFFSET
-    )
-
-
-def dry_bulb_for_index(
-    target_hci: float,
-    relative_humidity: float,
-    *,
-    radiant: float = 0.0,
-    still_air: bool = False,
-    heat_load: bool = False,
-) -> float:
-    """Return the dry bulb setpoint that produces target_hci in these conditions.
-
-    The corrections matter here as much as in the forward direction: a sunlit
-    room needs a **lower** air temperature to feel the same as a shaded one, and
-    that is exactly the setpoint the air conditioner should be asked for.
-
-    This is the inverse of comfort_index(). It has no closed form because the
-    vapour pressure term itself depends on temperature, so it is solved by
-    bisection. comfort_index() rises monotonically with temperature at fixed
-    humidity, which is what makes bisection safe here.
-
-    This function is the whole reason the user never sets a setpoint. The user
-    states how the room should feel; this works out what to ask the AC for.
-    """
-    low = SOLVE_MIN_C
-    high = SOLVE_MAX_C
-
-    def index(temp_c: float) -> float:
-        return comfort_index(
-            temp_c,
-            relative_humidity,
-            radiant=radiant,
-            still_air=still_air,
-            heat_load=heat_load,
-        )
-
-    # Outside the solvable range, clamp. The caller is expected to notice, by
-    # comparing against SOLVE_MIN_C / SOLVE_MAX_C, and record it.
-    if index(low) >= target_hci:
-        return low
-    if index(high) <= target_hci:
-        return high
-
-    for _ in range(_SOLVE_MAX_ITERATIONS):
-        middle = (low + high) / 2.0
-        value = index(middle)
-        if abs(value - target_hci) < _SOLVE_TOLERANCE:
-            return middle
-        if value < target_hci:
-            low = middle
-        else:
-            high = middle
-
-    return (low + high) / 2.0
+def index_slope(t_c: float, rh: float) -> float:
+    """dHCI/dT at fixed RH = 1 + 0.33 e 17.27 x 237.7 / (237.7 + T)^2 [Der]."""
+    return 1.0 + _E_COEFF * vapour_pressure(t_c, rh) * _A * _B / (_B + t_c) ** 2
 
 
 @dataclass(frozen=True, slots=True)
-class ComfortBand:
-    """The only comfort configuration that exists. One low, one high.
+class SolvedTemperature:
+    """A dry bulb solved from an index. held is true at either end [Set]."""
 
-    Per room, per mode. No global, no inheritance.
-    Architecture proposal v0.3, section 5.
+    t_c: float
+    held: bool
+
+
+def temperature_for_index(wanted: float, rh: float) -> SolvedTemperature:
+    """The dry bulb at which the index equals wanted, at this RH [D009][Der].
+
+    Halving from 5 C to 40 C until the index is within 0.001 of wanted.
+    The index rises with T at fixed RH, and its slope on that interval is
+    at most about 2.3, so 17 halvings always suffice; the limit of 60 is
+    never reached (Section 4.1).
     """
+    low, high = INDEX_SOLVE_LOW_C, INDEX_SOLVE_HIGH_C
+    if comfort_index(low, rh) > wanted:
+        return SolvedTemperature(low, True)
+    if comfort_index(high, rh) < wanted:
+        return SolvedTemperature(high, True)
+    middle = (low + high) / 2.0
+    for _ in range(INDEX_SOLVE_MAX_HALVINGS):
+        middle = (low + high) / 2.0
+        at_middle = comfort_index(middle, rh)
+        if abs(at_middle - wanted) < INDEX_SOLVE_TOLERANCE:
+            return SolvedTemperature(middle, False)
+        if at_middle < wanted:
+            low = middle
+        else:
+            high = middle
+    return SolvedTemperature(middle, False)
+
+
+class BandPosition(StrEnum):
+    """Where an index sits against a band."""
+
+    BELOW = "below"
+    IN = "in"
+    ABOVE = "above"
+
+
+@dataclass(frozen=True, slots=True)
+class Band:
+    """A comfort band, low and high, in comfort index [D009][I4]."""
 
     low: float
     high: float
 
     def __post_init__(self) -> None:
+        if not (math.isfinite(self.low) and math.isfinite(self.high)):
+            raise ValueError("band edges must be finite")
         if self.low >= self.high:
-            raise ValueError(
-                f"Comfort band low ({self.low}) must be below high ({self.high})"
-            )
+            # a band of no width has no leeway, and distance is measured in
+            # half-band widths; refused (decision of 27 October 2026)
+            raise ValueError("band low is not below its high")
 
     @property
-    def midpoint(self) -> float:
+    def centre(self) -> float:
+        """The goal: the centre of the band [I4]."""
         return (self.low + self.high) / 2.0
 
-    def contains(self, hci: float) -> bool:
-        return self.low <= hci <= self.high
+    @property
+    def half_width(self) -> float:
+        """Half the band's width: the unit distance is measured in [I4][Der]."""
+        return (self.high - self.low) / 2.0
 
-    def position(self, hci: float) -> str:
-        """Where a reading sits relative to the band: below, within or above."""
-        if hci < self.low:
-            return "below"
-        if hci > self.high:
-            return "above"
-        return "within"
+    def position(self, index: float) -> BandPosition:
+        """Whether an index is below, in or above the band."""
+        if index < self.low:
+            return BandPosition.BELOW
+        if index > self.high:
+            return BandPosition.ABOVE
+        return BandPosition.IN

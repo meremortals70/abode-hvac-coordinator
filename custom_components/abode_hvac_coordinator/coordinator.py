@@ -1,4308 +1,1711 @@
-"""The coordinator.
+"""Runs the cycle; decides nothing (Section 8, coordinator.py) [D002].
 
-Reads Home Assistant state, hands it to the pure evaluator in `modes.py`, and
-publishes the resulting traces. Every decision is made in the pure modules; this
-file gathers inputs and manages lifecycle only.
+The coordinator gathers each room's inputs from Home Assistant, calls the
+ten modules in the order of Section 5, carries out what they decide, and
+publishes the result for the entities. Every decision is in a module.
 
-Actuation itself lives in `actuator.py`. This file gathers inputs, runs the
-evaluator and hands the resulting decision on.
+One cycle every 30 seconds runs every room. The model's minute, 5-minute,
+hourly and midnight work runs inside the cycle that first passes each
+boundary, so every part of a cycle sees the same moment and nothing else
+touches a room's model while it runs; the heavy parts (the filters and the
+plan) run in the executor [Prop]. The tariff, the solar forecast and the
+weather forecast are read on their own timers, and only replace what the
+next cycle reads.
 """
 
 from __future__ import annotations
 
-import functools
-import statistics
+import asyncio
+import copy
+import logging
+import math
 from collections import deque
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from datetime import datetime, time, timedelta
-from math import ceil
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.const import (
-    ATTR_ENTITY_ID,
-    ATTR_TEMPERATURE,
-    ATTR_UNIT_OF_MEASUREMENT,
-    UnitOfSpeed,
-)
-from homeassistant.core import (
-    Event,
-    EventStateChangedData,
-    HomeAssistant,
-    State,
-    callback,
-)
-from homeassistant.exceptions import (
-    ConfigEntryError,
-    HomeAssistantError,
-    ServiceNotFound,
-)
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_RESTORED
+from homeassistant.core import Context, CoreState, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.event import (
-    async_call_later,
-    async_track_state_change_event,
-    async_track_time_interval,
-)
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.translation import async_get_translations
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import SpeedConverter
 
-from .actuator import (
-    Actuator,
-    mean_cover_position,
-    profile_from_states,
-    supported_hvac_modes,
+from . import capabilities
+from .act import (
+    CommandContext,
+    CommandLog,
+    RoomAct,
+    UserCommand,
+    async_send,
+    async_user_command,
 )
-from .capabilities import RoomCapabilities
+from .comfort import RoomComfort, UserAction, choices_after_user_action
 from .const import (
-    COAST_HORIZON_HOURS,
-    CONF_ALLOW_COMFORT_REDUCTION,
-    CONF_ALLOW_COVER_CONTROL,
-    CONF_CAPABILITIES,
-    CONF_ANNOUNCE,
-    CONF_ANNOUNCE_TARGETS,
-    CONF_BAND_HIGH,
-    CONF_BAND_LOW,
-    CONF_BANDS,
-    CONF_BATTERY_CAPACITY_KWH,
-    CONF_BATTERY_MAX_DISCHARGE_KW,
-    CONF_BATTERY_SOC_ENTITY,
-    CONF_CLIMATE_ENTITIES,
-    CONF_CLIMATE_ENTITY,
-    CONF_COVER_ENTITIES,
-    CONF_DIRECT_SUN_ENTITY,
-    CONF_FAN_ENTITY,
-    CONF_GRID_ENTITY,
-    CONF_GRID_SIGN,
-    CONF_HEAD_GROUPS,
-    CONF_HEAT_LOAD_ENTITY,
-    CONF_HOUSE_LOAD_ENTITY,
-    CONF_HUMIDITY_ENTITY,
-    CONF_LOCKOUT_REASON,
-    CONF_OCCUPIED_AFTER,
-    CONF_OPENING_ENTITIES,
-    CONF_OPENING_GRACE,
-    CONF_OUTDOOR_HUMIDITY_ENTITY,
-    CONF_OUTDOOR_TEMPERATURE_ENTITY,
-    CONF_OUTDOOR_WIND_ENTITY,
-    CONF_OVERHANG_HEIGHT,
-    CONF_OVERHANG_PROJECTION,
-    CONF_PRESENCE_ENTITY,
-    CONF_RESERVE_MARGIN_KWH,
-    CONF_ROOM_ID,
-    CONF_ROOMS,
-    CONF_SLEEP_SCHEDULE_ENTITY,
-    CONF_SOLAR_FORECAST_ENTRIES,
-    CONF_SOLAR_POWER_ENTITY,
-    CONF_TARIFF_ENTRY_ID,
-    CONF_TEMPERATURE_ENTITY,
-    CONF_VACANT_AFTER,
-    CONF_WARNING_GRACE,
-    CONF_TTS_ENGINE,
-    CONF_WEATHER_ENTITY,
-    CONF_WINDOW_DIRECTION,
+    COIL_REBOUND_S,
+    CYCLE_S,
     DOMAIN,
-    EVALUATION_INTERVAL,
-    ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
-    ISSUE_FORECAST_UNAVAILABLE,
-    ISSUE_GRID_REQUIRED,
-    ISSUE_GRID_SIGN_CONTRADICTED,
-    ISSUE_MISSING_COMFORT_INPUTS,
-    ISSUE_NO_BANDS,
-    ISSUE_POWER_SHORTFALL,
-    ISSUE_SHARED_CLIMATE_ENTITY,
-    ISSUE_SOLAR_FORECAST_UNAVAILABLE,
-    ISSUE_TARIFF_UNAVAILABLE,
-    ISSUE_UNRECOGNISED_CONSTRAINT,
-    LOGGER,
-    POWER_MANAGEMENT_ENFORCED,
-    POWER_MANAGEMENT_GUIDANCE,
-    POWER_MANAGEMENT_OFF,
-    PRECOOL_DEMAND_MARGIN_C,
-    STARTUP_FETCH_ATTEMPTS,
-    STARTUP_FETCH_DELAY,
-    PROFILE_UNREAD_REASON,
-    SOLAR_FORECAST_REFRESH_INTERVAL,
-    SWITCHED_OFF_REASON,
-    TARIFF_DOMAIN,
-    TARIFF_HORIZON_HOURS,
-    TARIFF_REFRESH_INTERVAL,
-    TARIFF_RESOLUTION_MINUTES,
-    TARIFF_SERVICE_GET_INTERVALS,
-    WEATHER_DOMAIN,
-    WEATHER_REFRESH_INTERVAL,
-    WEATHER_SERVICE_GET_FORECASTS,
+    MODEL_STEP_S,
+    RECORDER_KEEP_DAYS_DEFAULT,
+    ROOM_SENSOR_GONE_REPAIR_S,
+    SOLAR_FORECAST_READ_S,
+    TARIFF_READ_S,
+    TARIFF_REQUEST_HOURS,
+    TARIFF_RESOLUTION_MIN,
+    WEATHER_READ_S,
 )
-from .forecast import (
-    ASSUMED_UNIT_KW,
-    DEFAULT_HORIZON_HOURS,
-    DemandForecast,
-    RoomForecastInput,
-    build_forecast,
+from .control import RoomControl
+from .control.pid import actuation_minutes, gains
+from .control.plan import Conditions, PlanInputs, conditions_ahead
+from .delivery import RoomDelivery, outdoor_air_would_cool
+from .economics import (
+    GridChecks,
+    HousePower,
+    PowerBudget,
+    SolarSlice,
+    TariffRead,
+    forecast_to_change,
+    grid_evidence,
+    highest_rate,
+    no_import_window_end,
+    parse_tariff,
+    prices_ahead,
+    room_economics,
 )
-from .forms import power_management_from_raw
-from .grace import (
-    Announcement,
-    GraceSettings,
-    GraceState,
-    OpeningWarningState,
-    evaluate_grace,
-    evaluate_opening_warnings,
+from .evidence import (
+    Availability,
+    HouseFacts,
+    RoomFacts,
+    RoomScorecard,
+    RoomWarnings,
+    house_issues,
+    mode_state,
+    room_issues,
+    trace,
 )
-from .hci import (
-    ComfortBand,
-    apparent_temperature,
-    comfort_index,
-    dry_bulb_for_index,
-    radiant_load,
+from .forms import house_from_data, rooms_from_options
+from .hci import outdoor_apparent_temperature, vapour_pressure
+from .limits import GuardEntry, HouseGuard, RoomLimits, RoomStep
+from .memory import (
+    HouseState,
+    Memory,
+    RoomState,
+    async_read_history,
+    from_data,
+    raw_from_state,
+    recorder_keep_days,
+    replay,
+    seed_entities,
+    to_data,
 )
+from .model import RoomModel
+from .model.forecast import ForecastInput, drift_now
+from .model.physics import Figures, figures
+from .model.unit import effort_for_rate, head_effort, top_rate
 from .models import (
-    ActuatorStep,
-    ComfortMode,
-    DecisionTrace,
-    Mode,
-    RoomConfig,
-    RoomInputs,
-)
-from .modes import (
-    DEFAULT_OPENING_GRACE_MINUTES,
-    FREE_COOLING_WAIT,
-    ROUTE_HOLD,
-    UNAIDED_RETURN_FALLBACK_MINUTES,
-    UNAIDED_RETURN_MARGIN_MINUTES,
-    WORKING_MODES,
-    evaluate_room,
-    sleeping,
-)
-from .power import (
-    GRID_SIGN_IMPORTING,
-    OFF_HOLD,
-    READING_AVERAGE_WINDOW,
-    battery_available_kwh,
-    budget_allowance_kw,
-    ceiling_is_binding,
-    derive_battery_w,
-    energy_dashboard_solar_forecasts,
-    forecast_allowance_kw,
-    forecast_slices,
-    held_ceiling_bin,
-    held_setpoint,
-    hold_before_off,
-    implied_sign,
-    mean_recent,
-    normalise_grid_import_w,
-    plant_allowance_kw,
-    solar_points_from_forecast,
-)
-from .psychro import dew_point_c
-from .regulate import (
+    CapabilityProfile,
+    ComfortResult,
+    CommandRecord,
     CompressorState,
-    RegulatorState,
-    PidSetpoint,
-    SetpointLimits,
-    arbitrate_cycling,
-    commanded_setpoint,
-    INTEGRATE_WITHIN_C,
-    loop_direction,
-    track_sensor_offset,
-    effective_deadband,
-    integrate,
-    note_transition,
-    QUANTISE_DEADBAND_STEPS,
-    pid_setpoint,
-    quantise_setpoint,
-    track_room_rate,
-    wants_running,
+    ControlResult,
+    DayScore,
+    DeliveryResult,
+    HeadCommand,
+    HouseConfig,
+    Issue,
+    LimitsResult,
+    ModelAnswers,
+    RawState,
+    RoomConfig,
+    RoomEconomics,
+    RoomModeState,
+    RoomPower,
+    Snapshot,
+    Speech,
+    StepKind,
+    TariffInterval,
+    ValueTag,
 )
-from .scheduling import (
-    HEADING_HOME_EXPIRY,
-    SLEEP_RAMP,
-    PreconditionPlan,
-    plan_precondition,
-)
-from .staleness import (
-    CONTACT_TOLERANCE,
-    INDOOR_TOLERANCE,
-    OUTDOOR_TOLERANCE,
-    POWER_TOLERANCE,
-    PRESENCE_TOLERANCE,
-    assess,
-)
-from .store import ModelStore
-from .sun import azimuth_for_direction, solar_position, sun_on_window
-from .tariff import (
-    CONSTRAINT_NO_GRID_IMPORT,
-    CONSTRAINT_PRECOOL_OPPORTUNITY,
-    Interval,
-    TariffPayloadError,
-    TariffSeries,
-    hours_until_cheaper_interval,
-)
-from .thermal import (
-    APPROACH_AT_SETPOINT_C,
-    APPROACH_CLOSE_C,
-    APPROACH_WORKING_C,
-    BIN_NAMES,
-    MIN_DRAW_QUALITY,
-    DrawModel,
-    Observation,
-    PROJECTION_STEP_HOURS,
-    REBOUND_HOURS,
-    ThermalModel,
-    approach_bin,
-    unaided_outlook,
-)
-from .thermal import (
-    MAX_INTERVAL_HOURS as MAX_LEARNING_INTERVAL_HOURS,
-)
-from .thermal import (
-    MIN_INTERVAL_HOURS as MIN_LEARNING_INTERVAL_HOURS,
-)
-from .weather import (
-    DEMAND_LOOKAHEAD,
-    ForecastPayloadError,
-    WeatherTrajectory,
-    demand_ahead,
-)
+from .observe import LoadHistory, RoomObserver
+from .psychro import dew_point
 
 if TYPE_CHECKING:
-    from . import HvacConfigEntry
+    from homeassistant.config_entries import ConfigEntry
 
-#: State strings that carry no reading, as distinct from a number.
-_NON_NUMERIC = frozenset({"unknown", "unavailable", "none", ""})
+_LOGGER = logging.getLogger(__package__)
 
-#: 0.8.9, finding 14. How much house-load history to keep, so a compressor
-#: state change can be bracketed on both sides even at a slow evaluation
-#: cadence. Trimmed by age, not by count.
-DRAW_HISTORY_WINDOW = timedelta(minutes=10)
-#: How far back before a state change to average the settled "before" period.
-DRAW_PRE_WINDOW = timedelta(minutes=2)
-#: An inverter ramps rather than steps. This is how long after the change is
-#: noticed before the "after" period is considered settled enough to sample.
-DRAW_RAMP_ALLOWANCE = timedelta(minutes=2)
-#: How long after the ramp allowance to keep averaging the "after" period.
-DRAW_POST_WINDOW = timedelta(minutes=3)
-#: Fewer house-load readings than this in a window scores it low confidence
-#: rather than discarding it — nothing is rejected, only trusted less.
-DRAW_MIN_SAMPLES = 2
-#: A candidate older than this without settling is dropped rather than kept
-#: waiting indefinitely for a house that never settles.
-DRAW_CANDIDATE_MAX_AGE = timedelta(minutes=8)
-#: House-load noise, in watts, against which a window's own spread is scored
-#: for quietness. Not a threshold — it scales the confidence curve.
-DRAW_NOISE_REFERENCE_W = 150.0
-#: Readings in a window at or above this count are scored full confidence for
-#: how many landed, rather than confidence climbing forever with more.
-DRAW_TARGET_SAMPLES = 6
+SIGNAL_ROOM_ADDED = f"{DOMAIN}_room_added"
+SIGNAL_ROOM_REMOVED = f"{DOMAIN}_room_removed"
+SIGNAL_ROOM_EDITED = f"{DOMAIN}_room_edited"
 
-#: 0.8.10, finding 11. Consecutive evaluations the live grid reading may
-#: disagree with the stored sign convention before it is named as a repair
-#: issue. A single odd reading — a momentary spike, a noisy sensor — is not
-#: a contradiction; a run of them across several minutes is.
-_GRID_SIGN_DISAGREEMENT_THRESHOLD = 10
+TARIFF_DOMAIN = "abode_power_tariffs"
+TARIFF_SERVICE = "get_intervals"
+WEATHER_DOMAIN = "weather"
+WEATHER_SERVICE = "get_forecasts"
+TTS_DOMAIN = "tts"
+TTS_SERVICE = "speak"
+
+_FIVE = timedelta(seconds=MODEL_STEP_S)
+_MINUTE = timedelta(minutes=1)
+_HOUR = timedelta(hours=1)
+_CHARGE_WINDOW = timedelta(minutes=5)
 
 
-@dataclass(slots=True)
-class _DrawCandidate:
-    """One outdoor unit mid-transition, waiting to be scored.
-
-    0.8.9, finding 14. Opened when exactly one group's compressor changes
-    state and closed once the post-change window has settled, or dropped if
-    it goes stale first. `started` is when the transition was noticed —
-    `_house_load_window` for the pre-change period looks back from it.
-    """
-
-    group: str
-    started: datetime
-    changed_at: datetime
+# --------------------------------------------------------------------------
+# What the entities read
+# --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class _PowerContext:
-    """The shared readings the power budget runs against.
+class RoomView:
+    """One room as the last cycle left it, for its entities. ok is False
+    when the room failed this cycle; its sensors are then unavailable."""
 
-    Read once per evaluation cycle. `engaged` is False whenever any of the
-    five house-level fields is missing — the feature is opt-in, and with any
-    one of them absent no room is throttled.
-    """
+    ok: bool
+    mode: RoomModeState | None
+    trace: Mapping[str, Any]
+    comfort_index: float | None
+    band_low: float | None
+    band_high: float | None
+    position: str | None
+    target_c: float | None
+    commanded_c: float | None
+    wanted_c: float | None
+    dew_point_c: float | None
+    outdoor_dew_point_c: float | None
+    outdoor_apparent_c: float | None
+    free_cooling_advised: bool
+    condensation_risk: bool
+    in_charge: str | None
+    plan: Mapping[str, Any] | None
+    learning: float | None
+    yesterday: DayScore | None
+    rl_score: Mapping[str, Any]
 
-    engaged: bool
-    battery_soc_percent: float | None = None
-    battery_capacity_kwh: float | None = None
-    solar_w: float | None = None
-    house_load_w: float | None = None
-    reserve_margin_kwh: float | None = None
-    #: 0.8.10, finding 11. None whenever no grid entity is configured, or the
-    #: reading is missing or stale — every consumer treats that exactly like
-    #: an unconfigured feature: the budget falls back to the energy figure
-    #: alone, and no breach is measured.
-    grid_import_w: float | None = None
-    #: Derived, not read: `house_load - solar - grid_import`. Positive means
-    #: the battery is discharging.
-    battery_w: float | None = None
+
+@dataclass(frozen=True, slots=True)
+class HouseView:
+    """The house's figures (Section 7, For the house)."""
+
+    demand_kwh: float | None
+    demand_per_interval: tuple[Mapping[str, Any], ...]
+    demand_until: datetime | None
+    demand_to_tariff_change: bool
+    tariff_now: float | None
+    tariff_rate: str | None
+    intervals: tuple[Mapping[str, Any], ...]
+    constraints: tuple[str, ...]
+    projected_cost: float | None
+    outdoor_c: float | None
+    outdoor_apparent_c: float | None
+    outdoor_dew_point_c: float | None
+    forecast_peak_c: float | None
+    stale: tuple[str, ...]
+    rooms: int
 
 
-def _optional_float(value: object) -> float | None:
-    """A config-entry number field, tolerating None and an empty string.
+@dataclass(frozen=True, slots=True)
+class CycleData:
+    """What one cycle publishes."""
 
-    The number selector round-trips through JSON storage, so this may arrive
-    as an int, a float, or a string depending on how it was last saved.
-    """
-    if value is None or value == "":
+    rooms: Mapping[str, RoomView]
+    house: HouseView
+
+
+# --------------------------------------------------------------------------
+# One room's parts
+# --------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class RoomRun:
+    """One room's modules, and what they gave this cycle."""
+
+    config: RoomConfig
+    state: RoomState
+    learning_since: datetime
+    observer: RoomObserver = field(init=False)
+    comfort: RoomComfort = field(init=False)
+    control: RoomControl = field(init=False)
+    delivery: RoomDelivery = field(init=False)
+    limits: RoomLimits = field(init=False)
+    act: RoomAct = field(init=False)
+    scorecard: RoomScorecard = field(init=False)
+    warnings: RoomWarnings = field(default_factory=RoomWarnings)
+    availability: Availability = field(init=False)
+    replan: bool = True
+    ceiling: float | None = None  # the enforced ceiling the plan in force was made under
+    seeding: bool = False
+    snapshot: Snapshot | None = None
+    answers: ModelAnswers = field(default_factory=lambda: ModelAnswers(learning=False))
+    comfort_result: ComfortResult | None = None
+    economics: RoomEconomics | None = None
+    control_result: ControlResult | None = None
+    other_proposal: float | None = None
+    delivery_result: DeliveryResult | None = None
+    step: RoomStep | None = None
+    limits_result: LimitsResult | None = None
+    trace: dict[str, Any] = field(default_factory=dict)
+    not_delivered: bool = False
+    failed: bool = False
+    fail_logged: bool = False
+    free_cooling_since: datetime | None = None
+    commanded_c: float | None = None
+    wanted_c: float | None = None
+    conditions: list[Conditions] | None = None
+
+    def __post_init__(self) -> None:
+        self.build()
+
+    def build(self) -> None:
+        """The modules for the room's settings; what the room has learned
+        stays in state."""
+        room = self.config
+        self.observer = RoomObserver(room)
+        comfort = RoomComfort(room)
+        comfort.occupied = self.state.occupied
+        self.comfort = comfort
+        self.control = RoomControl(arbiter=self.state.arbiter)
+        self.delivery = RoomDelivery(room)
+        self.limits = RoomLimits(room)
+        self.act = RoomAct(room)
+        self.scorecard = RoomScorecard(yesterday=self.state.yesterday)
+        self.availability = Availability(room)
+        self.replan = True
+
+    def edited(self, room: RoomConfig) -> None:
+        """WHEN the room's settings are saved: each module takes the new
+        settings and keeps what it remembers between cycles, so an edit
+        does not restart a compressor's minimum run or rest, an open
+        window's grace, a warning already given, a command still to be
+        reported, today's scorecard, the plan or a band's ramp [D031][D098].
+        What it remembers of a head or reading the room no longer has is
+        dropped."""
+        self.config = room
+        climates = {h.climate for h in room.heads}
+        required = climates | {room.temperature_sensor, room.humidity_sensor}
+        self.observer.room = room
+        self.comfort.room = room
+        self.delivery.room = room
+        self.limits.room = room
+        self.limits.last_running = tuple(h for h in self.limits.last_running if h.climate in climates)
+        self.act.room = room
+        self.availability.room = room
+        self.availability.keep_only(required)
+        self.replan = True
+
+    @property
+    def model(self) -> RoomModel:
+        return self.state.model
+
+    @property
+    def outdoor_units(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(h.outdoor_unit or f"own:{h.climate}" for h in self.config.heads))
+
+
+def _by_unit(draws: Mapping[tuple[str, str], float | None]) -> dict[str, float | None]:
+    """Each outdoor unit's draw now: the sum over the rooms running on it;
+    None if any of theirs is not yet learned [D028][D097]."""
+    out: dict[str, float | None] = {}
+    for (unit, _room), d in draws.items():
+        if unit in out:
+            prev = out[unit]
+            out[unit] = prev + d if prev is not None and d is not None else None
+        else:
+            out[unit] = d
+    return out
+
+
+def _floor(t: datetime, period: timedelta) -> datetime:
+    """t rounded down to a whole period since midnight UTC."""
+    day = t.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day + ((t - day) // period) * period
+
+
+CLIMATE_COMPONENT = "climate"
+def _note_ceiling(run: RoomRun, ceiling: float | None) -> None:
+    """A changed enforced ceiling is planned under at once, not at the next
+    5-minute plan [D041][D062]."""
+    if ceiling != run.ceiling:
+        run.ceiling = ceiling
+        run.replan = True
+
+
+def _ceilings(direction: int, ceiling: float | None, draw: Callable[[float], float | None],
+              fig: Figures | None) -> tuple[float | None, float | None]:
+    """The enforced ceiling as a cooling rate and as a heating rate. The
+    budget finds it in one direction (_budget_direction); the same power is
+    a different rate the other way, read on that curve, so a plan that turns
+    the other way is held to the same allowance, neither more nor less
+    [D028][D041]."""
+    if ceiling is None:
+        return None, None
+    if ceiling <= 0.0:
+        other: float | None = 0.0
+    else:
+        kw = draw(direction * ceiling)
+        if kw is None or fig is None:
+            other = ceiling  # the draw not learned: the same figure
+        else:
+            other = highest_rate(_in_direction(draw, -direction), kw, top_rate(fig, -direction)) or 0.0
+    return (ceiling, other) if direction > 0 else (other, ceiling)
+
+
+def _pid_top(top: float, ceilings: tuple[float | None, float | None], direction: int) -> float:
+    """The PID never asks past an enforced ceiling either: it is the plan's
+    limit and the PID's [D041]. ceilings is (cooling, heating), from
+    _ceilings; the one in the direction the PID runs applies."""
+    ceiling = ceilings[0] if direction > 0 else ceilings[1]
+    return top if ceiling is None else min(top, ceiling)
+
+
+def _room_power(run: RoomRun, draw: Callable[[float], float | None]) -> tuple[RoomPower, Callable[[float], float | None]]:
+    """A room's figures for the power budget, and its draw at a rate: all
+    in the direction the room is running, on that direction's curve, floor
+    and draw [I10][D028]."""
+    assert run.snapshot is not None and run.comfort_result is not None
+    fig = figures(run.model.heat.z) if run.model.heat is not None else None
+    d = _budget_direction(run)
+    power = RoomPower(
+        room_id=run.config.room_id,
+        outdoor_unit=run.outdoor_units[0],
+        management=run.config.power_management,
+        precool_on=run.comfort_result.precool_on,
+        compressor_running=any(h.compressor is CompressorState.RUNNING for h in run.snapshot.heads),
+        top_rate=top_rate(fig, d) if fig is not None else 0.0,
+        lowest_rate=run.model.unit.lowest_rate(fig, d) if fig is not None else 0.0,
+    )
+    return power, _in_direction(draw, d)
+
+
+def _budget_direction(run: RoomRun) -> int:
+    """The direction the power budget works in for a room: the plan's, while
+    it heats or cools; while it rests, the way the room must go to reach
+    its band's centre, so a resting room that needs heat is budgeted on the
+    heating curve and can be offered heat at all [I10][D028]."""
+    plan = run.control.plan
+    if plan is not None and plan.first.kind is StepKind.HEAT:
+        return -1
+    if plan is not None and plan.first.kind in (StepKind.COOL, StepKind.DRY):
+        return 1
+    comfort = run.comfort_result
+    if comfort is not None and comfort.room_index is not None and comfort.points:
+        return -1 if comfort.room_index < comfort.points[0].centre else 1
+    return 1
+
+
+def _in_direction(draw: Callable[[float], float | None], direction: int) -> Callable[[float], float | None]:
+    """A draw function asked with rates as positive numbers, read on the
+    curve of one direction: the power budget works in rates without a
+    sign, and the sign is what picks the heating curve [D028]."""
+    return lambda rate: draw(direction * abs(rate))
+
+
+def _still_coming(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """A config entry not loaded yet that is on its way: setting up or
+    retrying, or not yet set up while Home Assistant is still starting.
+    One the user disabled, or one that failed for good, is not: a disabled
+    entry is unloaded and never set up again (config_entries.py:2689-2692,
+    2026.11.0b0) [HA]."""
+    if entry.disabled_by is not None:
+        return False
+    if entry.state in (ConfigEntryState.SETUP_IN_PROGRESS, ConfigEntryState.SETUP_RETRY):
+        return True
+    return entry.state is ConfigEntryState.NOT_LOADED and hass.state is not CoreState.running
+
+
+def native_temperature_unit(hass: HomeAssistant, entity_id: str) -> str | None:
+    """A climate entity's own temperature unit, from the entity itself:
+    its state shows only the system's unit. native_temperature_unit from
+    2026.11, temperature_unit before it (climate/entity.py:267,
+    2026.11.0b0; climate/__init__.py:417, 2026.9.4) [HA]. None when the
+    entity is not loaded."""
+    # the climate entity component, kept under its domain (climate's
+    # DATA_COMPONENT is HassKey("climate"), climate/const.py:16 from 2026.10,
+    # climate/__init__.py:96 in 2026.9) [HA]
+    component = hass.data.get(CLIMATE_COMPONENT)
+    entity = component.get_entity(entity_id) if component is not None else None
+    if entity is None:
         return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    unit = getattr(entity, "native_temperature_unit", None) or getattr(entity, "temperature_unit", None)
+    return unit if isinstance(unit, str) else None
+
+
+def native_limits(hass: HomeAssistant, entity_id: str) -> tuple[float, float] | None:
+    """A climate entity's own min_temp and max_temp, in its own unit: what
+    Home Assistant checks a setpoint against (climate/services.py:150), not
+    the shown, rounded figures (climate/entity.py:159-164, 2026.11.0b0;
+    climate/__init__.py:727-742, 2026.9.4) [HA]. None when the entity is
+    not loaded."""
+    component = hass.data.get(CLIMATE_COMPONENT)
+    entity = component.get_entity(entity_id) if component is not None else None
+    if entity is None:
         return None
+    lo, hi = getattr(entity, "min_temp", None), getattr(entity, "max_temp", None)
+    if isinstance(lo, bool) or isinstance(hi, bool) or not isinstance(lo, int | float) or not isinstance(hi, int | float):
+        return None
+    return float(lo), float(hi)
 
 
-class HvacCoordinator(DataUpdateCoordinator[dict[str, DecisionTrace]]):
-    """Evaluates every room and publishes its decision trace."""
+def _gone(hass: HomeAssistant, entity_id: str) -> bool:
+    """An entity no longer exists [D046]: it has no state, or only the
+    stand-in the entity registry writes (restored: true), and nothing is
+    about to provide it. The registry writes that stand-in for any
+    registered entity not set up, so while the entity's own config entry
+    is not loaded (setting up, retrying, reloading) it is only away, not
+    gone (helpers/entity_registry.py write_unavailable_state;
+    helpers/entity.py, remove, 2026.11.0b0) [HA]."""
+    state = hass.states.get(entity_id)
+    if state is not None and not state.attributes.get(ATTR_RESTORED):
+        return False
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None or entry.config_entry_id is None:
+        return True
+    config_entry = hass.config_entries.async_get_entry(entry.config_entry_id)
+    if config_entry is None or config_entry.state is ConfigEntryState.LOADED:
+        return True  # loaded and not providing it (a platform retrying waits out the grace)
+    return not _still_coming(hass, config_entry)
 
-    config_entry: HvacConfigEntry
 
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        config_entry: HvacConfigEntry,
-        store: ModelStore,
-    ) -> None:
-        """Initialize the coordinator."""
+def _local_hour(t: datetime) -> float:
+    local = dt_util.as_local(t)
+    return local.hour + local.minute / 60.0 + local.second / 3600.0
+
+
+# --------------------------------------------------------------------------
+# The coordinator
+# --------------------------------------------------------------------------
+
+
+class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
+    """The cycle, for every room of the house."""
+
+    config_entry: ConfigEntry
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
             hass,
-            logger=LOGGER,
+            _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
-            config_entry=config_entry,
-            update_interval=EVALUATION_INTERVAL,
+            update_interval=timedelta(seconds=CYCLE_S),
+            always_update=True,
         )
-        self.store = store
-        self.actuator = Actuator(hass, self)
-        self.outdoor_entity_id: str | None = config_entry.options.get(
-            CONF_OUTDOOR_TEMPERATURE_ENTITY,
-            config_entry.data.get(CONF_OUTDOOR_TEMPERATURE_ENTITY),
-        )
-        self.outdoor_humidity_entity_id: str | None = config_entry.options.get(
-            CONF_OUTDOOR_HUMIDITY_ENTITY,
-            config_entry.data.get(CONF_OUTDOOR_HUMIDITY_ENTITY),
-        )
-        self.outdoor_wind_entity_id: str | None = config_entry.options.get(
-            CONF_OUTDOOR_WIND_ENTITY,
-            config_entry.data.get(CONF_OUTDOOR_WIND_ENTITY),
-        )
-        #: Layer 2 state, one per room. Not persisted: a trim is only valid
-        #: for the conditions that produced it.
-        self._regulators: dict[str, RegulatorState] = {}
-        #: Cycling state per outdoor unit, not per room. See CompressorState.
-        self._compressors: dict[str, CompressorState] = {}
-        #: What each room asked of its compressor last cycle, so a room
-        #: reaching its band does not read as the whole outdoor unit
-        #: stopping while another room on it is still calling.
-        self._room_wants: dict[str, bool] = {}
-        #: The mode each room was in last evaluation, and when it changed, so
-        #: the band can ramp across a sleep transition instead of stepping.
-        self._previous_mode: dict[str, Mode] = {}
-        self._mode_changed_at: dict[str, datetime] = {}
-        #: 0.9.7, DR-084. The band each room last changed from.
-        self._ramp_from: dict[str, Mode] = {}
-        #: 0.9.7, DR-085. Rooms out of Sleep and not yet in their daytime band.
-        self._waking: set[str] = set()
-        #: Feeds reported stale this evaluation, per room, for the trace.
-        self._stale: dict[str, list[str]] = {}
-        #: Why a heading-home room is not actuating yet, for the trace.
-        self._precondition_reason: dict[str, str] = {}
-        #: Which weather entity supplies the hourly forecast, and the
-        #: trajectory read from it. None means precool falls back to comparing
-        #: current conditions.
-        self.weather_entity_id: str | None = config_entry.options.get(
-            CONF_WEATHER_ENTITY, config_entry.data.get(CONF_WEATHER_ENTITY)
-        )
-        #: 0.9.5, DR-069. The chosen text-to-speech engine, or None to use the
-        #: only one Home Assistant has.
-        self.tts_engine_entity_id: str | None = config_entry.options.get(
-            CONF_TTS_ENGINE, config_entry.data.get(CONF_TTS_ENGINE)
-        )
-        #: Each distinct announcement failure, so it is logged once.
-        self._announce_failures: set[str] = set()
-        self.trajectory: WeatherTrajectory | None = None
-        #: Power-aware operation. All five optional and read the same way as
-        #: every other house-level feed; the decision only engages once every
-        #: one of them is set — see `_compute_power_context`.
-        self.battery_soc_entity_id: str | None = config_entry.options.get(
-            CONF_BATTERY_SOC_ENTITY, config_entry.data.get(CONF_BATTERY_SOC_ENTITY)
-        )
-        self.battery_capacity_kwh: float | None = _optional_float(
-            config_entry.options.get(
-                CONF_BATTERY_CAPACITY_KWH,
-                config_entry.data.get(CONF_BATTERY_CAPACITY_KWH),
-            )
-        )
-        self.solar_entity_id: str | None = config_entry.options.get(
-            CONF_SOLAR_POWER_ENTITY, config_entry.data.get(CONF_SOLAR_POWER_ENTITY)
-        )
-        self.house_load_entity_id: str | None = config_entry.options.get(
-            CONF_HOUSE_LOAD_ENTITY, config_entry.data.get(CONF_HOUSE_LOAD_ENTITY)
-        )
-        self.reserve_margin_kwh: float | None = _optional_float(
-            config_entry.options.get(
-                CONF_RESERVE_MARGIN_KWH,
-                config_entry.data.get(CONF_RESERVE_MARGIN_KWH),
-            )
-        )
-        #: The battery's rated maximum discharge power, in kW. Entered at
-        #: setup, not learned — it's a nameplate spec (5 kW for a Powerwall
-        #: 2), not a quantity that varies or needs tracking over time.
-        self.battery_max_discharge_kw: float | None = _optional_float(
-            config_entry.options.get(
-                CONF_BATTERY_MAX_DISCHARGE_KW,
-                config_entry.data.get(CONF_BATTERY_MAX_DISCHARGE_KW),
-            )
-        )
-        #: 0.8.10, finding 11. Optional, and joins the five above. Without
-        #: it the budget still runs on the energy figure alone — see
-        #: `allowable_draw_kw` — it just cannot measure a breach afterward.
-        self.grid_entity_id: str | None = config_entry.options.get(
-            CONF_GRID_ENTITY, config_entry.data.get(CONF_GRID_ENTITY)
-        )
-        self.grid_sign: str | None = config_entry.options.get(
-            CONF_GRID_SIGN, config_entry.data.get(CONF_GRID_SIGN)
-        )
-        #: 0.9.3, DR-061. Which solar forecasts the budget reads. None means
-        #: whatever the Energy dashboard uses; an empty list means none.
-        raw_forecasts = config_entry.options.get(
-            CONF_SOLAR_FORECAST_ENTRIES,
-            config_entry.data.get(CONF_SOLAR_FORECAST_ENTRIES),
-        )
-        self.solar_forecast_entry_ids: list[str] | None = (
-            None if raw_forecasts is None else [str(item) for item in raw_forecasts]
-        )
-        #: The forecast read from them: (period start, Wh), summed across the
-        #: sources. None until read, or where nothing is selected.
-        self._solar_points: list[tuple[datetime, float]] | None = None
-        #: The sources actually read last time, for diagnostics.
-        self._solar_sources: list[str] = []
-        #: Each room's ceiling bin and when it last changed, for the
-        #: hysteresis in `power.held_ceiling_bin` (DR-062).
-        self._ceiling_bins: dict[str, tuple[int | None, datetime]] = {}
-        #: 0.9.4, DR-067. When each enforced room's budget first fell short,
-        #: so it is turned off only once the shortfall has lasted `OFF_HOLD`.
-        self._shortfall_since: dict[str, datetime] = {}
-        #: 0.9.4, DR-067. The house load and solar readings of the last
-        #: `READING_AVERAGE_WINDOW`, so the budget runs on averages.
-        self._budget_house_samples: deque[tuple[datetime, float]] = deque()
-        self._budget_solar_samples: deque[tuple[datetime, float]] = deque()
-        #: 0.9.4, DR-067. Per room, the house load measured while that room's
-        #: unit was not running: the rest of the house, as measured. Not added
-        #: to while the room runs, so the room's own draw never enters it.
-        self._base_load_samples: dict[str, deque[tuple[datetime, float]]] = {}
-        #: How many consecutive evaluations the live grid reading has
-        #: disagreed with the stored sign convention, and the repair issue
-        #: this raises once persistent enough. Reset the moment the evidence
-        #: agrees again — a single odd reading is not a contradiction.
-        self._grid_sign_disagreements = 0
-        #: The `no_grid_import` window currently being measured, its start
-        #: time as the key, and the kWh of import integrated into it so far.
-        self._breach_window_start: datetime | None = None
-        self._breach_kwh = 0.0
-        #: When grid import was last sampled inside the window, so each
-        #: sample is weighted by the time it actually covers.
-        self._breach_sampled_at: datetime | None = None
-        self._last_breach_reported_kwh: float | None = None
-        #: Why each room is or is not precooling, for the trace.
-        self._demand_reason: dict[str, str] = {}
-        #: Learned thermal behaviour, one per room, restored from the store.
-        self.models: dict[str, ThermalModel] = {}
-        #: The last reading of each room, so the next evaluation can measure
-        #: what actually happened over the interval and learn from it. The
-        #: sixth element is the commanded setpoint in force at the anchor
-        #: (0.8.9, finding 9) — a change to it resets the anchor the same way
-        #: a compressor direction change already does, because the approach
-        #: bin an interval is attributed to is meaningless once what the room
-        #: was being asked to reach has moved.
-        self._previous: dict[
-            str, tuple[datetime, float, float, int, bool, float | None]
-        ] = {}
-        #: When each room's compressor last stopped cooling or drying, and
-        #: whether it was cooling or drying at the last evaluation. None while
-        #: it runs. 0.9.3, DR-060: the room takes heat and water back from the
-        #: coil for a while after a stop.
-        self._stopped_at: dict[str, datetime | None] = {}
-        self._was_cooling: dict[str, bool] = {}
-        #: Learned per-outdoor-unit draw (0.8.9, finding 14), keyed by group —
-        #: two rooms sharing a compressor share one model.
-        self._draw: dict[str, DrawModel] = {}
-        #: A short rolling window of house-load readings, for bracketing a
-        #: compressor state change on both sides.
-        self._house_load_samples: deque[tuple[datetime, float]] = deque()
-        #: Outdoor units currently mid-transition, waiting to be scored.
-        self._draw_pending: dict[str, _DrawCandidate] = {}
-        #: The published demand forecast. Never contains vendor concepts.
-        self.forecast: DemandForecast | None = None
-        #: Occupancy grace, one per room. Raw presence is the wrong signal for
-        #: a compressor: someone dropping a laptop off should not start it, and
-        #: someone signing for a delivery should not stop it.
-        self._grace: dict[str, GraceState] = {}
-        #: Why each room is considered occupied or not, for the trace.
-        self._grace_reason: dict[str, str] = {}
-        #: Whether free cooling was advised last cycle, per room. Announced
-        #: only on the rising edge — the moment it becomes true — not every
-        #: cycle it stays true, the same principle the grace warnings use.
-        self._free_cooling_advised: dict[str, bool] = {}
-        #: 0.9.6, DR-073. When outdoor air was first judged better, per room,
-        #: for as long as it stays better.
-        self._free_cooling_since: dict[str, datetime] = {}
-        #: 0.9.6, DR-077. A final warning ("turning ... off") waiting for the
-        #: stop it announces to actually be sent.
-        self._deferred_final: dict[str, Announcement] = {}
-        #: 0.9.6, DR-077. The mode each room's unit was in at the start of the
-        #: evaluation, before anything was sent: a warning about a running
-        #: unit is only true of one that was on.
-        self._unit_mode_seen: dict[str, str | None] = {}
-        #: 0.9.7, DR-090. The mode each room's unit is in and since when, so a
-        #: route chosen is kept for `ROUTE_HOLD`.
-        self._unit_mode_since: dict[str, tuple[str | None, datetime]] = {}
-        #: 0.9.6, DR-074. Why a room is reading its unit's own sensor.
-        self._fallback_reason: dict[str, str] = {}
-        #: 0.9.6, DR-080. Why a heading-home request ended, for the trace.
-        self._heading_home_reason: dict[str, str] = {}
-        #: Announcements raised this evaluation, dispatched after it.
-        self._pending_announcements: list[tuple[RoomConfig, Announcement]] = []
-        #: Entities currently logged as unavailable, so each transition is
-        #: recorded once rather than on every evaluation.
-        self._unavailable: set[str] = set()
-        self.rooms: dict[str, RoomConfig] = _rooms_from_entry(config_entry)
-        #: Which Abode Power Tariffs entry supplies the plan. None means no
-        #: tariff: the controller holds comfort and nothing window-driven.
-        self.tariff_entry_id: str | None = config_entry.options.get(
-            CONF_TARIFF_ENTRY_ID,
-            config_entry.data.get(CONF_TARIFF_ENTRY_ID),
-        )
-        #: The forward interval series, fetched from that entry. The plan
-        #: itself is not held here and is never configured here.
-        self.tariff: TariffSeries | None = None
-        #: Rooms that have a device in the registry, for stale removal. Seeded
-        #: from the registry rather than from the previous evaluation: the
-        #: coordinator is rebuilt on every options change, so anything held
-        #: only in memory would forget the room that was just deleted and its
-        #: device would be orphaned.
-        self.previous_rooms: set[str] = set()
-        #: Whether the startup fetch sequence is still trying for each feed.
-        #: Set when the sequence starts; an unconfigured feed is never pending.
-        self._pending_tariff = False
-        self._pending_forecast = False
-        self._pending_solar = False
-        #: Heading-home requests, per room, with the deadline if one was given.
-        #: There is no target: a heading-home room is driven to its comfort band.
-        self._heading_home: dict[str, datetime | None] = {}
-        #: Rooms the user has switched off. Held off: the unit is commanded
-        #: off every cycle and nothing in the room's decision can start it.
-        #: Read from the store, not from entity state, so it is already known
-        #: when the first evaluation runs. DR-047.
-        self._switched_off: set[str] = store.switched_off() & set(self.rooms)
-        #: 0.9.7, DR-088. Rooms the owner has left with the Leave button, kept
-        #: across a restart; and, per room, whether the presence sensor has
-        #: since read the room clear, so a return is a fresh arrival.
-        self._left: set[str] = store.left() & set(self.rooms)
-        self._left_seen_clear: dict[str, bool] = {}
-        #: 0.9.7, DR-088. Rooms whose stop the owner has just asked for, so the
-        #: minimum run does not hold the unit on against them.
-        self._owner_stop: set[str] = set()
-        #: 0.9.7, DR-089. Rooms whose Automatic control the owner has just
-        #: switched off: their units are turned off once, then left alone.
-        #: Held in memory only, so a restart never turns a unit off.
-        self._switch_off_pending: set[str] = set()
-        #: Rooms whose Automatic vane control the user has switched off: the
-        #: coordinator never sends a vane command to them. Read from the store
-        #: for the same reason as the line above. DR-049.
-        self._manual_vanes: set[str] = store.manual_vanes() & set(self.rooms)
-        #: Each room's Comfort mode where it is not Schedule (DR-058). Read
-        #: from the store for the same reason as the two lines above: a room
-        #: put on Sleep must already be on Sleep in the first evaluation.
-        self._comfort_modes: dict[str, ComfortMode] = _comfort_modes_from_store(
-            store.comfort_modes(), set(self.rooms)
-        )
-        #: The raw presence reading behind each room's graced presence, read
-        #: once per evaluation by `_graced_presence`.
-        self._raw_presence: dict[str, bool | None] = {}
-        #: Opening warnings already spoken for each room's current opening.
-        #: DR-050.
-        self._opening_warnings: dict[str, OpeningWarningState] = {}
-        #: The last mode each room was evaluated in, for the controls.
-        self._last_modes: dict[str, Mode] = {}
-        #: Rooms whose units had nothing to read the first time they were
-        #: tried, named once in the log rather than every cycle.
-        self._profile_unread: set[str] = set()
-        #: Each room's last-solved dry-bulb target, one cycle behind. The
-        #: power-aware compressor check needs a target to project energy need
-        #: against, but the target itself is solved inside evaluate_room —
-        #: after the actuator decision that needs it. A target thirty seconds
-        #: stale is a fine input to a battery-sufficiency check; it is not
-        #: used for anything that needs to be current.
-        self._last_target: dict[str, float] = {}
-        #: The shared battery/solar/house-load readings, read once per cycle
-        #: rather than once per room — every room's power check in a given
-        #: pass sees the same figures.
-        self._power_context: _PowerContext | None = None
-        #: Which attribute answered the compressor-running question for each
-        #: room last cycle: "hvac_action" or, where the entity publishes none,
-        #: "hvac_mode". Diagnostics only.
-        self._action_source: dict[str, str] = {}
+        self.house_data = dict(entry.data)
+        self.house: HouseConfig = house_from_data(entry.data)
+        self.rooms: dict[str, RoomRun] = {}
+        self.memory = Memory(hass, self._collect)
+        self.house_state = HouseState()
+        self._stored_rooms: dict[str, RoomState] = {}
+        self._lock = asyncio.Lock()
+        self._closing = False
+        self.commands = CommandLog()
+        self._last_command: dict[str, datetime] = {}
+        self.load_history = LoadHistory()
+        self.budget = PowerBudget()
+        self.guard = HouseGuard()
+        self.grid: GridChecks | None = None
+        self._charges: deque[tuple[datetime, float]] = deque()
+        self.tariff = TariffRead((), frozenset())
+        self.tariff_read_at: datetime | None = None
+        self.forecast: list[dict[str, Any]] = []
+        self.forecast_units: tuple[str | None, str | None] = (None, None)
+        self.forecast_error: str | None = None
+        self.solar: list[SolarSlice] | None = None
+        self.solar_error: str | None = None
+        self._due: dict[str, datetime] = {}
+        self._last_cycle: datetime | None = None
+        self._running_since: dict[str, datetime] = {}
+        self._stopped_since: dict[str, datetime] = {}
+        self._unit_running: dict[str, bool] = {}
+        self._issues: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {}
+        self._gone_since: dict[str, datetime] = {}  # room sensors seen gone, and since when
+        self._words: dict[str, str] = {}
+        self._tts_failed = False
+        self.version: str | None = None
+        self.unseeded: list[str] = []
+        self.house_device_id: str | None = None
 
-    async def async_prepare(self) -> None:
-        """Subscribe to entities, raise any issues, and start the first fetch.
+    # ------------------------------------------------------------------
+    # Start-up
+    # ------------------------------------------------------------------
 
-        The tariff and the forecast are *not* fetched inline here. Both call a
-        service belonging to another integration, and at boot that integration
-        may not have registered it yet. Awaiting a retry sequence on the setup
-        path would hold the config entry open for as long as the retries take
-        and produce a slow-setup warning, so the sequence runs as a background
-        task and setup returns immediately.
+    async def async_start(self) -> None:
+        """AT START-UP: Memory restores every room before the first cycle
+        [D049][D068]; a file that cannot be read raises, so setup retries
+        [R18]. Then the first reads of the tariff and the forecasts, and
+        the timers."""
+        from homeassistant.loader import async_get_integration
 
-        The controller starts with no tariff and no trajectory. Both are
-        supported states, not degraded ones: rooms are still held to their
-        bands, and precool falls back to comparing current conditions.
-        """
-        if self.weather_entity_id:
-            self.config_entry.async_on_unload(
-                async_track_time_interval(
-                    self.hass,
-                    self._async_forecast_tick,
-                    WEATHER_REFRESH_INTERVAL,
-                )
-            )
-        if self.tariff_entry_id:
-            self.config_entry.async_on_unload(
-                async_track_time_interval(
-                    self.hass,
-                    self._async_tariff_tick,
-                    TARIFF_REFRESH_INTERVAL,
-                )
-            )
-        if self._power_configured():
-            self.config_entry.async_on_unload(
-                async_track_time_interval(
-                    self.hass,
-                    self._async_solar_tick,
-                    SOLAR_FORECAST_REFRESH_INTERVAL,
-                )
-            )
-        self._async_check_configuration()
-        self._load_models()
-        self.previous_rooms = self._async_rooms_in_registry()
-
-        # The climate entities are watched too: their capabilities and
-        # availability feed the decision, not just their state.
-        if watched := sorted(_watched_entities(self.rooms)):
-            self.config_entry.async_on_unload(
-                async_track_state_change_event(
-                    self.hass, watched, self._handle_state_change
-                )
-            )
-
-        self._pending_tariff = self.tariff_entry_id is not None
-        self._pending_forecast = self.weather_entity_id is not None
-        self._pending_solar = self._power_configured()
-        if self._pending_tariff or self._pending_forecast or self._pending_solar:
-            self._async_schedule_startup_fetch(1)
-
-    @callback
-    def _async_schedule_startup_fetch(self, attempt: int) -> None:
-        """Book one startup fetch attempt, one delay from now.
-
-        `async_call_later` rather than a sleeping task: it is cancelled with
-        the config entry, and it moves with the test clock.
-        """
-        self.config_entry.async_on_unload(
-            async_call_later(
-                self.hass,
-                STARTUP_FETCH_DELAY,
-                functools.partial(self._async_startup_fetch, attempt),
-            )
+        integration = await async_get_integration(self.hass, DOMAIN)
+        self.version = str(integration.version) if integration.version is not None else None
+        data = await self.memory.async_load()
+        self._stored_rooms, self.house_state = from_data(data, has_load_sensor=self.house.house_load is not None)
+        if self.house.grid_power and self.house.grid_positive_is_import is not None:
+            self.grid = GridChecks(self.house.grid_positive_is_import)
+        self._words = await async_get_translations(self.hass, self.hass.config.language, "exceptions", [DOMAIN])
+        now = dt_util.utcnow()
+        for room in rooms_from_options(self.config_entry.options):
+            self._add_room(room, now)
+        await self.async_read_tariff()
+        await self.async_read_weather()
+        await self.async_read_solar()
+        entry = self.config_entry
+        entry.async_on_unload(
+            async_track_time_interval(self.hass, self._tariff_timer, timedelta(seconds=TARIFF_READ_S))
+        )
+        entry.async_on_unload(
+            async_track_time_interval(self.hass, self._weather_timer, timedelta(seconds=WEATHER_READ_S))
+        )
+        entry.async_on_unload(
+            async_track_time_interval(self.hass, self._solar_timer, timedelta(seconds=SOLAR_FORECAST_READ_S))
         )
 
-    async def _async_startup_fetch(self, attempt: int, _now: datetime) -> None:
-        """Fetch the tariff and the forecast, retrying while boot finishes.
+    def _add_room(self, room: RoomConfig, now: datetime) -> RoomRun:
+        stored = self._stored_rooms.pop(room.room_id, None)
+        state = stored if stored is not None else RoomState()
+        if stored is None:
+            self.unseeded.append(room.room_id)  # a new room is seeded from history [Prop]
+        profile = room.profile or state.profile
+        if profile is None:
+            profile = self._read_profile(room)  # [D048]
+        if profile is not None:
+            room = replace(room, profile=profile)
+            state.profile = profile
+        run = RoomRun(room, state, now)
+        self.rooms[room.room_id] = run
+        return run
 
-        Neither feed is required, and an unconfigured one is never pending.
+    def _read_profile(self, room: RoomConfig) -> CapabilityProfile | None:
+        """A room's capability profile from its live units [D048]; None
+        while any head is not reporting."""
+        profiles: list[CapabilityProfile] = []
+        unit = self.hass.config.units.temperature_unit
+        for h in room.heads:
+            st = self.hass.states.get(h.climate)
+            p = capabilities.read_profile(st.state if st else None, st.attributes if st else {}, unit,
+                                          native_temperature_unit(self.hass, h.climate),
+                                          native_limits(self.hass, h.climate))
+            if p is None:
+                return None
+            profiles.append(p)
+        return capabilities.combine(profiles)
 
-        Every attempt but the last is quiet. A failure during boot is almost
-        always the other integration not having registered its service yet,
-        and reporting a race as a fault trains the user to ignore the report.
-        When the last attempt fails, the warning and the repair issue are
-        raised exactly as they were before.
-        """
-        final = attempt >= STARTUP_FETCH_ATTEMPTS
-        gained = False
+    def _collect(self) -> dict[str, Any]:
+        """What Memory writes: every room's learning and choices, and the
+        house's learned draw."""
+        rooms = {rid: r.state for rid, r in self.rooms.items()}
+        for rid, r in self.rooms.items():
+            r.state.occupied = r.comfort.occupied
+            r.state.yesterday = r.scorecard.yesterday
+            r.state.arbiter = r.control.arbiter
+            rooms[rid] = r.state
+        return to_data(rooms, self.house_state)
 
-        if self._pending_tariff and await self._async_refresh_tariff(quiet=not final):
-            self._pending_tariff = False
-            gained = True
-            # The constraint check reads the series, so it can only say
-            # anything once there is one.
-            self._async_check_configuration()
+    async def async_shutdown_rooms(self) -> None:
+        """WHEN the component unloads: stop seeding, write everything
+        [D064]."""
+        self._closing = True
+        async with self._lock:
+            await self.memory.async_write_now()
 
-        if self._pending_forecast and await self._async_refresh_forecast(
-            quiet=not final
-        ):
-            self._pending_forecast = False
-            gained = True
+    # ------------------------------------------------------------------
+    # Reads on their own timers
+    # ------------------------------------------------------------------
 
-        if self._pending_solar and await self._async_refresh_solar_forecast(
-            quiet=not final
-        ):
-            self._pending_solar = False
-            gained = True
+    async def _tariff_timer(self, _now: datetime) -> None:
+        await self.async_read_tariff()
 
-        if gained:
-            await self.async_request_refresh()
+    async def _weather_timer(self, _now: datetime) -> None:
+        await self.async_read_weather()
 
-        if not final and (
-            self._pending_tariff or self._pending_forecast or self._pending_solar
-        ):
-            self._async_schedule_startup_fetch(attempt + 1)
+    async def _solar_timer(self, _now: datetime) -> None:
+        await self.async_read_solar()
 
-    async def _async_tariff_tick(self, now: datetime) -> None:
-        """Refetch the series on the interval timer, then re-evaluate."""
-        await self._async_refresh_tariff()
-        self._async_check_configuration()
-        await self.async_request_refresh()
-
-    async def _async_refresh_tariff(self, *, quiet: bool = False) -> bool:
-        """Fetch the forward interval series from Abode Power Tariffs.
-
-        A failure holds the series already in hand rather than discarding it.
-        The alternative — dropping to no tariff on one bad call — would turn a
-        momentary reload of the tariff integration into a room losing its
-        constraints, which is a worse outcome than a series a few minutes old.
-
-        `quiet` downgrades a failure to a debug line, for the startup attempts
-        that are allowed to lose the race. Returns whether a series was read.
-        """
-        if not self.tariff_entry_id:
-            self.tariff = None
-            return True
-
+    async def async_read_tariff(self) -> None:
+        """Every 15 minutes: the forward intervals, in one service call to
+        Abode Power Tariffs [D004]. A failed read prices every half-hour
+        the same and raises a repair; comfort is unchanged."""
+        entry_id = self.house.tariff_entry
+        if entry_id is None:
+            self.tariff = TariffRead((), frozenset())
+            return
         try:
             response = await self.hass.services.async_call(
                 TARIFF_DOMAIN,
-                TARIFF_SERVICE_GET_INTERVALS,
-                {
-                    "config_entry_id": self.tariff_entry_id,
-                    "hours": TARIFF_HORIZON_HOURS,
-                    "resolution_minutes": TARIFF_RESOLUTION_MINUTES,
-                },
+                TARIFF_SERVICE,
+                {"config_entry_id": entry_id, "hours": TARIFF_REQUEST_HOURS,
+                 "resolution_minutes": TARIFF_RESOLUTION_MIN},
                 blocking=True,
                 return_response=True,
-            )
-        except ServiceNotFound:
-            self._async_tariff_issue(
-                "Abode Power Tariffs is not installed, or is not loaded", quiet
-            )
-            return False
-        except HomeAssistantError as err:
-            self._async_tariff_issue(str(err), quiet)
-            return False
-
-        try:
-            self.tariff = TariffSeries.from_response(
-                dict(response) if response else None,
-                dt_util.utcnow(),
-                dt_util.DEFAULT_TIME_ZONE,
-            )
-        except TariffPayloadError as err:
-            self._async_tariff_issue(
-                f"the interval series could not be read: {err}", quiet
-            )
-            return False
-
-        LOGGER.debug(
-            "Tariff series refreshed: %d intervals, covering to %s",
-            len(self.tariff.intervals),
-            self.tariff.covers_until,
-        )
-        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TARIFF_UNAVAILABLE)
-        return True
-
-    @callback
-    def _async_tariff_issue(self, reason: str, quiet: bool = False) -> None:
-        """Raise a repair issue naming why the tariff could not be read."""
-        if quiet:
-            LOGGER.debug("Tariff not available yet: %s", reason)
-            return
-        LOGGER.warning("Tariff could not be read: %s", reason)
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            ISSUE_TARIFF_UNAVAILABLE,
-            is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key=ISSUE_TARIFF_UNAVAILABLE,
-            translation_placeholders={"reason": reason},
-        )
-
-    async def _async_forecast_tick(self, now: datetime) -> None:
-        """Refetch the forecast on the interval timer, then re-evaluate."""
-        await self._async_refresh_forecast()
-        await self.async_request_refresh()
-
-    async def _async_refresh_forecast(self, *, quiet: bool = False) -> bool:
-        """Fetch the hourly forecast from the configured weather entity.
-
-        A failure holds the trajectory already in hand, for the same reason a
-        failed tariff fetch does: a momentary reload of a weather integration
-        must not turn into every room losing its precool decision.
-
-        `quiet` downgrades a failure to a debug line, for the startup attempts
-        that are allowed to lose the race. Returns whether a forecast was read.
-        """
-        if not self.weather_entity_id:
-            self.trajectory = None
-            return True
-
-        try:
-            response = await self.hass.services.async_call(
-                WEATHER_DOMAIN,
-                WEATHER_SERVICE_GET_FORECASTS,
-                {ATTR_ENTITY_ID: self.weather_entity_id, "type": "hourly"},
-                blocking=True,
-                return_response=True,
-            )
-        except (ServiceNotFound, HomeAssistantError) as err:
-            self._async_forecast_issue(str(err), quiet)
-            return False
-
-        try:
-            self.trajectory = WeatherTrajectory.from_response(
-                dict(response) if response else None,
-                dt_util.utcnow(),
-                dt_util.DEFAULT_TIME_ZONE,
-            )
-        except ForecastPayloadError as err:
-            self._async_forecast_issue(
-                f"the forecast could not be read: {err}", quiet
-            )
-            return False
-
-        LOGGER.debug(
-            "Forecast refreshed: %d hours, covering to %s",
-            len(self.trajectory.points),
-            self.trajectory.covers_until,
-        )
-        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_FORECAST_UNAVAILABLE)
-        return True
-
-    @callback
-    def _async_forecast_issue(self, reason: str, quiet: bool = False) -> None:
-        """Raise a repair issue naming why the forecast could not be read."""
-        if quiet:
-            LOGGER.debug("Weather forecast not available yet: %s", reason)
-            return
-        LOGGER.warning("Weather forecast could not be read: %s", reason)
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            ISSUE_FORECAST_UNAVAILABLE,
-            is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key=ISSUE_FORECAST_UNAVAILABLE,
-            translation_placeholders={"reason": reason},
-        )
-
-    def _power_configured(self) -> bool:
-        """Whether the power budget can engage at all (all five fields set)."""
-        return None not in (
-            self.battery_soc_entity_id,
-            self.battery_capacity_kwh,
-            self.solar_entity_id,
-            self.house_load_entity_id,
-            self.reserve_margin_kwh,
-        )
-
-    async def _async_solar_tick(self, now: datetime) -> None:
-        """Re-read the solar forecast on its timer."""
-        await self._async_refresh_solar_forecast()
-
-    async def _async_solar_forecast_entries(self) -> list[str]:
-        """The solar forecast config entries to read (DR-061).
-
-        The ones chosen in the power settings, or, where nothing has been
-        chosen there, the ones the Energy dashboard uses. Home Assistant's
-        energy manager is read for that; it is not a documented API, so a
-        failure to read it means no default rather than an error.
-        """
-        if self.solar_forecast_entry_ids is not None:
-            return list(self.solar_forecast_entry_ids)
-        try:
-            from homeassistant.components.energy.data import (  # noqa: PLC0415
-                async_get_manager,
-            )
-
-            manager = await async_get_manager(self.hass)
-        except (ImportError, HomeAssistantError, KeyError) as err:
-            LOGGER.debug("Energy dashboard settings could not be read: %s", err)
-            return []
-        return energy_dashboard_solar_forecasts(manager.data)
-
-    async def _async_refresh_solar_forecast(self, *, quiet: bool = False) -> bool:
-        """Read the selected solar forecasts and sum them, hour by hour.
-
-        0.9.3, DR-061. Through the same call the Energy dashboard uses: each
-        forecast integration's energy platform, `async_get_solar_forecast`,
-        which returns Wh per period. A source that cannot be read is named in
-        a repair issue and the rest are used; with none read, the budget falls
-        back to the solar being produced now, as before 0.9.3. The last
-        forecast read is kept until a read succeeds, and dropped once the
-        forecast no longer reaches the present.
-
-        Returns whether the read is settled, so the startup sequence stops
-        retrying.
-        """
-        entries = await self._async_solar_forecast_entries()
-        if not entries:
-            self._solar_points = None
-            self._solar_sources = []
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SOLAR_FORECAST_UNAVAILABLE)
-            return True
-        try:
-            from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
-                async_get_energy_platforms,
-            )
-
-            platforms = await async_get_energy_platforms(self.hass)
-        except (ImportError, HomeAssistantError) as err:
-            self._async_solar_issue(
-                f"Home Assistant's energy platforms could not be read: {err}", quiet
-            )
-            return False
-
-        totals: dict[datetime, float] = {}
-        read: list[str] = []
-        failed: list[str] = []
-        for entry_id in entries:
-            entry = self.hass.config_entries.async_get_entry(entry_id)
-            if entry is None or entry.domain not in platforms:
-                failed.append(entry.title if entry is not None else entry_id)
-                continue
-            try:
-                forecast = await platforms[entry.domain](self.hass, entry_id)
-            except HomeAssistantError as err:
-                LOGGER.debug("Solar forecast %s failed: %s", entry.title, err)
-                forecast = None
-            points = solar_points_from_forecast(forecast, dt_util.DEFAULT_TIME_ZONE)
-            if not points:
-                failed.append(entry.title)
-                continue
-            read.append(entry.title)
-            for start, wh in points:
-                totals[start] = totals.get(start, 0.0) + wh
-
-        if read:
-            self._solar_points = sorted(totals.items())
-            self._solar_sources = read
-        if failed:
-            self._async_solar_issue(
-                "these could not be read: " + ", ".join(failed), quiet
-            )
-            return bool(read) and not quiet
-        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SOLAR_FORECAST_UNAVAILABLE)
-        return True
-
-    @callback
-    def _async_solar_issue(self, reason: str, quiet: bool = False) -> None:
-        """Raise a repair issue naming the solar forecast that failed."""
-        if quiet:
-            LOGGER.debug("Solar forecast not available yet: %s", reason)
-            return
-        LOGGER.warning("Solar forecast could not be read: %s", reason)
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            ISSUE_SOLAR_FORECAST_UNAVAILABLE,
-            is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key=ISSUE_SOLAR_FORECAST_UNAVAILABLE,
-            translation_placeholders={"reason": reason},
-        )
-
-    def _solar_forecast_slices(
-        self, now: datetime, hours: float
-    ) -> list[tuple[float, float]] | None:
-        """Forecast solar from now to the end of the window, or None.
-
-        None where no forecast is held, or the one held no longer reaches the
-        present: a forecast that has gone stale says nothing about the sun.
-        """
-        points = self._solar_points
-        if not points:
-            return None
-        # Hours before the first point carry no energy (forecast_slices), which
-        # is right before sunrise: some sources only publish daylight hours.
-        if points[-1][0] + timedelta(hours=1) <= now:
-            return None
-        return forecast_slices(points, now, now + timedelta(hours=hours))
-
-    def _load_models(self) -> None:
-        """Restore each room's learned behaviour from the store."""
-        for room_id in self.rooms:
-            self.models[room_id] = ThermalModel.from_dict(
-                self.store.room(room_id).get("thermal")
-            )
-
-    def model_for(self, room_id: str) -> ThermalModel:
-        """The thermal model for a room, created on first use."""
-        if room_id not in self.models:
-            self.models[room_id] = ThermalModel.from_dict(
-                self.store.room(room_id).get("thermal")
-            )
-        return self.models[room_id]
-
-    @callback
-    def _async_check_configuration(self) -> None:
-        """Surface configuration problems as repair issues, not log noise."""
-        unrecognised = (
-            self.tariff.unrecognised_constraints() if self.tariff else frozenset()
-        )
-        if unrecognised:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_UNRECOGNISED_CONSTRAINT,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_UNRECOGNISED_CONSTRAINT,
-                translation_placeholders={
-                    "constraints": ", ".join(sorted(unrecognised))
-                },
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_UNRECOGNISED_CONSTRAINT)
-
-        # Two rooms pointed at one climate entity write different setpoints to
-        # it on every cycle, and each one's dedupe cache sees only its own
-        # writes, so neither errors and neither wins. The configuration is
-        # reachable today and produces no log line at all. Naming it and
-        # refusing to actuate those rooms is the only safe reading; choosing a
-        # winner would be inventing an answer the user has not given.
-        if shared := self._shared_climate_entities():
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_SHARED_CLIMATE_ENTITY,
-                is_fixable=False,
-                severity=ir.IssueSeverity.ERROR,
-                translation_key=ISSUE_SHARED_CLIMATE_ENTITY,
-                translation_placeholders={
-                    "conflicts": "; ".join(
-                        f"{entity_id}: {', '.join(names)}"
-                        for entity_id, names in sorted(shared.items())
-                    )
-                },
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_SHARED_CLIMATE_ENTITY)
-
-        unbanded = sorted(
-            room.name
-            for room in self.rooms.values()
-            if not room.bands and room.lockout_reason is None
-        )
-        if unbanded:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_NO_BANDS,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_NO_BANDS,
-                translation_placeholders={"rooms": ", ".join(unbanded)},
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_NO_BANDS)
-
-        # 0.8.9. Required at setup, but a room saved before that or edited
-        # since can still be missing one. Not silently fixed — there is
-        # nothing to fix it to — and not a ConfigEntryError, which would take
-        # correctly configured rooms down with it.
-        if missing := self._rooms_missing_comfort_inputs():
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_MISSING_COMFORT_INPUTS,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_MISSING_COMFORT_INPUTS,
-                translation_placeholders={
-                    "rooms": "; ".join(
-                        f"{name}: {', '.join(kinds)}"
-                        for name, kinds in sorted(missing.items())
-                    )
-                },
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_MISSING_COMFORT_INPUTS)
-
-        # 0.8.10, finding 11. `no_grid_import` can arrive from Abode Power
-        # Tariffs whether or not this integration has power management
-        # configured at all — the plan is asserting a rule about grid flow,
-        # and without a grid sensor this component can neither honour nor
-        # verify it.
-        interval = self._interval_at(dt_util.utcnow()) if self.tariff else None
-        if (
-            interval is not None
-            and CONSTRAINT_NO_GRID_IMPORT in interval.constraints
-            and self.grid_entity_id is None
-        ):
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_GRID_REQUIRED,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_GRID_REQUIRED,
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_GRID_REQUIRED)
-
-        if self._grid_sign_disagreements >= _GRID_SIGN_DISAGREEMENT_THRESHOLD:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_GRID_SIGN_CONTRADICTED,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_GRID_SIGN_CONTRADICTED,
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_GRID_SIGN_CONTRADICTED)
-
-    def _rooms_missing_comfort_inputs(self) -> dict[str, list[str]]:
-        """Rooms with no temperature sensor, no humidity sensor, or neither."""
-        missing: dict[str, list[str]] = {}
-        for room in self.rooms.values():
-            absent = [
-                kind
-                for kind, entity_id in (
-                    ("temperature", room.temperature_entity_id),
-                    ("humidity", room.humidity_entity_id),
-                )
-                if entity_id is None
-            ]
-            if absent:
-                missing[room.name] = absent
-        return missing
-
-    def _shared_climate_entities(self) -> dict[str, list[str]]:
-        """Climate entities claimed by more than one room, and by which.
-
-        A ducted system genuinely has one indoor unit serving several rooms,
-        which is why the configuration looks reasonable to enter. This
-        controller cannot drive one: its whole output is a dry-bulb target per
-        room, and a ducted system has one setpoint and a damper per zone. Until
-        that control law exists, the configuration is refused rather than
-        half-honoured.
-        """
-        by_entity: dict[str, list[str]] = {}
-        for room in self.rooms.values():
-            for entity_id in room.climate_entity_ids:
-                by_entity.setdefault(entity_id, []).append(room.name)
-        return {
-            entity_id: sorted(names)
-            for entity_id, names in by_entity.items()
-            if len(names) > 1
-        }
-
-    @callback
-    def async_request_heading_home(
-        self, room_id: str, deadline: datetime | None = None
-    ) -> None:
-        """Bring a room to its comfort band ahead of arrival.
-
-        A deadline with no time zone is taken as local time, which is what
-        Home Assistant's date-time picker sends. Until 0.9.3 it was kept
-        naive, and every evaluation then failed comparing it with the clock.
-        """
-        self._end_left(room_id)
-        self._heading_home[room_id] = (
-            None if deadline is None else dt_util.as_utc(deadline)
-        )
-
-    def is_room_switched_off(self, room_id: str) -> bool:
-        """Whether the user has switched this room's automatic control off."""
-        return room_id in self._switched_off
-
-    async def async_leave_room(self, room_id: str) -> None:
-        """The owner has left the room (0.9.7, DR-088).
-
-        The room is empty at once, with no vacancy wait and no warnings, its
-        unit is turned off now, ahead of the compressor's minimum run, and it
-        stays off until someone comes back.
-        """
-        self._left.add(room_id)
-        self._left_seen_clear[room_id] = False
-        self.store.set_left(room_id, True)
-        self._heading_home.pop(room_id, None)
-        if (state := self._grace.get(room_id)) is not None:
-            state.occupied = False
-            state.warned_at = None
-        self.store.set_occupancy(room_id, False)
-        self._owner_stop.add(room_id)
-        room = self.rooms.get(room_id)
-        LOGGER.info("%s: left by the owner; off until someone comes back",
-                    room.name if room else room_id)
-        await self.async_refresh()
-
-    def _end_left(self, room_id: str) -> None:
-        """The owner has turned the room back on, or someone has come back."""
-        if room_id in self._left:
-            self._left.discard(room_id)
-            self.store.set_left(room_id, False)
-        self._left_seen_clear.pop(room_id, None)
-
-    def is_room_left(self, room_id: str) -> bool:
-        """Whether the owner has left this room and nobody has come back."""
-        return room_id in self._left
-
-    async def async_set_room_switched_off(self, room_id: str, off: bool) -> None:
-        """Switch a room's automatic control off or on, and act on it now."""
-        self._end_left(room_id)
-        if off:
-            # DR-089. Switching Automatic control off turns the aircon off,
-            # once. After that nothing is sent, so the unit is the owner's.
-            if room_id not in self._switched_off:
-                self._switch_off_pending.add(room_id)
-            self._switched_off.add(room_id)
-        else:
-            self._switched_off.discard(room_id)
-            self._switch_off_pending.discard(room_id)
-        self.store.set_switched_off(room_id, off)
-        await self.async_request_refresh()
-
-    def is_room_vanes_manual(self, room_id: str) -> bool:
-        """Whether the user has taken the vanes in this room into their own hands."""
-        return room_id in self._manual_vanes
-
-    async def async_set_room_vanes_manual(self, room_id: str, manual: bool) -> None:
-        """Hand a room's vanes to the user, or back to the coordinator."""
-        if manual:
-            self._manual_vanes.add(room_id)
-        else:
-            self._manual_vanes.discard(room_id)
-        self.store.set_manual_vanes(room_id, manual)
-        await self.async_request_refresh()
-
-    def comfort_mode(self, room_id: str) -> ComfortMode:
-        """The room's Comfort mode: Schedule unless the user chose otherwise."""
-        return self._comfort_modes.get(room_id, ComfortMode.SCHEDULE)
-
-    async def async_set_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
-        """Set a room's Comfort mode, keep it, and act on it now (DR-058)."""
-        self._end_left(room_id)
-        self._remember_comfort_mode(room_id, mode)
-        await self.async_request_refresh()
-
-    def _remember_comfort_mode(self, room_id: str, mode: ComfortMode) -> None:
-        """Hold a room's Comfort mode in memory and in the store."""
-        if mode is ComfortMode.SCHEDULE:
-            self._comfort_modes.pop(room_id, None)
-            self.store.set_comfort_mode(room_id, None)
-        else:
-            self._comfort_modes[room_id] = mode
-            self.store.set_comfort_mode(room_id, mode.value)
-
-    def last_mode(self, room_id: str) -> Mode:
-        """The mode a room was last evaluated in."""
-        return self._last_modes.get(room_id, Mode.LOCKOUT)
-
-    def controls_writable(self, room_id: str, *, vane: bool = False) -> bool:
-        """Whether the user may change a room's controls by hand right now.
-
-        DR-049. Everything is writable while Automatic control is off. The
-        vanes are also writable while Automatic vane control is off, and stay
-        so with Automatic control on.
-        """
-        if room_id in self._switched_off:
-            return True
-        return vane and room_id in self._manual_vanes
-
-    def _end_heading_home(
-        self, room: RoomConfig, presence: bool | None, now: datetime
-    ) -> None:
-        """End a heading-home request whose purpose has passed (DR-080).
-
-        It ends once the room is occupied, and an hour after its deadline if
-        nobody has arrived. Until 0.9.6 only the clear-override action ended
-        one, and until then the room stayed in Precondition, overriding
-        presence and sleep: it was never turned off when it emptied again.
-        """
-        if room.room_id not in self._heading_home:
-            return
-        deadline = self._heading_home[room.room_id]
-        reason: str | None = None
-        if presence is True:
-            reason = "heading home ended: the room is occupied"
-        elif deadline is not None and now >= deadline + HEADING_HOME_EXPIRY:
-            reason = (
-                "heading home ended: an hour past its deadline and nobody has "
-                "arrived"
-            )
-        if reason is not None:
-            self._heading_home.pop(room.room_id, None)
-            self._heading_home_reason[room.room_id] = reason
-            LOGGER.info("%s: %s", room.name, reason)
-
-    @callback
-    def async_clear_override(self, room_id: str) -> None:
-        """Drop any heading-home request for a room."""
-        self._heading_home.pop(room_id, None)
-
-    @callback
-    def _handle_state_change(self, event: Event[EventStateChangedData]) -> None:
-        """Re-evaluate when a watched entity changes.
-
-        Actuation is awaited, so this schedules a refresh rather than
-        evaluating inline.
-        """
-        self.config_entry.async_create_task(
-            self.hass, self.async_request_refresh(), "abode_hvac_coordinator state change"
-        )
-
-    async def _async_update_data(self) -> dict[str, DecisionTrace]:
-        """Evaluate every room."""
-        return await self._async_evaluate(dt_util.utcnow())
-
-    async def _async_evaluate(self, now: datetime) -> dict[str, DecisionTrace]:
-        """Learn from the last interval, evaluate every room, then act."""
-        traces: dict[str, DecisionTrace] = {}
-        self._pending_announcements.clear()
-        self._stale.clear()
-        self._record_house_load_sample(now)
-        self._power_context = self._compute_power_context(now)
-        self._note_power_samples(now, self._power_context)
-        self._track_grid(now, self._power_context)
-        self._async_ensure_profiles()
-        for room in self.rooms.values():
-            inputs = self._inputs_for(room, now)
-            self._unit_mode_seen[room.room_id] = inputs.unit_mode
-            capabilities = self._capabilities(room)
-            self._learn(room, inputs, now)
-            # A room is evaluated, and its decision published, whether or not
-            # anything is sent to it. Two things stop the sending: the user's
-            # Automatic control switch (DR-049) and a room whose units have
-            # not yet reported what they can do (DR-048). Either way the unit
-            # is left exactly as it is.
-            inactive_reason = (
-                SWITCHED_OFF_REASON
-                if room.room_id in self._switched_off
-                else PROFILE_UNREAD_REASON
-                if room.capabilities is None
-                else None
-            )
-            evaluated = (
-                replace(room, lockout_reason=inactive_reason)
-                if inactive_reason is not None
-                else room
-            )
-            trace = evaluate_room(evaluated, inputs)
-            if self._note_band_change(room.room_id, trace, now):
-                # DR-092. The band has just changed. Decide again knowing it,
-                # so the ramp and waking apply from this evaluation on.
-                inputs = replace(
-                    inputs,
-                    previous_mode=self._ramp_from.get(room.room_id),
-                    mode_changed_at=self._mode_changed_at.get(room.room_id),
-                    waking=room.room_id in self._waking,
-                )
-                trace = evaluate_room(evaluated, inputs)
-            self._announce_free_cooling(room, trace)
-            trace.model = self.model_for(room.room_id).diagnostics()
-            if trace.target_dry_bulb_c is not None:
-                self._last_target[room.room_id] = trace.target_dry_bulb_c
-            if reason := self._grace_reason.get(room.room_id):
-                trace.reasons.append(reason)
-            if reason := self._fallback_reason.get(room.room_id):
-                trace.reasons.append(reason)
-            if reason := self._heading_home_reason.pop(room.room_id, None):
-                trace.reasons.append(reason)
-            if reason := self._precondition_reason.get(room.room_id):
-                trace.rejected.append(reason)
-            if reason := self._demand_reason.pop(room.room_id, None):
-                if trace.mode is Mode.PRECOOL:
-                    trace.reasons.append(reason)
-                elif "precool" in reason:
-                    trace.rejected.append(reason)
-            trace.stale_feeds = self._stale.get(room.room_id, [])
-            if inactive_reason is not None:
-                self._track_mode(room.room_id, trace, now)
-                self._last_modes[room.room_id] = trace.mode
-                traces[room.room_id] = trace
-                if (
-                    inactive_reason == SWITCHED_OFF_REASON
-                    and room.room_id in self._switch_off_pending
-                ):
-                    # DR-089. The one command a switched-off room is sent.
-                    self._switch_off_pending.discard(room.room_id)
-                    trace.actuator = ActuatorStep.OFF
-                    self._note_owner_stop(room, now)
-                    trace.reasons.append(
-                        "off now: the owner switched Automatic control off"
-                    )
-                    await self.actuator.async_apply(room, trace)
-                continue
-            self._power_ceiling(room, inputs, trace, now, capabilities)
-            self._warn_about_opening(room, inputs, now)
-            # Guard first. The regulator's anti-windup gate has to see the
-            # step that will actually be carried out, not the one that was
-            # wanted before the short-cycle guard had its say.
-            self._guard_cycling(room, trace, now)
-            self._regulate(room, inputs, trace, now)
-            self._track_mode(room.room_id, trace, now)
-            self._last_modes[room.room_id] = trace.mode
-            traces[room.room_id] = trace
-            LOGGER.debug(
-                "%s: mode=%s actuator=%s hci=%s target=%s",
-                room.room_id,
-                trace.mode,
-                trace.actuator,
-                trace.hci,
-                trace.target_dry_bulb_c,
-            )
-            await self.actuator.async_apply(room, trace)
-
-        await self._async_announce(traces)
-        self._async_remove_stale_devices(set(traces))
-        self._process_draw_candidates(now)
-        self.forecast = self._build_forecast(now, traces)
-        self._persist_models()
-        return traces
-
-    def _regulate(
-        self,
-        room: RoomConfig,
-        inputs: RoomInputs,
-        trace: DecisionTrace,
-        now: datetime,
-    ) -> None:
-        """Layer 2. The room loop: a PID that uses what the room has learned.
-
-        The unit's own thermostat regulates against its return-air sensor,
-        which is not the room. This closes the outer loop around it, and it is
-        the only place in the project allowed to command a temperature other
-        than the one the comfort index solved for (DR-054).
-
-        Built from the learned drift and the learned rate against approach
-        where they have converged, and from the solved target plus the trim
-        where they have not. The trim is kept per direction. The result is
-        held to the power ceiling where that is enforced, and last rounded to
-        what the unit can actually hold and held inside its range (DR-051).
-
-        The power ceiling only actually clamps `commanded_dry_bulb_c` — and
-        only counts as binding for anti-windup — when the room's
-        `power_management` is `POWER_MANAGEMENT_ENFORCED`. Under
-        `POWER_MANAGEMENT_GUIDANCE`, `_power_ceiling` still populates
-        `trace.power_ceiling_c`/`power_bin`/`power_budget_kw` and the trace
-        reasons still report what the ceiling would be, but neither this
-        method's clamp nor its anti-windup gate ever fire against it: the
-        commanded setpoint is left exactly where comfort alone would put it.
-        """
-        state = self._regulators.setdefault(room.room_id, RegulatorState())
-        limits, limits_note = self._setpoint_limits(room)
-        trace.setpoint_step_c = limits.step
-        if limits_note is not None:
-            trace.rejected.append(limits_note)
-
-        track_room_rate(state, inputs.temperature_c, now)
-
-        # Direction comes from the target against the room reading, not from
-        # `trace.demand` — the ceiling's primary case is a room *inside* its
-        # band (demand is None there), where the solved target still exists
-        # and still says which way the compressor is being asked to work.
-        # 0.9.7, DR-094. With hysteresis: a room a tenth either side of its
-        # target no longer swings the setpoint between the two trims.
-        direction = loop_direction(
-            state, trace.target_dry_bulb_c, inputs.temperature_c
-        )
-        trim_direction = direction or "cool"
-        # 0.9.7, DR-095. The unit's own reading against the room's, while its
-        # fan is moving room air over its sensor.
-        unit_mode = inputs.unit_mode
-        track_sensor_offset(
-            state,
-            unit_c=self._unit_reading(room, "current_temperature")
-            if unit_mode not in (None, "off") and not inputs.temperature_from_unit
-            else None,
-            room_c=inputs.temperature_c,
-            now=now,
-        )
-
-        # 0.8.10. Whether the power ceiling is actually binding this cycle —
-        # would the uncapped commanded setpoint go further than the ceiling
-        # allows. Computed before `integrate` runs so anti-windup can see it:
-        # winding the trim further against a bound the ceiling is enforcing
-        # is the same fault finding 7 fixed for the short-cycle guard, in a
-        # second place.
-        uncapped, _ = self._room_loop_setpoint(
-            room, state, inputs, trace, direction, trim_direction
-        )
-        binding = False
-        if (
-            room.power_management == POWER_MANAGEMENT_ENFORCED
-            and trace.power_ceiling_c is not None
-            and inputs.temperature_c is not None
-            and direction is not None
-            and uncapped is not None
-        ):
-            binding = ceiling_is_binding(
-                uncapped, inputs.temperature_c, direction, trace.power_ceiling_c
-            )
-
-        near_target = (
-            trace.target_dry_bulb_c is not None
-            and inputs.temperature_c is not None
-            and abs(inputs.temperature_c - trace.target_dry_bulb_c)
-            <= INTEGRATE_WITHIN_C
-        )
-        integrate(
-            state,
-            target_c=trace.target_dry_bulb_c,
-            room_c=inputs.temperature_c,
-            now=now,
-            # The trim is only meaningful while the unit is working toward the
-            # solved target. That is true of a commanded compressor step and
-            # equally true of one the guard is holding on; it is not true of a
-            # start the guard has just refused, or of a cycle the power
-            # ceiling is actively capping, both of which used to wind against
-            # a bound the loop was not free to correct.
-            #
-            # 0.9.7, DR-097. And of a room inside its band whose unit is still
-            # working, with the room loop's setpoint walked onto it (DR-056).
-            # Until 0.9.7 the trim was frozen there, so a feed-forward that
-            # overstated the room's drift was never corrected: the simulated
-            # Office was cooled below its band for an hour and then heated.
-            regulating=(
-                (
-                    (
-                        (
-                            trace.actuator is ActuatorStep.COMPRESSOR
-                            or trace.hold_compressor
-                        )
-                        and near_target
-                    )
-                    or (
-                        trace.actuator is ActuatorStep.NONE
-                        and trace.hold_setpoint
-                        and inputs.unit_mode in WORKING_MODES
-                    )
-                )
-                and not binding
-            ),
-            direction=trim_direction,
-            deadband_c=effective_deadband(limits),
-        )
-        trace.reasons.extend(state.notes)
-        trace.regulation_trim_c = state.trim_for(trim_direction)
-        commanded, pid = self._room_loop_setpoint(
-            room, state, inputs, trace, direction, trim_direction
-        )
-        if pid is not None:
-            trace.approach_c = pid.approach_c
-            trace.feed_forward_c = pid.feed_forward_c
-            trace.wanted_rate_c_per_hour = pid.wanted_rate_c_per_hour
-            trace.reasons.append(pid.reason)
-
-        capped = False
-        if (
-            room.power_management == POWER_MANAGEMENT_ENFORCED
-            and trace.power_ceiling_c is not None
-            and commanded is not None
-            and inputs.temperature_c is not None
-            and direction is not None
-        ):
-            held = held_setpoint(
-                commanded, inputs.temperature_c, direction, trace.power_ceiling_c
-            )
-            if held != commanded:
-                commanded = held
-                capped = True
-                trace.reasons.append(
-                    f"power budget: commanded held at {commanded:.1f} C, "
-                    f"{trace.power_ceiling_c:.1f} C ceiling"
-                )
-
-        if commanded is not None:
-            # Last step, and the one that matters to the unit: what it is sent
-            # has to be a value it can hold (DR-051). Where the power ceiling
-            # has just bound, the rounding goes the way that stays inside it.
-            # Otherwise it goes the way the room is being driven (DR-065):
-            # cooling rounds down and heating rounds up, so a unit with whole
-            # degree steps is never sent a setpoint at or past the room it is
-            # meant to be moving. Rounding to the nearest sent 26 C to a 25.9 C
-            # room the loop wanted 0.2 C below, and the unit did nothing.
-            # 0.9.6, DR-075. Where the room loop answered, its own way of
-            # working decides the rounding, not the room against its target:
-            # the two disagree for a room a tenth of a degree past its target.
-            way = pid.direction if pid is not None else direction
-            toward = None
-            if capped:
-                toward = "up" if direction == "cool" else "down"
-            elif way == "cool":
-                toward = "down"
-            elif way == "heat":
-                toward = "up"
-            rounded = quantise_setpoint(commanded, limits, toward=toward)
-            last_sent = state.held_setpoint_c
-            deadband = QUANTISE_DEADBAND_STEPS * limits.rounding_step
-            if (
-                not capped
-                and last_sent is not None
-                and last_sent != rounded
-                and abs(commanded - last_sent) < deadband
-                and quantise_setpoint(last_sent, limits) == last_sent
-            ):
-                # 0.9.7, DR-086. The setpoint already sent stands until the
-                # loop has moved most of a step away from it.
-                trace.reasons.append(
-                    f"setpoint held at {last_sent:.1f} C: the loop's {commanded:.1f} "
-                    f"is within {deadband:.2f} C of it"
-                )
-                rounded = last_sent
-            elif abs(rounded - commanded) >= 0.05:
-                trace.reasons.append(
-                    f"setpoint {commanded:.1f} rounded to {rounded:.1f} C, "
-                    f"the unit holds {limits.rounding_step:g} C steps"
-                )
-            state.held_setpoint_c = rounded
-            commanded = rounded
-        trace.commanded_dry_bulb_c = commanded
-
-    def _room_loop_setpoint(
-        self,
-        room: RoomConfig,
-        state: RegulatorState,
-        inputs: RoomInputs,
-        trace: DecisionTrace,
-        direction: str | None,
-        trim_direction: str,
-    ) -> tuple[float | None, PidSetpoint | None]:
-        """The room loop's setpoint before the power ceiling and the rounding.
-
-        The PID where the drift and the learned rate against approach are both
-        known; otherwise the solved target plus the trim for this direction,
-        which is what the loop was before 0.9.0 (DR-054).
-        """
-        target = trace.target_dry_bulb_c
-        if target is None:
-            return None, None
-        if trace.actuator is ActuatorStep.NONE and trace.hold_setpoint:
-            # 0.9.7, DR-097. Inside the band the unit's own thermostat holds
-            # the room: it is given the target, corrected by the measured
-            # difference between its sensor and the room's and by the trim.
-            # The learned curve is for bringing a room to its band. Used to
-            # hold it there, its feed-forward rested on the room's modelled
-            # drift, and where that was overstated the unit was asked for
-            # 2.2 C below the room with the room already below its target.
-            return commanded_setpoint(state, target, trim_direction), None
-        if inputs.temperature_c is not None:
-            model = self.model_for(room.room_id)
-            drift = model.drift_rate(
-                inputs.temperature_c,
-                self.outdoor_reading(),
-                direct_sun=inputs.direct_sun is True,
-            )
-            pid_direction = direction or ("cool" if (drift or 0.0) >= 0 else "heat")
-            pid = pid_setpoint(
-                state,
-                target_c=target,
-                room_c=inputs.temperature_c,
-                direction=pid_direction,
-                drift_c_per_hour=drift,
-                approach_for_rate=model.approach_for_rate,
-            )
-            if pid is not None:
-                return pid.setpoint_c, pid
-        return commanded_setpoint(state, target, trim_direction), None
-
-    def _setpoint_limits(self, room: RoomConfig) -> tuple[SetpointLimits, str | None]:
-        """What the room's units can be set to, from the stored profile.
-
-        DR-051. No profile means no limits known, and the setpoint is rounded
-        to tenths as it always was.
-        """
-        profile = room.capabilities
-        if profile is None:
-            return SetpointLimits(), None
-        return SetpointLimits(
-            profile.target_temp_step, profile.min_temp, profile.max_temp
-        ), None
-
-    def _note_owner_stop(self, room: RoomConfig, now: datetime) -> None:
-        """Record a stop the owner asked for (DR-088, DR-089).
-
-        Like the off button on the remote, it is not held to the minimum run.
-        An outdoor unit a neighbouring room still wants is noted as running.
-        """
-        for group in room.groups:
-            compressor = self._compressors.setdefault(group, CompressorState())
-            if compressor.running and not any(
-                self._room_wants.get(other.room_id, False)
-                for other in self.rooms.values()
-                if other.room_id != room.room_id and group in other.groups
-            ):
-                note_transition(compressor, running=False, now=now)
-                self._note_compressor_transition(group, started=False, now=now)
-        self._room_wants[room.room_id] = False
-
-    def _guard_cycling(
-        self,
-        room: RoomConfig,
-        trace: DecisionTrace,
-        now: datetime,
-    ) -> None:
-        """Refuse a compressor transition inside its minimum on or off time.
-
-        Short cycling is the most damaging thing a controller can do to a
-        split system, and nothing else in the stack prevents it: the unit's own
-        protection is against its own thermostat, not against a coordinator
-        commanding hvac_mode from outside.
-
-        A refusal downgrades the step and is written into the trace, because a
-        room that appears to ignore its own decision with no explanation is
-        the exact fault this project refuses to ship.
-        """
-        # Dry mode energises the compressor. Treating it as a stop made the
-        # guard block a cool-to-dry change for ten minutes as though the
-        # compressor were shutting down, then record it as stopped while it
-        # was in fact running — after which the minimum *off* time blocked the
-        # return to cool, for a stop that never happened.
-        # NONE is not a stop. It means the unit keeps what it was last given,
-        # so this room asks for whatever it asked for last cycle and there is
-        # no transition to record. Until 0.8.7 `wants` was derived from the
-        # step alone and resolved NONE as "not running", so every time a room
-        # reached its band the guard logged a stop that never happened — the
-        # most common state the controller is in.
-        # The decisions themselves are `regulate.wants_running` and
-        # `regulate.arbitrate_cycling`; what is left here is gathering their
-        # inputs and carrying out the verdict.
-        groups = room.groups
-        compressors = {
-            group: self._compressors.setdefault(group, CompressorState())
-            for group in groups
-        }
-        if room.room_id in self._owner_stop:
-            # 0.9.7, DR-088. The owner asked for the room off. Like the off
-            # button on the remote, it is not held to the minimum run.
-            self._owner_stop.discard(room.room_id)
-            if trace.actuator is ActuatorStep.OFF:
-                self._note_owner_stop(room, now)
-                trace.reasons.append("off now: the owner has left the room")
-                return
-        wants = wants_running(
-            trace.actuator,
-            previous_want=self._room_wants.get(room.room_id),
-            running_now=any(state.running for state in compressors.values()),
-        )
-        verdict = arbitrate_cycling(
-            compressors,
-            wants=wants,
-            neighbours_want={
-                group: any(
-                    self._room_wants.get(other.room_id, False)
-                    for other in self.rooms.values()
-                    if other.room_id != room.room_id and group in other.groups
-                )
-                for group in compressors
-            },
-            now=now,
-        )
-        for group, running in verdict.record:
-            compressor = compressors[group]
-            was_running = compressor.running
-            note_transition(compressor, running=running, now=now)
-            if compressor.running != was_running:
-                # 0.8.9, finding 14. The signal this learns draw from: one
-                # group's compressor actually changed state.
-                self._note_compressor_transition(
-                    group, started=compressor.running, now=now
-                )
-        refusal = verdict.refusal
-        holding = verdict.holding
-
-        self._room_wants[room.room_id] = wants
-
-        if refusal is not None:
-            trace.rejected.append(refusal)
-            if holding:
-                # A stop was refused. Leave the decision alone and hold the
-                # compressor: replacing the step with COMPRESSOR cancelled
-                # cover and fan actions outright, which is a guard that exists
-                # to protect the compressor silently overruling decisions that
-                # have nothing to do with it.
-                trace.hold_compressor = True
-            else:
-                # A start was refused. The compressor is not running and may
-                # not start yet. Until 0.9.3 the unit was commanded off here,
-                # which turned a coasting unit off for a minute or two in the
-                # middle of its fan-only coast (DR-059). It is now left on its
-                # fan where it has one, which is what it was already doing,
-                # and off where it has none. Not NONE: a unit that was moved
-                # into a running mode by something else would be left running.
-                trace.actuator = (
-                    ActuatorStep.FAN
-                    if self._capabilities(room)["can_fan_only"]
-                    else ActuatorStep.OFF
-                )
-                trace.hold_setpoint = False
-            return
-
-    def _note_band_change(
-        self, room_id: str, trace: DecisionTrace, now: datetime
-    ) -> bool:
-        """Record a change of band. True when this evaluation changed it.
-
-        0.9.7, DR-084. The band, not the mode: a coast keeps the band of the
-        mode it displaced. What the room changed from is kept for the whole
-        ramp. Until 0.9.7 the previous evaluation's mode was passed instead,
-        so the ramp lasted one evaluation and the band then stepped.
-
-        0.9.7, DR-085. A room leaving Sleep is marked waking.
-
-        0.9.7, DR-092. Called straight after the first evaluation, so that the
-        evaluation which sees the change can be run again with it. Until then
-        the first evaluation after a change used the new band in full, with no
-        ramp and no waking: on 15 October that one evaluation put the living
-        room's unit into heat at 05:12.
-        """
-        mode = (
-            trace.base_mode
-            if trace.mode is Mode.COAST and trace.base_mode is not None
-            else trace.mode
-        )
-        current = self._previous_mode.get(room_id)
-        if current is mode:
-            return False
-        self._previous_mode[room_id] = mode
-        if current is None:
-            return False
-        self._ramp_from[room_id] = current
-        self._mode_changed_at[room_id] = now
-        if current is Mode.SLEEP and mode is not Mode.SLEEP:
-            self._waking.add(room_id)
-        return True
-
-    def _track_mode(self, room_id: str, trace: DecisionTrace, now: datetime) -> None:
-        """Keep the band record current and end waking once it is done.
-
-        A room stops waking once the ramp is over and it is inside or above
-        its daytime band. 0.9.7, DR-092: until then the ramping band counted,
-        so waking ended within a minute and the room was heated as the ramp
-        passed it.
-        """
-        self._note_band_change(room_id, trace, now)
-        mode = (
-            trace.base_mode
-            if trace.mode is Mode.COAST and trace.base_mode is not None
-            else trace.mode
-        )
-        changed_at = self._mode_changed_at.get(room_id)
-        ramp_over = changed_at is None or now - changed_at >= SLEEP_RAMP
-        if mode is Mode.SLEEP or (
-            trace.hci is not None
-            and mode is not Mode.LOCKOUT
-            and ramp_over
-            and trace.demand in (None, "cool")
-        ):
-            self._waking.discard(room_id)
-
-    def _learn(self, room: RoomConfig, inputs: RoomInputs, now: datetime) -> None:
-        """Fold the interval since the last usable anchor into the room's model.
-
-        What the room actually did is measured at both ends; nothing here is
-        inferred from what was commanded.
-
-        **The anchor is held, not replaced every cycle.** Evaluation runs every
-        thirty seconds and an observation needs at least sixty to carry any
-        information over sensor quantisation. Replacing the anchor each time
-        made every interval exactly one evaluation period long, so every
-        observation was discarded as too short and no coefficient ever gained a
-        sample. Nothing reported it: the model simply stayed unconverged
-        forever, and coast, the dry-versus-cool split, precool sizing and the
-        heading-home estimate were all permanently unavailable.
-
-        So the anchor advances only when it has been used, or when holding it
-        any longer would make it useless.
-
-        **0.8.9, finding 9.** The commanded setpoint joins the anchor tuple.
-        Read the same one cycle lagged as `compressor` and `drying` already
-        are — `_regulate` has not run yet this cycle, so this is last cycle's
-        commanded setpoint, matching what actually drove the interval just
-        completed. A change to it resets the anchor the same way a
-        compressor-direction change already does: the approach bin an
-        interval gets attributed to is meaningless once what the room was
-        being asked to reach has moved.
-        """
-        # 0.9.6, DR-074. The unit's own sensor is not the room; nothing is
-        # learned from it.
-        temperature = None if inputs.temperature_from_unit else inputs.temperature_c
-        humidity = inputs.relative_humidity
-        compressor = self._compressor_direction(room)
-        drying = self._is_drying(room)
-        self._track_stop(room.room_id, cooling=compressor == -1 or drying, now=now)
-        # 0.9.6, DR-081. The setpoint the unit itself reports, which is what
-        # drove it, whoever set it. Until 0.9.6 this was the solved target
-        # plus the trim, a form the room loop has not sent since 0.9.0, so
-        # every cooling interval was filed under an approach the unit was
-        # never asked for.
-        commanded = self._unit_setpoint(room)
-
-        if temperature is None or humidity is None:
-            # No reading at this end of the interval. Drop the anchor rather
-            # than learning across a gap.
-            self._previous.pop(room.room_id, None)
-            return
-
-        previous = self._previous.get(room.room_id)
-        if previous is None:
-            self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying, commanded
-            )
-            return
-
-        started, start_c, start_rh, start_compressor, start_drying, start_setpoint = (
-            previous
-        )
-        if start_c is None or start_rh is None:
-            self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying, commanded
-            )
-            return
-
-        if (
-            compressor != start_compressor
-            or drying != start_drying
-            or commanded != start_setpoint
-        ):
-            # What was driving the room changed inside the interval, so it
-            # teaches nothing reliable about either state. Start again from
-            # here rather than attributing the whole interval to one of them.
-            self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying, commanded
-            )
-            return
-
-        elapsed = (now - started).total_seconds() / 3600.0
-        if elapsed < MIN_LEARNING_INTERVAL_HOURS:
-            # Too short to mean anything yet. Hold the anchor and let it grow.
-            return
-
-        if elapsed > MAX_LEARNING_INTERVAL_HOURS:
-            # Stale — Home Assistant was asleep, or a sensor was out. Something
-            # almost certainly changed inside it.
-            self._previous[room.room_id] = (
-                now, temperature, humidity, compressor, drying, commanded
-            )
-            return
-
-        self.model_for(room.room_id).observe(
-            Observation(
-                elapsed_hours=elapsed,
-                indoor_start_c=start_c,
-                indoor_end_c=temperature,
-                humidity_start=start_rh,
-                humidity_end=humidity,
-                outdoor_c=self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE),
-                direct_sun=inputs.direct_sun is True,
-                compressor=start_compressor,
-                drying=start_drying,
-                commanded_setpoint_c=start_setpoint,
-                since_stop_hours=self._hours_since_stop(room.room_id, started),
-            )
-        )
-        self._previous[room.room_id] = (
-            now, temperature, humidity, compressor, drying, commanded
-        )
-
-    def _track_stop(self, room_id: str, *, cooling: bool, now: datetime) -> None:
-        """Note when the compressor stops cooling or drying (DR-060)."""
-        was = self._was_cooling.get(room_id)
-        self._was_cooling[room_id] = cooling
-        if cooling:
-            self._stopped_at[room_id] = None
-        elif was:
-            self._stopped_at[room_id] = now
-
-    def _hours_since_stop(self, room_id: str, at: datetime) -> float | None:
-        """Hours from the last cooling or drying stop to `at`, or None."""
-        stopped = self._stopped_at.get(room_id)
-        if stopped is None or at < stopped:
-            return None
-        return (at - stopped).total_seconds() / 3600.0
-
-    @staticmethod
-    def _predicted_to_hold(unaided: Mapping[str, Any]) -> bool | None:
-        """Whether the room is in band now and stays there unaided.
-
-        0.9.0, DR-053. Read from the same stepped projection the weather coast
-        uses, not from a straight line to the point an hour ahead. That check
-        called a room back in band whenever the end of the hour landed inside
-        it, whatever the room was doing in the meantime and however far out of
-        band it was now, and it coasted such a room with no limit at all.
-
-        True only for a room already inside its band and staying inside it.
-        A room that is out of band is the weather coast's question, which has
-        a limit. None means the model cannot say, and the evaluator treats
-        that as \"do not coast\", never as \"yes\".
-        """
-        if not unaided["unaided_available"]:
-            return None
-        return bool(unaided["unaided_return_minutes"] == 0.0)
-
-    def _cheaper_window_imminent(self, room: RoomConfig, now: datetime) -> bool:
-        """Whether a strictly cheaper tariff interval begins soon enough that
-        the band is predicted to hold unaided until it starts.
-
-        0.8.11, finding 12. The room-level half of the pool's finding 19b —
-        `per_kwh` was parsed and reached no decision — folded into a general
-        principle rather than built as its own separate mechanism: every
-        decision point evaluates the cheapest way to deliver the comfort
-        band, and for a room approaching the edge of its band that means
-        checking whether waiting a short while costs nothing.
-
-        Bounded at `COAST_HORIZON_HOURS`, the same horizon `_predicted_to_
-        hold` already trusts for "the band holds unaided" — never further
-        out than that, and never when the model cannot positively say the
-        wait is safe.
-        """
-        if self.tariff is None:
-            return False
-        hours = hours_until_cheaper_interval(
-            self.tariff, now, timedelta(hours=COAST_HORIZON_HOURS)
-        )
-        if hours is None:
-            return False
-
-        model = self.model_for(room.room_id)
-        indoor = self._number(room.temperature_entity_id)
-        humidity = self._number(room.humidity_entity_id)
-        if indoor is None or humidity is None:
-            return False
-        band = room.band_for(Mode.SLEEP if self._sleeping(room) else Mode.OCCUPIED)
-        if band is None:
-            return False
-        lower_c = dry_bulb_for_index(band.low, humidity)
-        upper_c = dry_bulb_for_index(band.high, humidity)
-        return (
-            model.holds_through(
-                indoor,
-                self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE),
-                direct_sun=self._direct_sun(room) is True,
-                hours=hours,
-                lower_c=lower_c,
-                upper_c=upper_c,
-            )
-            is True
-        )
-
-    def _demand_ahead(self, room: RoomConfig, now: datetime) -> bool:
-        """Whether this room is forecast to need cooling later today.
-
-        Precool banks thermal mass against a load that is coming. The question
-        is not whether it is hot now — at 11:00 in the free window it usually
-        is not — but whether the afternoon is going to arrive. Answering it
-        from current conditions is what left the free window unused on exactly
-        the days it was worth the most.
-        """
-        indoor = self._number(
-            room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
-        )
-        try:
-            verdict = demand_ahead(self.trajectory, now=now, indoor_c=indoor)
-        except TypeError as err:
-            # A forecast this cannot compare against must cost the room its
-            # precool decision, not the whole evaluation. The first version of
-            # this raised straight out of the update loop and took every room
-            # down over one integration's timestamp format.
-            LOGGER.warning(
-                "The forecast could not be compared against the clock (%s); "
-                "precool is falling back to current conditions",
-                err,
-            )
-            self.trajectory = None
-            self._async_forecast_issue(
-                f"its timestamps could not be compared against the clock: {err}"
-            )
-            verdict = demand_ahead(None, now=now, indoor_c=indoor)
-        if self.trajectory is not None:
-            self._demand_reason[room.room_id] = verdict.reason
-            return verdict.demand_ahead
-
-        # No forecast configured. Fall back to what the controller did before
-        # it had one, and say in the trace that it is a fallback.
-        self._demand_reason[room.room_id] = verdict.reason
-        model = self.model_for(room.room_id)
-        outdoor = self.outdoor_reading()
-        if indoor is None or outdoor is None:
-            return False
-        drift = model.drift_rate(
-            indoor, outdoor, direct_sun=self._direct_sun(room) is True
-        )
-        if drift is None:
-            return outdoor > indoor + PRECOOL_DEMAND_MARGIN_C
-        return drift > 0
-
-    def _announce_free_cooling(self, room: RoomConfig, trace: DecisionTrace) -> None:
-        """Speak the room's own free-cooling advice, once, on the rising edge.
-
-        `free_cooling_advised` is a level, recomputed fresh every cycle
-        (`modes.py`), not an event — so raising it every time it reads True
-        would announce it every 30 seconds for as long as the window stays
-        open. Only the transition from not-advised to advised is queued.
-        """
-        was_advised = self._free_cooling_advised.get(room.room_id, False)
-        self._free_cooling_advised[room.room_id] = trace.free_cooling_advised
-        if trace.free_cooling_advised:
-            self._free_cooling_since.setdefault(room.room_id, trace.at)
-        else:
-            self._free_cooling_since.pop(room.room_id, None)
-        if trace.free_cooling_advised and not was_advised:
-            self._pending_announcements.append((room, Announcement.FREE_COOLING))
-
-    def _graced_presence(self, room: RoomConfig, now: datetime) -> bool | None:
-        """Presence after the grace periods, not the raw sensor.
-
-        Announcements raised here are dispatched by the caller, so that this
-        stays a pure read of state.
-        """
-        if room.room_id in self._left:
-            # 0.9.7, DR-088. Left by the owner. Empty until the sensor has read
-            # the room clear and then sees someone: a fresh arrival.
-            raw = (
-                None
-                if room.presence_entity_id is None
-                else self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
-            )
-            self._raw_presence[room.room_id] = raw
-            if raw is False:
-                self._left_seen_clear[room.room_id] = True
-            if not (raw is True and self._left_seen_clear.get(room.room_id)):
-                self._grace_reason[room.room_id] = (
-                    "left by the owner, off until someone comes back"
-                )
-                return False
-            self._end_left(room.room_id)
-            LOGGER.info("%s: someone has come back after it was left", room.name)
-        if room.presence_entity_id is None:
-            self._raw_presence.pop(room.room_id, None)
-            return None
-
-        state = self._grace.get(room.room_id)
-        if state is None:
-            # 0.9.4, DR-068. Start from the occupancy last known, which the
-            # store keeps across a restart or reload. Until 0.9.4 every room
-            # started unoccupied, so a presence sensor still coming up after a
-            # restart turned an occupied room off.
-            state = GraceState(
-                occupied=self.store.occupancy().get(room.room_id, False)
-            )
-            self._grace[room.room_id] = state
-        raw = self._bool(room.presence_entity_id, PRESENCE_TOLERANCE, room.room_id)
-        self._raw_presence[room.room_id] = raw
-        # 0.9.6, DR-082. The wait for the warnings only where a warning can
-        # be said: the room has speakers, is run and awake, and its unit is
-        # on. Otherwise the room is turned off when the vacancy period ends,
-        # not three minutes after a warning nobody heard.
-        speaks = (
-            room.grace.announce
-            and bool(room.announce_target_entity_ids)
-            and not self._silenced(room)
-            and self._unit_mode(room) not in (None, "off")
-        )
-        result = evaluate_grace(
-            state,
-            raw,
-            now,
-            room.grace if speaks == room.grace.announce else replace(room.grace, announce=speaks),
-        )
-        self.store.set_occupancy(room.room_id, state.occupied)
-        self._grace_reason[room.room_id] = result.reason
-        if result.announcement is not Announcement.NONE:
-            self._pending_announcements.append((room, result.announcement))
-        return result.occupied
-
-    def outdoor_reading(self) -> float | None:
-        """The outdoor temperature, for the house-wide sensor."""
-        return self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
-
-    def compressor_state(self) -> dict[str, CompressorState]:
-        """Cycling state per outdoor unit, for diagnostics.
-
-        Keyed by outdoor unit group, where a head that shares with nothing is
-        keyed by its own entity id. Two rooms with a head each on one outdoor
-        unit appear once here, which is the point: `MIN_RUN` and `MIN_OFF`
-        protect a compressor, not a room.
-        """
-        return dict(self._compressors)
-
-    def draw_for(self, group: str) -> DrawModel:
-        """The learned draw model for one outdoor unit group, on first use."""
-        if group not in self._draw:
-            self._draw[group] = DrawModel.from_dict(
-                self.store.group(group).get("draw")
-            )
-        return self._draw[group]
-
-    def draw_models(self) -> dict[str, DrawModel]:
-        """Learned draw per outdoor unit group, for diagnostics.
-
-        Only groups actually seen this session — a group with no entry has
-        not had a rated-kW figure asked of it yet and is still on
-        `ASSUMED_UNIT_KW` everywhere it is used.
-        """
-        return dict(self._draw)
-
-    def _rated_kw_for(self, room: RoomConfig) -> float:
-        """The room's projected draw, summed across its compressors.
-
-        Each group's own pulldown-bin estimate, three-level fallback (bin,
-        pooled, `ASSUMED_UNIT_KW`) via `DrawModel.draw_kw`. Pulldown rather
-        than at-setpoint: this feeds a headroom or energy figure for a unit
-        that is currently off or about to be asked to pull toward target,
-        which is the conservative case to size against.
-        """
-        return sum(
-            self.draw_for(group).draw_kw(3, ASSUMED_UNIT_KW)
-            for group in room.groups
-        ) or ASSUMED_UNIT_KW
-
-    def regulation_state(self) -> dict[str, RegulatorState]:
-        """Layer 2 state per room, for diagnostics.
-
-        Exposed deliberately. A commanded setpoint that differs from the solved
-        target is the single most confusing thing this controller does, and a
-        diagnostics file that cannot show why is a diagnostics file that costs
-        an evening.
-        """
-        return dict(self._regulators)
-
-    def power_state(self) -> dict[str, Any]:
-        """House-level power figures, for diagnostics. 0.8.10.
-
-        Per-room budget, ceiling and bin already ride on each room's trace
-        (`power_ceiling_c`, `power_budget_kw`, `power_bin`,
-        `comfort_reduction_active`); this is the shared, house-wide half.
-        """
-        context = self._power_context
-        return {
-            "grid_entity_id": self.grid_entity_id,
-            "grid_sign": self.grid_sign,
-            "grid_import_w": context.grid_import_w if context else None,
-            "battery_w": context.battery_w if context else None,
-            "battery_max_discharge_kw": self.battery_max_discharge_kw,
-            "grid_sign_disagreements": self._grid_sign_disagreements,
-            "last_breach_reported_kwh": self._last_breach_reported_kwh,
-            "current_breach_window_kwh": (
-                round(self._breach_kwh, 3) if self._breach_window_start else None
-            ),
-        }
-
-    def forecast_peak(self) -> float | None:
-        """The hottest hour the forecast can see, for the house-wide sensor."""
-        if self.trajectory is None:
-            return None
-        now = dt_util.utcnow()
-        peak = self.trajectory.peak_between(now, now + DEMAND_LOOKAHEAD)
-        return None if peak is None else round(peak[0], 1)
-
-    def forecast_peak_at(self) -> str | None:
-        """When that peak falls."""
-        if self.trajectory is None:
-            return None
-        now = dt_util.utcnow()
-        peak = self.trajectory.peak_between(now, now + DEMAND_LOOKAHEAD)
-        return None if peak is None else peak[1].isoformat()
-
-    def outdoor_wind_ms(self) -> float | None:
-        """Outdoor wind in metres per second, whatever unit the entity uses.
-
-        The unit is read from the entity rather than assumed. Steadman's
-        formula wants m/s and most Australian weather feeds publish km/h, so
-        assuming would make the apparent temperature wrong by a factor of 3.6
-        — and wrong in the direction that advises opening the windows on an
-        evening you should not.
-        """
-        if self.outdoor_wind_entity_id is None:
-            return None
-        raw = self._number(self.outdoor_wind_entity_id, OUTDOOR_TOLERANCE)
-        if raw is None:
-            return None
-        state = self.hass.states.get(self.outdoor_wind_entity_id)
-        unit = (
-            state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
-        )
-        if unit in (None, UnitOfSpeed.METERS_PER_SECOND):
-            return raw
-        try:
-            return SpeedConverter.convert(
-                raw, unit, UnitOfSpeed.METERS_PER_SECOND
             )
         except (HomeAssistantError, ValueError) as err:
-            LOGGER.warning(
-                "%s reports wind in %s, which cannot be converted to m/s (%s); "
-                "still air assumed",
-                self.outdoor_wind_entity_id,
-                unit,
-                err,
-            )
-            return None
-
-    def outdoor_apparent_temperature(self) -> float | None:
-        """What outdoors feels like, on the comfort index scale."""
-        temp = self.outdoor_reading()
-        humidity = self._number(self.outdoor_humidity_entity_id, OUTDOOR_TOLERANCE)
-        if temp is None or humidity is None:
-            return None
-        return round(
-            apparent_temperature(temp, humidity, self.outdoor_wind_ms() or 0.0), 1
-        )
-
-    def outdoor_dew_point(self) -> float | None:
-        """Outdoor dew point, where both outdoor feeds are configured."""
-        temp = self.outdoor_reading()
-        humidity = self._number(self.outdoor_humidity_entity_id, OUTDOOR_TOLERANCE)
-        if temp is None or humidity is None:
-            return None
-        return round(dew_point_c(temp, humidity), 1)
-
-    def _precondition_plan(
-        self, room: RoomConfig, now: datetime
-    ) -> PreconditionPlan | None:
-        """When a heading-home request should actually start the compressor.
-
-        The model already answers how long the pull takes. Using that answer is
-        the difference between a deadline four hours out costing four hours of
-        compressor and costing nothing until it is forty minutes out.
-        """
-        if room.room_id not in self._heading_home:
-            return None
-
-        indoor = self._number(
-            room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
-        )
-        humidity = self._number(
-            room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
-        )
-        band = room.band_for(Mode.OCCUPIED)
-        hours: float | None = None
-        if indoor is not None and humidity is not None and band is not None:
-            hours = self.model_for(room.room_id).hours_to_reach(
-                indoor,
-                dry_bulb_for_index(band.midpoint, humidity),
-                self.outdoor_reading(),
-                direct_sun=self._direct_sun(room) is True,
-            )
-        return plan_precondition(
-            now=now,
-            deadline=self._heading_home.get(room.room_id),
-            hours_needed=hours,
-        )
-
-    def _air_moving(self, room: RoomConfig) -> bool:
-        """Whether the room's air is moving, from a fan the user configured.
-
-        DR-055. Only an air-movement entity the user chose counts, a ceiling
-        fan for instance. Until 0.9.1 the air conditioner's own state counted
-        when none was configured: any mode other than off moved air. That
-        made the comfort index depend on whether the controller's own actuator
-        was running. Running the unit dropped the index by a full point, the
-        room looked too cool, the unit was stopped, the index rose by a point,
-        and the loop repeated. The index is a measurement of the room, taken
-        where the sensor is, and the component must not change it by acting.
-        With nothing configured the air is assumed still, which fails toward
-        comfort.
-        """
-        if room.air_movement_entity_id and (
-            moving := self._bool(room.air_movement_entity_id)
-        ) is not None:
-            return moving
-        return False
-
-    def _sleeping(self, room: RoomConfig) -> bool:
-        """Whether the room counts as sleeping: its Comfort mode, or where that
-        is Schedule, its sleep schedule (DR-058).
-
-        Every place that picks a band by whether the room is asleep asks here,
-        so a room put on Sleep by hand is projected against the same band its
-        mode decision uses.
-        """
-        return sleeping(
-            self.comfort_mode(room.room_id),
-            self._bool(room.sleep_schedule_entity_id) is True,
-        )
-
-    def _tts_engine(self) -> tuple[str | None, str | None]:
-        """The text-to-speech engine to speak through, or why there is none.
-
-        0.9.5, DR-069. The one chosen under House configuration where it
-        exists; otherwise the only engine Home Assistant has. Returns
-        (engine, None) or (None, reason).
-        """
-        engines = sorted(
-            state.entity_id for state in self.hass.states.async_all("tts")
-        )
-        if self.tts_engine_entity_id:
-            if self.tts_engine_entity_id in engines:
-                return self.tts_engine_entity_id, None
-            return None, (
-                f"the chosen text-to-speech engine {self.tts_engine_entity_id} "
-                "does not exist"
-            )
-        if len(engines) == 1:
-            return engines[0], None
-        if not engines:
-            return None, "Home Assistant has no text-to-speech engine"
-        return None, (
-            "no text-to-speech engine is chosen and there are "
-            f"{len(engines)}: {', '.join(engines)}"
-        )
-
-    async def _async_announce(
-        self, traces: Mapping[str, DecisionTrace] | None = None
-    ) -> None:
-        """Speak any warnings raised this evaluation.
-
-        0.9.5, DR-069. Through `tts.speak`, which targets a text-to-speech
-        engine and takes the speakers as `media_player_entity_id`. Until 0.9.5
-        the speakers were sent as the target, Home Assistant rejected every
-        call, no warning was ever spoken, and the rejection stopped the rest
-        of the evaluation. A warning that cannot be given is now logged once
-        and never stops anything else.
-
-        0.9.6, DR-070. A room speaks only while the coordinator is running it
-        and the room is awake. Nothing is spoken for a room whose Automatic
-        control is off, a room still waiting for its air conditioner to
-        report, or a room that is asleep, by its Comfort mode or its sleep
-        schedule. Until 0.9.6 the empty-room and free-cooling warnings were
-        queued before the Automatic control check, so a room the coordinator
-        was not running still said it was turning its air conditioning off.
-        """
-        pending = [
-            (room, announcement)
-            for room, announcement in self._timed_announcements(traces or {})
-            if room.announce_target_entity_ids and not self._silenced(room)
-        ]
-        self._pending_announcements.clear()
-        if not pending:
+            self.tariff = TariffRead((), frozenset(), str(err) or type(err).__name__)
             return
-        engine, reason = self._tts_engine()
-        if engine is None:
-            self._note_announce_failure(f"no engine: {reason}", str(reason))
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_ANNOUNCEMENTS_UNAVAILABLE,
-                translation_placeholders={"reason": str(reason)},
-            )
+        self.tariff = parse_tariff(response if isinstance(response, Mapping) else None)
+        self.tariff_read_at = dt_util.utcnow()
+
+    async def async_read_weather(self) -> None:
+        """Every 30 minutes: the hourly forecast [Set]."""
+        entity = self.house.weather
+        if entity is None:
+            self.forecast, self.forecast_error = [], None
             return
-        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_ANNOUNCEMENTS_UNAVAILABLE)
-        for room, announcement in pending:
+        try:
+            response = await self.hass.services.async_call(
+                WEATHER_DOMAIN, WEATHER_SERVICE, {ATTR_ENTITY_ID: entity, "type": "hourly"},
+                blocking=True, return_response=True,
+            )
+        except (HomeAssistantError, ValueError) as err:
+            self.forecast, self.forecast_error = [], str(err) or type(err).__name__
+            return
+        found = response.get(entity) if isinstance(response, Mapping) else None
+        hours = found.get("forecast") if isinstance(found, Mapping) else None
+        self.forecast = [dict(h) for h in hours if isinstance(h, Mapping)] if isinstance(hours, list) else []
+        self.forecast_error = None
+        st = self.hass.states.get(entity)
+        attrs = st.attributes if st is not None else {}
+        self.forecast_units = (attrs.get("temperature_unit"), attrs.get("wind_speed_unit"))
+
+    async def async_read_solar(self) -> None:
+        """Every 15 minutes: the solar forecast, from the sources chosen,
+        or the Energy dashboard's where none is chosen [D061]."""
+        from homeassistant.components.energy.data import async_get_manager
+        from homeassistant.components.energy.websocket_api import (
+            async_get_energy_platforms,
+        )
+
+        if self.house.solar_power is None:
+            self.solar, self.solar_error = None, None
+            return
+        sources = list(self.house.solar_forecast_sources)
+        try:
+            if not sources:
+                manager = await async_get_manager(self.hass)
+                if manager.data is not None:
+                    for src in manager.data["energy_sources"]:
+                        if src["type"] == "solar":
+                            sources += list(src.get("config_entry_solar_forecast") or [])
+            if not sources:
+                self.solar, self.solar_error = None, None
+                return
+            platforms = await async_get_energy_platforms(self.hass)
+            wh: dict[str, float] = {}
+            waiting = False
+            for entry_id in dict.fromkeys(sources):
+                entry = self.hass.config_entries.async_get_entry(entry_id)
+                if entry is None:
+                    continue
+                # a source still setting up has no forecast to give yet: its
+                # platform would read runtime_data before it is set
+                # (forecast_solar/energy.py, 2026.11.0b0), and until it is set
+                # up its energy platform is not even registered
+                # (helpers/integration_platform.py) [HA]
+                if entry.state is not ConfigEntryState.LOADED:
+                    waiting = waiting or _still_coming(self.hass, entry)
+                    continue
+                if entry.domain not in platforms:
+                    continue
+                result = await platforms[entry.domain](self.hass, entry_id)
+                if result is None:
+                    continue
+                for when, value in result["wh_hours"].items():
+                    wh[when] = wh.get(when, 0.0) + float(value)
+        except (HomeAssistantError, ValueError, TypeError, KeyError, AttributeError) as err:
+            # another integration's forecast code: whatever it raises, the
+            # forecast is unreadable and a repair says so [D061]
+            self.solar, self.solar_error = None, str(err) or type(err).__name__
+            return
+        slices: list[SolarSlice] = []
+        for when, value in wh.items():
+            start = dt_util.parse_datetime(when)
+            if start is None or not math.isfinite(value):
+                continue
+            start = dt_util.as_utc(start)
+            slices.append(SolarSlice(start, start + _HOUR, value / 1000.0))
+        slices.sort(key=lambda s: s.start)
+        if not slices and waiting:
+            return  # read again in 15 minutes; nothing is wrong yet
+        self.solar = slices or None
+        self.solar_error = None if slices else "the solar forecast gave no hours"
+
+    # ------------------------------------------------------------------
+    # The cycle
+    # ------------------------------------------------------------------
+
+    def _is_due(self, key: str, now: datetime, period: timedelta) -> bool:
+        mark = _floor(now, period)
+        last = self._due.get(key)
+        if last is not None and mark <= last:
+            return False
+        self._due[key] = mark
+        return True
+
+    def _day_due(self, now: datetime) -> str | None:
+        """The local day that has just ended, once, at local midnight."""
+        today = dt_util.as_local(now).date()
+        last = self._due.get("day")
+        mark = datetime(today.year, today.month, today.day, tzinfo=dt_util.get_default_time_zone())
+        if last is None:
+            self._due["day"] = mark
+            return None
+        if mark <= last:
+            return None
+        self._due["day"] = mark
+        return (today - timedelta(days=1)).isoformat()
+
+    def _states(self) -> dict[str, RawState]:
+        """The current state of every entity, in the shape Observe reads
+        (D002: each decision in a cycle sees the same moment)."""
+        return {s.entity_id: raw_from_state(s) for s in self.hass.states.async_all()}
+
+    async def _async_update_data(self) -> CycleData:
+        async with self._lock:
+            now = dt_util.utcnow()
+            data = await self._cycle(now)
+        if self.rooms and all(r.failed for r in self.rooms.values()):
+            # no room can run: every entity is unavailable
+            raise UpdateFailed(translation_domain=DOMAIN, translation_key="no_room_can_run")
+        return data
+
+    async def _cycle(self, now: datetime) -> CycleData:
+        """THE CYCLE, for each room, in the order of Section 5 [Prop]."""
+        dt_s = (now - self._last_cycle).total_seconds() if self._last_cycle is not None else CYCLE_S
+        self._last_cycle = now
+        states = self._states()
+        minute = self._is_due("minute", now, _MINUTE)
+        five = self._is_due("five", now, _FIVE)
+        hour = self._is_due("hour", now, _HOUR)
+        day_ended = self._day_due(now)
+        system_unit = self.hass.config.units.temperature_unit
+        location = (self.hass.config.latitude, self.hass.config.longitude)
+        head_units = {h.climate: h.outdoor_unit or f"own:{h.climate}" for r in self.rooms.values()
+                      for h in r.config.heads}
+        draw_now = _by_unit(self._running_draws())
+        shared = self._shared_climates()
+
+        # 1-3: Observe, Model, Comfort, per room
+        for run in list(self.rooms.values()):
+            run.failed = False
             try:
-                await self.hass.services.async_call(
-                    "tts",
-                    "speak",
-                    {
-                        ATTR_ENTITY_ID: engine,
-                        "media_player_entity_id": list(
-                            room.announce_target_entity_ids
-                        ),
-                        "message": _announcement_text(room, announcement),
-                    },
-                    blocking=False,
-                )
-            except Exception as err:  # noqa: BLE001 - a spoken warning must never stop the evaluation
-                self._note_announce_failure(
-                    f"{room.room_id}: {type(err).__name__}: {err}",
-                    f"announcement for {room.room_id} failed: {err}",
-                )
+                await self._observe_and_learn(run, states, now, minute, five, hour, location, head_units,
+                                              draw_now, system_unit)
+            except Exception:  # noqa: BLE001 - one room failing never fails the update [R18]
+                self._room_failed(run)
+        runs = [r for r in self.rooms.values() if not r.failed and r.snapshot is not None]
 
-    def _timed_announcements(
-        self, traces: Mapping[str, DecisionTrace]
-    ) -> list[tuple[RoomConfig, Announcement]]:
-        """The warnings that are true now (DR-077).
+        # the house: load, the power budget, grid checks, once per cycle
+        first = runs[0].snapshot if runs else None
+        budget = self._house(now, runs, first)
+        if minute and first is not None:
+            heads = [h for r in runs if r.snapshot is not None for h in r.snapshot.heads]
+            self.house_state.draw.observe(now, heads, self._last_command, self.load_history)
 
-        A warning that the air conditioning is running, or will be turned
-        off, is said only where a unit is on. A warning that it is being
-        turned off is said only in the evaluation the off command is actually
-        sent: until 0.9.6 it was said when the stop was decided, and on 14
-        October the minimum run then held the Office's unit on for another
-        four and a half minutes after it said so. Held until then, and dropped
-        if the room no longer stops.
-        """
-        timed: list[tuple[RoomConfig, Announcement]] = []
-        queued = list(self._pending_announcements)
-        for room_id, announcement in list(self._deferred_final.items()):
-            room = self.rooms.get(room_id)
-            if room is not None:
-                queued.append((room, announcement))
-        self._deferred_final.clear()
-        for room, announcement in queued:
-            trace = traces.get(room.room_id)
-            if announcement is not Announcement.FREE_COOLING and (
-                self._unit_mode_seen.get(room.room_id) in (None, "off")
-            ):
-                continue
-            if announcement in (
-                Announcement.FINAL_WARNING,
-                Announcement.OPENING_FINAL_WARNING,
-            ):
-                if trace is None or trace.actuator is not ActuatorStep.OFF:
-                    continue
-                if not trace.stopped:
-                    if trace.hold_compressor:
-                        self._deferred_final[room.room_id] = announcement
-                    continue
-            timed.append((room, announcement))
-        return timed
+        # 4-7: Economics, Control, Delivery, Limits, per room
+        for run in runs:
+            try:
+                await self._decide(run, now, budget.get(run.config.room_id), location,
+                                   any(c in shared for c in (h.climate for h in run.config.heads)))
+            except Exception:  # noqa: BLE001 - one room failing never fails the update [R18]
+                self._room_failed(run)
+        runs = [r for r in runs if not r.failed and r.step is not None]
 
-    def _silenced(self, room: RoomConfig) -> bool:
-        """Whether this room must not speak now (DR-070).
+        # 7, rule 9: the short-cycle guard, across rooms [D016][D020]
+        entries = []
+        for run in runs:
+            assert run.step is not None and run.snapshot is not None
+            observed = {u: any(h.compressor is CompressorState.RUNNING for h in run.snapshot.heads
+                               if (h.outdoor_unit or f"own:{h.climate}") == u) for u in run.outdoor_units}
+            seen = tuple(HeadCommand(h.climate, h.mode, None, None, None, None, None, None)
+                         for h in run.snapshot.heads if h.compressor is CompressorState.RUNNING and h.mode)
+            entries.append(GuardEntry(run.limits, run.step, run.outdoor_units, observed, seen))
+        allowed = self.guard.apply(now, entries)
 
-        The room's current configuration is read, not the copy the warning
-        was queued with, so a room whose unit has just reported is judged
-        on that.
-        """
-        current = self.rooms.get(room.room_id, room)
-        return (
-            room.room_id in self._switched_off
-            or current.capabilities is None
-            or self._sleeping(current)
-        )
+        # 8-9: Act, Evidence, per room
+        speech: list[Speech] = []
+        for run in runs:
+            run.limits_result = allowed.get(run.config.room_id)
+            try:
+                speech += await self._act_and_record(run, now, states, dt_s, system_unit)
+            except Exception:  # noqa: BLE001 - one room failing never fails the update [R18]
+                self._room_failed(run)
 
-    def _note_announce_failure(self, key: str, message: str) -> None:
-        """Log an announcement failure the first time it happens."""
-        if key in self._announce_failures:
-            return
-        self._announce_failures.add(key)
-        LOGGER.warning("Spoken warning not given: %s", message)
+        if day_ended is not None:
+            self._midnight(day_ended)
+        for s in speech:
+            await self._speak(s)
+        self._repairs(now, shared)
+        self._log_failures()
+        return self._publish()
 
-    def _compressor_direction(self, room: RoomConfig) -> int:
-        """Whether the unit is moving sensible heat, and which way.
-
-        **`hvac_action` first, for every mode.** The mode string says what the
-        unit was asked to do; `hvac_action` says what it is doing. A head
-        sitting at setpoint in `cool` reports `cool` with the compressor idle,
-        and reading the mode counted all of that idle time as an interval the
-        compressor was driving. Every sensible observation was diluted by it,
-        which is why `k_sensible` describes neither running nor idling.
-
-        The mode is used only where the entity publishes no `hvac_action` at
-        all. Which source answered is recorded, so a unit that never publishes
-        the attribute is visible in diagnostics rather than quietly degrading
-        the model.
-        """
-        states = [
-            state
-            for entity_id in room.climate_entity_ids
-            if (state := self.hass.states.get(entity_id)) is not None
-        ]
-        if not states:
-            self._action_source.pop(room.room_id, None)
-            return 0
-
-        # Any head driving counts. A room with two heads has one comfort
-        # target and one thermal response, so what is learned is the room's
-        # rate with whatever was running — the split between heads is not
-        # observable from a single room sensor.
-        actions = [
-            state.attributes.get("hvac_action")
-            for state in states
-            if state.attributes.get("hvac_action") is not None
-        ]
-        if actions:
-            self._action_source[room.room_id] = "hvac_action"
-            if "cooling" in actions:
-                return -1
-            if "heating" in actions:
-                return 1
-            # idle, off, drying, fan, preheating, defrosting: the compressor
-            # is not moving sensible heat in a direction this can learn from.
-            return 0
-
-        if self._action_source.get(room.room_id) != "hvac_mode":
-            # Once per room. Diagnostics answers this too, but only for
-            # someone who already suspected the question — and this is the
-            # reading that decides whether every learned sensible coefficient
-            # is diluted by idle time. It belongs in the log the install is
-            # read from.
-            LOGGER.info(
-                "%s: %s publishes no hvac_action, so the compressor state is "
-                "being read from the mode string. A head idling at setpoint "
-                "reports its mode, so the learned sensible coefficient will "
-                "be diluted by idle time",
-                room.room_id,
-                ", ".join(room.climate_entity_ids),
-            )
-        self._action_source[room.room_id] = "hvac_mode"
-        modes = {state.state for state in states}
-        if "cool" in modes:
-            return -1
-        if "heat" in modes:
-            return 1
-        return 0
-
-    def action_sources(self) -> dict[str, str]:
-        """Which attribute answered the compressor question, per room.
-
-        For diagnostics. A room reporting `hvac_mode` here is learning from
-        mode rather than action, and its sensible coefficient will be diluted
-        by idle time.
-        """
-        return dict(self._action_source)
-
-    def _unit_mode(self, room: RoomConfig) -> str | None:
-        """The mode the room's unit is in, or None where none reports one.
-
-        0.9.6, DR-072. A working mode on any head wins: a room with one head
-        cooling is being cooled.
-        """
-        modes = [
-            state.state
-            for entity_id in room.climate_entity_ids
-            if (state := self.hass.states.get(entity_id)) is not None
-            and state.state not in _NON_NUMERIC
-        ]
-        if not modes:
-            return None
-        for mode in modes:
-            if mode in WORKING_MODES:
-                return mode
-        return modes[0]
-
-    def _unit_setpoint(self, room: RoomConfig) -> float | None:
-        """The setpoint the room's units report, or None (DR-081).
-
-        A unit holding a range reports its middle. The mean across heads.
-        """
-        values: list[float] = []
-        for entity_id in room.climate_entity_ids:
-            state = self.hass.states.get(entity_id)
-            if state is None or state.state in _NON_NUMERIC:
-                continue
-            single = self._attribute(state, ATTR_TEMPERATURE)
-            if single is not None:
-                values.append(single)
-                continue
-            low = self._attribute(state, "target_temp_low")
-            high = self._attribute(state, "target_temp_high")
-            if low is not None and high is not None:
-                values.append((low + high) / 2.0)
-        return round(sum(values) / len(values), 1) if values else None
-
-    def _unit_reading(self, room: RoomConfig, attribute: str) -> float | None:
-        """The mean of a numeric attribute across the room's units, or None."""
-        values = [
-            value
-            for entity_id in room.climate_entity_ids
-            if (state := self.hass.states.get(entity_id)) is not None
-            and state.state not in _NON_NUMERIC
-            and (value := self._attribute(state, attribute)) is not None
-        ]
-        return sum(values) / len(values) if values else None
-
-    def _is_drying(self, room: RoomConfig) -> bool:
-        """Whether the unit is in dry mode."""
-        return any(
-            (state := self.hass.states.get(entity_id)) is not None
-            and state.state == "dry"
-            for entity_id in room.climate_entity_ids
-        )
-
-    def _record_house_load_sample(self, now: datetime) -> None:
-        """Keep a short rolling window of house-load readings.
-
-        The signal finding 14 learns from: house load is total draw and does
-        not net off solar, so solar cannot confound a step in it. Kept only
-        long enough to bracket a compressor state change on both sides —
-        trimmed by age because the evaluation cadence is not guaranteed
-        constant.
-        """
-        if self.house_load_entity_id is None:
-            return
-        reading = self._number(self.house_load_entity_id, POWER_TOLERANCE)
-        if reading is not None:
-            self._house_load_samples.append((now, reading))
-        cutoff = now - DRAW_HISTORY_WINDOW
-        while self._house_load_samples and self._house_load_samples[0][0] < cutoff:
-            self._house_load_samples.popleft()
-
-    def _house_load_window(
-        self, start: datetime, end: datetime
-    ) -> list[float]:
-        """House-load readings falling in `[start, end)`."""
-        return [
-            reading
-            for stamp, reading in self._house_load_samples
-            if start <= stamp < end
-        ]
-
-    def _note_compressor_transition(
-        self, group: str, *, started: bool, now: datetime
+    async def _observe_and_learn(
+        self,
+        run: RoomRun,
+        states: Mapping[str, RawState],
+        now: datetime,
+        minute: bool,
+        five: bool,
+        hour: bool,
+        location: tuple[float, float],
+        head_units: Mapping[str, str],
+        draw_now: Mapping[str, float | None],
+        system_unit: str,
     ) -> None:
-        """Open a draw candidate for a group whose compressor just flipped.
-
-        0.8.9, finding 14. Re-opens on a state change before the previous
-        candidate settled — the newer transition is the one whose draw can
-        actually be measured, so it replaces rather than queues behind it.
-        """
-        self._draw_pending[group] = _DrawCandidate(
-            group=group, started=now, changed_at=now
-        )
-
-    def _draw_bin_for_group(self, group: str) -> int:
-        """The approach bin to attribute a draw observation to.
-
-        The rooms sharing this outdoor unit, at their last known commanded
-        setpoint against their last known reading — the same regressor
-        finding 9 bins the sensible rate by. No room in the group with both
-        readings available falls back to pulldown, the conservative bin: a
-        transition with nothing to measure approach from is exactly the
-        cold-start case pulldown exists to describe.
-        """
-        gaps = [
-            abs(target - reading)
-            for room in self.rooms.values()
-            if group in room.groups
-            for target in (self._last_target.get(room.room_id),)
-            for reading in (self._number(room.temperature_entity_id),)
-            if target is not None and reading is not None
-        ]
-        if not gaps:
-            return 3
-        return approach_bin(statistics.mean(gaps))
-
-    def _process_draw_candidates(self, now: datetime) -> None:
-        """Settle any draw candidate whose post-change window has matured.
-
-        0.8.9, finding 14. Bracket the transition on both sides — a settled
-        period before it and, after the ramp allowance an inverter needs, a
-        settled period after — and fold the difference into the group's
-        `DrawModel`, weighted by how much the observation is trusted rather
-        than gated on it.
-
-        **Simultaneous changes are skipped, not downweighted.** The design
-        called for scoring a candidate lower when another group changed near
-        its edges; this settles for the simpler rule of dropping a candidate
-        outright if another group is also pending when it matures, since an
-        apportioned residual cannot be checked against anything and solo
-        observations are sufficient at a house's compressor count and
-        evaluation cadence.
-        """
-        stale_cutoff = now - DRAW_CANDIDATE_MAX_AGE
-        mature_at = DRAW_RAMP_ALLOWANCE + DRAW_POST_WINDOW
-        settled: list[str] = []
-        for group, candidate in list(self._draw_pending.items()):
-            if candidate.changed_at < stale_cutoff:
-                settled.append(group)
-                continue
-            if now - candidate.changed_at < mature_at:
-                continue
-            settled.append(group)
-            if len(self._draw_pending) > 1:
-                # Another group was mid-transition at the same time. Neither
-                # side of the step can be attributed cleanly.
-                continue
-
-            pre = self._house_load_window(
-                candidate.changed_at - DRAW_PRE_WINDOW, candidate.changed_at
-            )
-            post = self._house_load_window(
-                candidate.changed_at + DRAW_RAMP_ALLOWANCE,
-                candidate.changed_at + mature_at,
-            )
-            if not pre or not post:
-                continue
-
-            compressor = self._compressors.get(group)
-            started = compressor.running if compressor else True
-            diff_w = statistics.mean(post) - statistics.mean(pre)
-            draw_kw = diff_w / 1000.0 if started else -diff_w / 1000.0
-
-            richness = min(len(pre), len(post), DRAW_TARGET_SAMPLES) / (
-                DRAW_TARGET_SAMPLES
-            )
-            spread = max(
-                statistics.pstdev(pre) if len(pre) > 1 else 0.0,
-                statistics.pstdev(post) if len(post) > 1 else 0.0,
-            )
-            quietness = DRAW_NOISE_REFERENCE_W / (DRAW_NOISE_REFERENCE_W + spread)
-            quality = max(
-                richness * quietness,
-                MIN_DRAW_QUALITY if len(pre) >= DRAW_MIN_SAMPLES
-                and len(post) >= DRAW_MIN_SAMPLES
-                else MIN_DRAW_QUALITY / 2,
-            )
-
-            self.draw_for(group).observe(
-                self._draw_bin_for_group(group), draw_kw, quality
-            )
-
-        for group in settled:
-            self._draw_pending.pop(group, None)
-
-    def _persist_models(self) -> None:
-        """Write learned state back to the store, on its own delay."""
-        for room_id, model in self.models.items():
-            record = dict(self.store.room(room_id))
-            record["thermal"] = model.as_dict()
-            self.store.update_room(room_id, record)
-        for group, draw in self._draw.items():
-            record = dict(self.store.group(group))
-            record["draw"] = draw.as_dict()
-            self.store.update_group(group, record)
-
-    def _build_forecast(
-        self, now: datetime, traces: dict[str, DecisionTrace]
-    ) -> DemandForecast:
-        """Project HVAC energy over the horizon. No vendor concepts in it.
-
-        The horizon needs the outdoor temperature across the whole horizon,
-        not at this instant — a mild reading right now says nothing about a
-        heatwave arriving at hour three. Where a weather forecast is
-        configured, the mean forecast temperature over the horizon window
-        replaces the instantaneous reading; without one, the instantaneous
-        reading is used unchanged, exactly as before this fix.
-        """
-        outdoor = self._number(self.outdoor_entity_id, OUTDOOR_TOLERANCE)
-        if self.trajectory is not None:
-            forecast_mean = self.trajectory.mean_between(
-                now, now + timedelta(hours=DEFAULT_HORIZON_HOURS)
-            )
-            if forecast_mean is not None:
-                outdoor = forecast_mean
-        inputs: list[RoomForecastInput] = []
-        for room_id, room in self.rooms.items():
-            trace = traces.get(room_id)
-            capabilities = self._capabilities(room)
-            inputs.append(
-                RoomForecastInput(
-                    room_id=room_id,
-                    model=self.model_for(room_id),
-                    indoor_c=self._number(room.temperature_entity_id),
-                    target_c=trace.target_dry_bulb_c if trace else None,
-                    outdoor_c=outdoor,
-                    direct_sun=self._direct_sun(room) is True,
-                    # The actuator verdict, not the mode. Checking the mode
-                    # was finding 20's hole in a second place: a room stopped
-                    # for an open window, for coasting, or by the power
-                    # refusal is in none of those modes and projected a full
-                    # horizon of draw it was never going to take.
-                    will_run=trace is not None
-                    and trace.actuator is not ActuatorStep.OFF
-                    and trace.mode is not Mode.COAST,
-                    can_heat=capabilities["can_heat"],
-                    can_cool=capabilities["can_cool"],
-                    rated_kw=self._rated_kw_for(room),
-                )
-            )
-
-        windows: list[tuple[time, time, str, frozenset[str]]] = []
-        if self.tariff is not None:
-            windows = [
-                (window.start, window.end, window.rate, window.constraints)
-                for window in self.tariff.windows()
-            ]
-
-        return build_forecast(
-            dt_util.as_local(now), inputs, windows, DEFAULT_HORIZON_HOURS
-        )
-
-    @callback
-    def _async_rooms_in_registry(self) -> set[str]:
-        """Room ids that currently have a device registered to this entry."""
-        registry = dr.async_get(self.hass)
-        return {
-            identifier[1]
-            for device in dr.async_entries_for_config_entry(
-                registry, self.config_entry.entry_id
-            )
-            for identifier in device.identifiers
-            if identifier[0] == DOMAIN
-        }
-
-    @callback
-    def _async_remove_stale_devices(self, current: set[str]) -> None:
-        """Drop devices for rooms that are no longer configured."""
-        if stale := self.previous_rooms - current:
-            registry = dr.async_get(self.hass)
-            in_use = {
-                entity_id
-                for room in self.rooms.values()
-                for entity_id in room.climate_entity_ids
-            }
-            for room_id in stale:
-                self.actuator.forget(room_id, in_use)
-                self.models.pop(room_id, None)
-                self._grace.pop(room_id, None)
-                self._base_load_samples.pop(room_id, None)
-                self._shortfall_since.pop(room_id, None)
-                self._grace_reason.pop(room_id, None)
-                self._free_cooling_advised.pop(room_id, None)
-                self._free_cooling_since.pop(room_id, None)
-                self._deferred_final.pop(room_id, None)
-                self._fallback_reason.pop(room_id, None)
-                self._unit_mode_seen.pop(room_id, None)
-                self._unit_mode_since.pop(room_id, None)
-                self._left.discard(room_id)
-                self._left_seen_clear.pop(room_id, None)
-                self._owner_stop.discard(room_id)
-                self._switch_off_pending.discard(room_id)
-                self._heading_home_reason.pop(room_id, None)
-                self._heading_home.pop(room_id, None)
-                self._regulators.pop(room_id, None)
-                self._previous_mode.pop(room_id, None)
-                self._mode_changed_at.pop(room_id, None)
-                self._ramp_from.pop(room_id, None)
-                self._waking.discard(room_id)
-                self._precondition_reason.pop(room_id, None)
-                self._demand_reason.pop(room_id, None)
-                self._previous.pop(room_id, None)
-                self._comfort_modes.pop(room_id, None)
-                self._raw_presence.pop(room_id, None)
-                self.store.forget_room(room_id)
-                # 0.9.6. A device belongs to one config entry; removing the
-                # room removes its device. The lookup and the removal used
-                # until 0.9.6 stop working in Home Assistant 2027.8.
-                if device := registry.async_get_device_by_identifier(
-                    (DOMAIN, room_id), self.config_entry.entry_id
-                ):
-                    registry.async_remove_device(device.id)
-        self.previous_rooms = current
-
-    def _inputs_for(self, room: RoomConfig, now: datetime) -> RoomInputs:
-        """Assemble everything the evaluator is allowed to see."""
-        interval = self._interval_at(now)
-        constraints = interval.constraints if interval else frozenset()
-
-        # Presence first, and the Comfort mode settled against it, before
-        # anything below asks whether the room is sleeping (DR-058).
-        presence = self._graced_presence(room, now)
-        self._end_heading_home(room, presence, now)
-
-        plan = self._precondition_plan(room, now)
-        if plan is not None and not plan.start_now:
-            self._precondition_reason[room.room_id] = plan.reason
-        else:
-            self._precondition_reason.pop(room.room_id, None)
-
-        capabilities = self._capabilities(room)
-        unaided = self._unaided_inputs(room, now)
-        temperature_c = self._number(
-            room.temperature_entity_id, INDOOR_TOLERANCE, room.room_id
-        )
-        relative_humidity = self._number(
-            room.humidity_entity_id, INDOOR_TOLERANCE, room.room_id
-        )
-        temperature_from_unit = False
-        self._fallback_reason.pop(room.room_id, None)
-        if temperature_c is None:
-            # 0.9.6, DR-074. The room's sensor is unavailable. The unit's own
-            # reading is used rather than leaving an off unit off for as long
-            # as the sensor is down (living room, 13 October), and the trace
-            # says so. Its sensor sits in the unit, not the room.
-            unit_c = self._unit_reading(room, "current_temperature")
-            if unit_c is not None:
-                temperature_c = unit_c
-                temperature_from_unit = True
-                self._fallback_reason[room.room_id] = (
-                    f"room temperature from the air conditioner's own sensor, "
-                    f"{unit_c:.1f} C: {room.temperature_entity_id} is not reporting"
-                )
-        if relative_humidity is None:
-            unit_rh = self._unit_reading(room, "current_humidity")
-            if unit_rh is not None:
-                relative_humidity = unit_rh
-                temperature_from_unit = True
-                note = self._fallback_reason.get(room.room_id)
-                self._fallback_reason[room.room_id] = (
-                    (note + "; " if note else "")
-                    + f"room humidity from the air conditioner's own sensor, "
-                    f"{unit_rh:.0f}%: {room.humidity_entity_id} is not reporting"
-                )
-        since = self._free_cooling_since.get(room.room_id)
-        unit_mode = self._unit_mode(room)
-        seen = self._unit_mode_since.get(room.room_id)
-        if seen is None or seen[0] != unit_mode:
-            # The first sight of a unit says nothing about how long it has
-            # been in its mode, so no hold is claimed for it.
-            self._unit_mode_since[room.room_id] = (
-                unit_mode,
-                now if seen is not None else now - ROUTE_HOLD,
-            )
-        unit_mode_minutes = (
-            now - self._unit_mode_since[room.room_id][1]
-        ).total_seconds() / 60.0
-
-        return RoomInputs(
+        room = run.config
+        snap = run.observer.build(
+            house=self.house,
+            states=states,
             now=now,
-            temperature_c=temperature_c,
-            relative_humidity=relative_humidity,
-            temperature_from_unit=temperature_from_unit,
-            unit_mode=unit_mode,
-            unit_mode_minutes=unit_mode_minutes,
-            free_cooling_advised=self._free_cooling_advised.get(room.room_id, False),
-            free_cooling_wait_over=since is not None
-            and now - since >= FREE_COOLING_WAIT,
-            temperature_entity_id=room.temperature_entity_id,
-            humidity_entity_id=room.humidity_entity_id,
-            k_rh_cooling_per_hour=self._learned(room.room_id, "k_rh_cooling"),
-            presence=presence,
-            direct_sun=self._direct_sun(room),
-            heat_load=self._bool(room.heat_load_entity_id) is True,
-            air_moving=self._air_moving(room),
-            has_covers=bool(room.cover_entity_ids),
-            allow_cover_control=room.allow_cover_control,
-            cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
-            can_cool=capabilities["can_cool"],
-            can_heat=capabilities["can_heat"],
-            can_dry=capabilities["can_dry"],
-            can_fan_only=capabilities["can_fan_only"],
-            opening_open=any(
-                self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is True
-                for entity_id in room.opening_entity_ids
-            ),
-            opening_open_since=self._opening_open_since(room),
-            opening_grace_minutes=room.opening_grace_minutes,
-            precool_opportunity=CONSTRAINT_PRECOOL_OPPORTUNITY in constraints,
-            no_grid_import=CONSTRAINT_NO_GRID_IMPORT in constraints,
-            coasting_permitted=interval.coasting_permitted if interval else True,
-            outdoor_c=self.outdoor_reading(),
-            outdoor_relative_humidity=self._number(
-                self.outdoor_humidity_entity_id, OUTDOOR_TOLERANCE
-            ),
-            outdoor_wind_ms=self.outdoor_wind_ms(),
-            precondition_ready=plan is None or plan.start_now,
-            previous_mode=self._ramp_from.get(room.room_id),
-            mode_changed_at=self._mode_changed_at.get(room.room_id),
-            waking=room.room_id in self._waking,
-            left=room.room_id in self._left,
-            heading_home=room.room_id in self._heading_home,
-            precondition_deadline=self._heading_home.get(room.room_id),
-            k_sensible_c_per_hour=self._sensible_rate_for(room, now),
-            k_latent_rh_per_hour=self._learned(room.room_id, "k_latent"),
-            predicted_to_hold=self._predicted_to_hold(unaided),
-            **unaided,
-            cheaper_window_imminent=self._cheaper_window_imminent(room, now),
-            forecast_demand_ahead=self._demand_ahead(room, now),
-            sleep_schedule_active=self._bool(room.sleep_schedule_entity_id)
-            is True,
-            comfort_mode=self.comfort_mode(room.room_id),
+            choices=run.state.choices,
+            location=location,
+            forecast=self.forecast,
+            forecast_temperature_unit=self.forecast_units[0],
+            forecast_wind_unit=self.forecast_units[1],
+            tariff=self.tariff.intervals,
+            load_history=self.load_history,
+            commands=self._last_command,
+            draw_kw=draw_now,
+            head_outdoor_units=head_units,
+            system_temperature_unit=system_unit,
         )
+        run.snapshot = snap
+        model = run.model
+        if minute:
+            model.minute(snap, _local_hour(now))
+        if five:
+            model = await self._in_executor(run, lambda m: m.five_minutes(now))
+            run.replan = True
+            if model.heat is not None:
+                self.memory.learned()
+        run.conditions = conditions_ahead(snap, room, location, _local_hour, now,
+                                          model.heat.last_outdoor if model.heat is not None else None)
+        if hour:
+            await self._hour(run, now)
+        outdoor = snap.outdoor_temperature.value
+        if outdoor is None and model.heat is not None:
+            outdoor = model.heat.last_outdoor
+        run.answers = model.answers(outdoor, snap.sun.s, _local_hour(now))
+        comfort = run.comfort.evaluate(snap, run.state.choices, now)
+        choices = run.state.choices
+        if comfort.end_precool is not None or comfort.clear_leave:
+            choices = replace(
+                choices,
+                precool_ready_by=None if comfort.end_precool is not None else choices.precool_ready_by,
+                leave_pressed_at=None if comfort.clear_leave else choices.leave_pressed_at,
+            )
+            run.state.choices = choices
+            self.memory.choice()
+        if comfort.rerun:
+            run.replan = True  # the band changed: decided again at once [D092]
+        if run.comfort_result is None or run.comfort_result.off != comfort.off:
+            run.replan = True
+        run.comfort_result = comfort
 
-    def _async_ensure_profiles(self) -> None:
-        """Read, once, what each room's units can do where that is not known.
+    async def _hour(self, run: RoomRun, now: datetime) -> None:
+        """Every hour: Model's trust check; the arbiter hands down at once
+        if trust is lost [I7]."""
+        snap = run.snapshot
+        assert snap is not None
+        heat = run.model.heat
+        rest: list[ForecastInput] = []
+        conds = run.conditions or []
+        tau = snap.sun.transmission
+        if conds and all(c.outdoor_rh is not None for c in conds[:12]):
+            rest = [ForecastInput(c.outdoor, float(c.outdoor_rh or 0.0),
+                                  tau * c.f_clear if c.sun_on_glass else 0.0, c.hour, StepKind.REST, 0.0)
+                    for c in conds[:12]]
+        # only measured room readings are scored: a unit's own reading
+        # standing in is never learned from [D074]
+        t = snap.room_temperature.value if snap.room_temperature.tag is ValueTag.MEASURED else None
+        rh = snap.room_humidity.value if snap.room_humidity.tag is ValueTag.MEASURED else None
+        e_now = vapour_pressure(t, rh) if t is not None and rh is not None else (
+            run.model.humidity.z[0] if run.model.humidity is not None else 0.0
+        )
+        trusted = run.model.trust.trusted
+        t_now = t if heat is not None else None
+        model = await self._in_executor(run, lambda m: m.hour(now, t_now, rest, e_now))
+        if trusted and not model.trust.trusted:
+            run.control.arbiter.lost_trust(now)
 
-        DR-048. A room set up from 0.9.0 carries its profile in its own
-        configuration. A room configured before that has none, and is read
-        here from its units' live state and the result kept in the store, so
-        a restart with a unit down does not lose it. Until a unit reports, the
-        room has no profile and nothing is sent to it.
-        """
-        for room_id, room in list(self.rooms.items()):
-            if room.capabilities is not None:
+    async def _in_executor(self, run: RoomRun, step: Callable[[RoomModel], object]) -> RoomModel:
+        """A model step too heavy for the event loop, run in the executor on
+        a copy that replaces the room's model when it is done. Nothing in
+        the event loop (a save, the diagnostics) ever reads a model while it
+        is being changed [HA]. The cycle holds the lock throughout, so a
+        seeding cannot replace the model in between."""
+        work = copy.deepcopy(run.state.model)
+        await self.hass.async_add_executor_job(step, work)
+        run.state.model = work
+        return work
+
+    def _running_draws(self) -> dict[tuple[str, str], float | None]:
+        """Each room's learned draw now on each outdoor unit it runs, at the
+        mean effort of its running heads on that unit, from the last cycle's
+        snapshots: (outdoor unit, room id) to kW [D028][I10]. A unit's draw
+        is the sum over the rooms on it."""
+        efforts: dict[tuple[str, str], list[float]] = {}
+        for run in self.rooms.values():
+            if run.snapshot is None:
                 continue
-            stored = RoomCapabilities.from_dict(self.store.profile(room_id))
-            if stored is not None:
-                self.rooms[room_id] = replace(room, capabilities=stored)
-                continue
-            profile = self._read_profile(room)
-            if profile is None:
-                if room_id not in self._profile_unread:
-                    self._profile_unread.add(room_id)
-                    LOGGER.info(
-                        "%s: its air conditioner has not reported what it can "
-                        "do yet; nothing is sent to the room until it does",
-                        room.name,
-                    )
-                continue
-            self.store.set_profile(room_id, profile.to_dict())
-            self._profile_unread.discard(room_id)
-            self.rooms[room_id] = replace(room, capabilities=profile)
-            LOGGER.info(
-                "%s: read what its air conditioner can do (%d modes, %d fan "
-                "speeds, %d vane positions)",
-                room.name,
-                len(profile.hvac_modes),
-                len(profile.fan_modes),
-                len(profile.swing_modes),
-            )
+            for h in run.snapshot.heads:
+                e = head_effort(h)
+                if e is not None and h.compressor is CompressorState.RUNNING:
+                    efforts.setdefault((h.outdoor_unit, run.config.room_id), []).append(e)
+        draw = self.house_state.draw
+        return {k: draw.draw_at(k[0], sum(v) / len(v)) for k, v in efforts.items()}
 
-    def _read_profile(self, room: RoomConfig) -> RoomCapabilities | None:
-        """What a room's units offer right now, or None if any is not reporting."""
-        profile, note = profile_from_states(
-            [self.hass.states.get(entity_id) for entity_id in room.climate_entity_ids]
+    def _draw_for_rate(self, run: RoomRun) -> Callable[[float], float | None]:
+        """The room's learned draw at a rate: each of its outdoor units at
+        the effort that rate needs [D028][I10]."""
+        heat = run.model.heat
+        if heat is None:
+            return lambda _rate: None
+        fig = figures(heat.z)
+        units = run.outdoor_units
+        draw = self.house_state.draw
+
+        def at(rate: float) -> float | None:
+            effort = effort_for_rate(fig, rate)
+            total = 0.0
+            for u in units:
+                d = draw.draw_at(u, effort)
+                if d is None:
+                    return None
+                total += d
+            return total
+
+        return at
+
+    def _shared_climates(self) -> dict[str, tuple[str, ...]]:
+        """Every climate entity used by more than one room [D021]."""
+        by: dict[str, list[str]] = {}
+        for run in self.rooms.values():
+            for h in run.config.heads:
+                by.setdefault(h.climate, []).append(run.config.name)
+        return {c: tuple(n) for c, n in by.items() if len(n) > 1}
+
+    def _house(
+        self, now: datetime, runs: Sequence[RoomRun], first: Snapshot | None
+    ) -> dict[str, tuple[float | None, bool, float | None, str]]:
+        """The house's readings and the one power budget [I10]."""
+        if first is None:
+            return {}
+        load = first.house_load_kw.value
+        solar = first.solar_kw.value
+        charge = first.battery_charge_pct.value
+        self.load_history.add(now, load)
+        running = frozenset(
+            h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads
+            if h.compressor is CompressorState.RUNNING
         )
-        if note is not None:
-            LOGGER.warning("%s: %s", room.name, note)
-        return profile
-
-    def _unaided_inputs(self, room: RoomConfig, now: datetime) -> dict[str, Any]:
-        """Whether, and when, the weather brings the room back into band.
-
-        DR-053. Projects the room's own temperature forward with nothing
-        running, from the learned loss and solar terms, the forecast outdoor
-        temperature, and the sun on this room's window at each step ahead.
-        Returns the inputs the evaluator uses to decide whether to coast.
-        """
-        none: dict[str, Any] = {
-            "unaided_available": False,
-            "unaided_return_minutes": None,
-            "unaided_return_limit_minutes": UNAIDED_RETURN_FALLBACK_MINUTES,
-            "unaided_refused": None,
-            "rebound_relative_humidity": None,
-        }
-        indoor = self._number(room.temperature_entity_id)
-        humidity = self._number(room.humidity_entity_id)
-        if indoor is None or humidity is None:
-            return none
-        band = room.band_for(Mode.SLEEP if self._sleeping(room) else Mode.OCCUPIED)
-        if band is None:
-            return none
-
-        # The band is in comfort index and the model works in dry bulb. The
-        # bounds are converted under the same corrections the index was
-        # measured under - sun on the glass, still air, heat in the room - so
-        # a room that is warm only because of the sun is not mistaken for one
-        # that is already inside its band.
-        direct_sun = self._direct_sun(room)
-        radiant = radiant_load(
-            direct_sun=direct_sun,
-            cover_position=mean_cover_position(self.hass, room.cover_entity_ids),
-            has_covers=bool(room.cover_entity_ids),
+        self.budget.loads.add(now, load, solar, running)
+        for unit in {h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads}:
+            on = unit in running
+            if self._unit_running.get(unit) is not on:
+                if unit in self._unit_running:
+                    (self._running_since if on else self._stopped_since)[unit] = now
+                self._unit_running[unit] = on
+        if charge is not None:
+            self._charges.append((now, charge))
+        while len(self._charges) > 1 and now - self._charges[1][0] >= _CHARGE_WINDOW:
+            self._charges.popleft()
+        window_end = no_import_window_end(self.tariff.intervals, now)
+        if self.grid is not None:
+            self.grid.observe(now, load_kw=load, solar_kw=solar, grid_kw=first.grid_kw.value, charge_pct=charge,
+                              in_no_import_window=window_end is not None)
+        house = HousePower(
+            battery_charge_pct=charge,
+            battery_size_kwh=self.house.battery_size_kwh,
+            reserve_kwh=self.house.reserve_margin_kwh,
+            rated_discharge_kw=self.house.battery_max_discharge_kw,
+            solar_configured=self.house.solar_power is not None,
+            load_configured=self.house.house_load is not None,
         )
-        still_air = not self._air_moving(room)
-        heat_load = self._bool(room.heat_load_entity_id) is True
-
-        def to_dry_bulb(index: float) -> float:
-            return dry_bulb_for_index(
-                index,
-                humidity,
-                radiant=radiant,
-                still_air=still_air,
-                heat_load=heat_load,
-            )
-
-        middle_c = to_dry_bulb(band.midpoint)
-
-        # 0.9.3, DR-060. The water the coil gives back once the compressor
-        # stops. While it is running, or for `REBOUND_HOURS` after it stops
-        # cooling or drying, the room's humidity is projected to rise at its
-        # learned rebound rate. Where the rebound has not been learned, the
-        # weather coast is refused; the in-band hold keeps the humidity flat,
-        # as it always did, so that stops still happen and the rebound can be
-        # learned.
-        cooling_now = self._was_cooling.get(room.room_id, False)
-        since_stop = None if cooling_now else self._hours_since_stop(room.room_id, now)
-        rebound_rate = 0.0
-        rebound_end = 0.0
-        refused: str | None = None
-        rebound_rh: float | None = None
-        if cooling_now or (since_stop is not None and since_stop < REBOUND_HOURS):
-            model_for_rise = self.model_for(room.room_id)
-            rise = model_for_rise.rebound_rh_rise(since_stop)
-            if rise is None:
-                refused = (
-                    "the unit has just been cooling and this room has not yet "
-                    "learned how much moisture comes back off the coil when it "
-                    "stops, so the weather is not relied on to bring it back"
-                )
-            else:
-                rebound_end = REBOUND_HOURS - (since_stop or 0.0)
-                rebound_rate = rise / rebound_end if rebound_end > 0 else 0.0
-                rebound_rh = min(100.0, humidity + rise)
-
-        def humidity_at(hours_ahead: float) -> float:
-            return min(100.0, humidity + rebound_rate * min(hours_ahead, rebound_end))
-
-        outdoor_now = self.outdoor_reading()
-        trajectory = self.trajectory
-
-        def outdoor_at(hours_ahead: float) -> float | None:
-            if trajectory is not None:
-                forecast = trajectory.temperature_at(now + timedelta(hours=hours_ahead))
-                if forecast is not None:
-                    return forecast
-            return outdoor_now
-
-        window_azimuth = azimuth_for_direction(room.window_direction)
-
-        def sun_at(hours_ahead: float) -> float | None:
-            if room.direct_sun_entity_id or window_azimuth is None:
-                # A sensor override, or no window direction: the sun is held
-                # at whatever it is now, as the coast prediction always did.
-                return 1.0 if direct_sun is True else 0.0
-            when = now + timedelta(hours=hours_ahead)
-            azimuth, elevation = solar_position(
-                self.hass.config.latitude, self.hass.config.longitude, when
-            )
-            on = sun_on_window(
-                azimuth,
-                elevation,
-                window_azimuth,
-                overhang_projection_m=room.overhang_projection_m,
-                overhang_height_m=room.overhang_height_m,
-            )
-            if on is not True:
-                return 0.0
-            clear = (
-                trajectory.solar_fraction_at(when) if trajectory is not None else None
-            )
-            return 1.0 if clear is None else clear
-
-        model = self.model_for(room.room_id)
-        points = model.project_unaided(
-            indoor,
-            outdoor_at=outdoor_at,
-            sun_at=sun_at,
-            hours=COAST_HORIZON_HOURS,
-            step_hours=PROJECTION_STEP_HOURS,
-        )
-        if points is None:
-            return {**none, "unaided_refused": refused}
-        # Judged on the comfort index, step by step, so the humidity the room
-        # is heading for counts as much as its temperature.
-        indices = [
-            comfort_index(
-                temperature,
-                humidity_at(index * PROJECTION_STEP_HOURS),
-                radiant=radiant,
-                still_air=still_air,
-                heat_load=heat_load,
-            )
-            for index, temperature in enumerate(points)
-        ]
-        outlook = unaided_outlook(indices, lower_c=band.low, upper_c=band.high)
-
-        compressor_hours = model.hours_to_reach(
-            indoor, middle_c, outdoor_now, direct_sun=direct_sun is True
-        )
-        limit = (
-            UNAIDED_RETURN_FALLBACK_MINUTES
-            if compressor_hours is None
-            else compressor_hours * 60.0 + UNAIDED_RETURN_MARGIN_MINUTES
-        )
-        return {
-            "unaided_available": True,
-            "unaided_return_minutes": outlook.return_minutes,
-            "unaided_return_limit_minutes": limit,
-            "unaided_refused": refused,
-            "rebound_relative_humidity": rebound_rh,
-        }
-
-    def _sensible_rate_for(self, room: RoomConfig, now: datetime) -> float | None:
-        """The `k_sensible` figure the dry-versus-cool decision should use.
-
-        The rate at the room's approach to its target (0.8.10): near the band
-        the true rate is a fraction of the pull-down rate.
-
-        0.9.7, DR-090. The approach is the room's last solved target against
-        its reading. Until 0.9.7 it was the unit's own setpoint against the
-        reading, and that setpoint is the one this component had just sent:
-        each command moved the comparison and the comparison moved the next
-        command. On 15 October the cooling rate read 1.61, then 0.29 ten
-        seconds after heat at 24 C was sent, and the living room changed mode
-        thirteen times in 23 minutes. Falls back to the pooled figure when the
-        target is not yet known, which is every room's first cycle.
-        """
-        target = self._last_target.get(room.room_id)
-        reading = self._number(room.temperature_entity_id, INDOOR_TOLERANCE)
-        if target is None or reading is None:
-            return self._learned(room.room_id, "k_sensible")
-        return self.model_for(room.room_id).sensible_rate_at(abs(target - reading))
-
-    def _learned(self, room_id: str, name: str) -> float | None:
-        """A learned coefficient, or None until it has converged.
-
-        None is what tells the evaluator to fall back rather than to trust a
-        number the filter has not settled on. Handing over an unconverged
-        coefficient would look like knowledge and behave like noise.
-        """
-        coefficient = getattr(self.model_for(room_id), name)
-        return coefficient.value if coefficient.converged else None
-
-    def _direct_sun(self, room: RoomConfig) -> bool | None:
-        """Whether the sun is on this room's windows.
-
-        Worked out from geometry: the sun's position, which Home Assistant
-        already publishes as `sun.sun`, against the direction the room's
-        windows face. **No extra entity or integration is needed.**
-
-        Indoor light level is deliberately not used. A semi-transparent blind
-        reads bright when it is fully closed, so lux would report nothing to
-        block at exactly the moment the blind is already blocking.
-
-        A per-room sensor can be configured to override this, for a room whose
-        exposure is more complicated than one compass direction — a corner
-        room, or one shaded by a tree.
-
-        None means the question cannot be answered, which the evaluator treats
-        as "do not move the covers" rather than as either answer.
-        """
-        if room.direct_sun_entity_id:
-            return self._bool(room.direct_sun_entity_id)
-
-        sun = self.hass.states.get("sun.sun")
-        if sun is None:
-            return None
-        return sun_on_window(
-            self._attribute(sun, "azimuth"),
-            self._attribute(sun, "elevation"),
-            azimuth_for_direction(room.window_direction),
-            overhang_projection_m=room.overhang_projection_m,
-            overhang_height_m=room.overhang_height_m,
+        rooms: list[RoomPower] = []
+        draws: dict[str, Callable[[float], float | None]] = {}
+        for r in runs:
+            power, draw = _room_power(r, self._draw_for_rate(r))
+            rooms.append(power)
+            draws[r.config.room_id] = draw
+        return self.budget.evaluate(
+            now=now,
+            window_end=window_end,
+            house=house,
+            rooms=rooms,
+            draw_for_rate=draws,
+            running_draw=self._running_draws(),
+            solar_slices=self.solar,
+            worst_clear_sky=self._worst_clear_sky(now, window_end, first),
         )
 
     @staticmethod
-    def _attribute(state: State, name: str) -> float | None:
-        """A numeric attribute, or None when it is missing or not a number."""
-        value = state.attributes.get(name)
-        try:
-            return float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return None
+    def _worst_clear_sky(now: datetime, window_end: datetime | None, snap: Snapshot) -> float:
+        """The worst clear-sky fraction the forecast gives over the rest of
+        the no-import window [D039]; 1 where the forecast gives none, so the
+        budget fails toward comfort [D008]."""
+        from .observe import clear_sky_fraction
 
-    def _capabilities(self, room: RoomConfig) -> dict[str, bool]:
-        """What the unit can do, so the decision never picks an absent mode.
-
-        A missing entity reports everything as unavailable, which stops the
-        selector choosing a step that could not be carried out.
-        """
-        states = [
-            state
-            for entity_id in room.climate_entity_ids
-            if (state := self.hass.states.get(entity_id)) is not None
+        if window_end is None:
+            return 1.0
+        values = [
+            f for h in snap.forecast
+            if h.start + _HOUR > now and h.start < window_end
+            and (f := clear_sky_fraction(h.cloud_coverage, h.uv_index)) is not None
         ]
-        if len(states) != len(room.climate_entity_ids) or not states:
-            return {
-                "can_cool": False,
-                "can_heat": False,
-                "can_dry": False,
-                "can_fan_only": False,
-            }
-        # The intersection across the room's heads. A room can only do what
-        # all of them can: claiming dry mode because one of two heads has it
-        # produces a decision the actuator cannot carry out on the other.
-        modes = (
-            set(room.capabilities.hvac_modes)
-            if room.capabilities is not None
-            else set.intersection(*(supported_hvac_modes(state) for state in states))
-        )
-        return {
-            "can_cool": bool(modes & {"cool", "heat_cool", "auto"}),
-            "can_heat": bool(modes & {"heat", "heat_cool", "auto"}),
-            "can_dry": "dry" in modes,
-            "can_fan_only": "fan_only" in modes,
-        }
+        return min(values) if values else 1.0
 
-    def _compute_power_context(self, now: datetime) -> _PowerContext:
-        """Read the house-level power inputs once per evaluation cycle.
-
-        Every room's power budget runs against this same snapshot
-        rather than each re-reading the entities itself — the room assesses
-        its own need, but against readings that do not change mid-cycle
-        depending on evaluation order.
-
-        `engaged` is False whenever any of the five fields is unconfigured.
-        Power management is opt-in: with any one of them absent, no room is
-        throttled and nothing about this feature runs.
-        """
-        if (
-            self.battery_soc_entity_id is None
-            or self.battery_capacity_kwh is None
-            or self.solar_entity_id is None
-            or self.house_load_entity_id is None
-            or self.reserve_margin_kwh is None
-        ):
-            return _PowerContext(engaged=False)
-
-        solar_w = self._number(self.solar_entity_id, POWER_TOLERANCE)
-        house_load_w = self._number(self.house_load_entity_id, POWER_TOLERANCE)
-
-        grid_import_w: float | None = None
-        battery_w: float | None = None
-        if self.grid_entity_id is not None and self.grid_sign is not None:
-            grid_raw_w = self._number(self.grid_entity_id, POWER_TOLERANCE)
-            if grid_raw_w is not None:
-                grid_import_w = normalise_grid_import_w(grid_raw_w, self.grid_sign)
-                if solar_w is not None and house_load_w is not None:
-                    battery_w = derive_battery_w(house_load_w, solar_w, grid_import_w)
-
-        return _PowerContext(
-            engaged=True,
-            battery_soc_percent=self._number(
-                self.battery_soc_entity_id, POWER_TOLERANCE
-            ),
-            battery_capacity_kwh=self.battery_capacity_kwh,
-            solar_w=solar_w,
-            house_load_w=house_load_w,
-            reserve_margin_kwh=self.reserve_margin_kwh,
-            grid_import_w=grid_import_w,
-            battery_w=battery_w,
-        )
-
-    #: Approach, in °C, at which each bin's ceiling caps `commanded_dry_bulb_c`.
-    #: The upper edge of the bin's own range — `at_setpoint`'s ceiling is
-    #: where `close` begins, and so on. `pulldown` has no meaningful upper
-    #: edge, so its ceiling is large enough to never bind in practice: the
-    #: bin fitting the budget at all already means nothing tighter is needed.
-    _BIN_CEILING_C = (
-        APPROACH_AT_SETPOINT_C,
-        APPROACH_CLOSE_C,
-        APPROACH_WORKING_C,
-        99.0,
-    )
-
-    def _track_grid(self, now: datetime, context: _PowerContext) -> None:
-        """Check the grid sign convention, and integrate measured import
-        across any active `no_grid_import` window.
-
-        0.8.10, finding 11. Runs once per evaluation regardless of whether
-        any room is under a power constraint this cycle — the breach record
-        is a house-level fact, not a per-room question.
-
-        0.8.13, DR-043. The window is the unbroken run of intervals carrying
-        the constraint, not one tariff interval: the series arrives in
-        30-minute slices, and keying on each slice's start closed and
-        re-judged the window every half hour. Each sample is weighted by the
-        time since the previous one, not by a fixed evaluation period:
-        evaluations also run on every watched state change, so a fixed period
-        counted the same half-minute several times over. A gap longer than
-        one evaluation period is credited as one period — the reading says
-        nothing about a stretch in which nothing was evaluated.
-        """
-        self._check_grid_sign(context)
-
-        interval = self._interval_at(now) if self.tariff is not None else None
-        if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
-            self._close_breach_window(reported=self._breach_kwh > 0.0)
-            return
-
-        if self._breach_window_start is None:
-            self._breach_window_start = interval.start
-            self._breach_kwh = 0.0
-            self._breach_sampled_at = now
-            return
-
-        previous = self._breach_sampled_at
-        self._breach_sampled_at = now
-        if previous is None or now <= previous:
-            return
-        elapsed = min(now - previous, EVALUATION_INTERVAL)
-        if context.grid_import_w is not None and context.grid_import_w > 0:
-            self._breach_kwh += (
-                context.grid_import_w * elapsed.total_seconds() / 3600.0 / 1000.0
-            )
-
-    def _check_grid_sign(self, context: _PowerContext) -> None:
-        """Compare the stored sign convention against live evidence.
-
-        0.8.10, finding 11. A contradiction check, not the mechanism: this
-        never corrects the stored convention, only counts how often live
-        readings disagree with it, so a persistent disagreement can be named
-        as a repair issue rather than silently mis-deriving the battery
-        figure forever.
-
-        0.8.11. An inconclusive cycle — no real flow to read a sign off, or
-        not enough house draw to be decisive — resets the counter exactly
-        like an agreeing one. Only a run of genuine, sizeable disagreements
-        can ever raise the issue; a night of correctly-inconclusive zero
-        readings must not leave the counter primed to trip on the first
-        reading the next morning.
-        """
-        if self.grid_entity_id is None or self.grid_sign is None:
-            self._grid_sign_disagreements = 0
-            return
-        if (
-            context.house_load_w is None
-            or context.solar_w is None
-            or context.grid_import_w is None
-        ):
-            return
-        raw_reading_w = (
-            context.grid_import_w
-            if self.grid_sign == GRID_SIGN_IMPORTING
-            else -context.grid_import_w
-        )
-        implied = implied_sign(context.house_load_w, context.solar_w, raw_reading_w)
-        if implied is None or implied == self.grid_sign:
-            self._grid_sign_disagreements = 0
-        else:
-            self._grid_sign_disagreements += 1
-
-    def _close_breach_window(self, *, reported: bool) -> None:
-        """Raise or clear the shortfall issue for the window just ended.
-
-        0.8.10, findings 15/16. A trivial amount of import — a kettle
-        overlapping the boundary by one cycle — is not a shortfall worth a
-        repair issue, so anything under 0.05 kWh is treated as noise.
-
-        0.8.13, DR-043. A window that closes clean clears an issue left by an
-        earlier one, so the issue always describes the most recent window.
-        Called every evaluation outside a window as well; only a window that
-        was actually open can clear anything.
-        """
-        window_was_open = self._breach_window_start is not None
-        if reported and self._breach_kwh >= 0.05:
-            self._last_breach_reported_kwh = round(self._breach_kwh, 2)
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_POWER_SHORTFALL,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_POWER_SHORTFALL,
-                translation_placeholders={
-                    "kwh": f"{self._last_breach_reported_kwh:.2f}"
-                },
-            )
-        elif window_was_open:
-            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_POWER_SHORTFALL)
-        self._breach_window_start = None
-        self._breach_kwh = 0.0
-        self._breach_sampled_at = None
-
-    def _sustained_solar_kw(
-        self, now: datetime, hours_until_clear: float, current_solar_kw: float
-    ) -> float:
-        """How much of today's solar this room may count on for the rest of
-        the constrained window.
-
-        0.8.11, finding 18. Extends the instantaneous solar offset with the
-        weather forecast's clear-sky fraction — the existing, previously
-        unused `solar_fraction_at` — so a window that runs past sunset, or
-        into cloud the forecast already expects, is not credited with
-        today's current solar persisting for hours it will not. The worst
-        (lowest) fraction ratio across the remaining hours derates the
-        whole window's credit; nothing here forecasts house load, only
-        solar, since only solar has a forecast to read.
-
-        Without a forecast configured, or with no solar right now, the
-        instantaneous reading is used unchanged — exactly as before this
-        finding, so an install without a weather entity loses nothing.
-        """
-        if self.trajectory is None or current_solar_kw <= 0:
-            return current_solar_kw
-        now_fraction = self.trajectory.solar_fraction_at(now)
-        if not now_fraction:
-            return current_solar_kw
-        worst_ratio = 1.0
-        hours = max(1, ceil(hours_until_clear))
-        for hour in range(1, hours + 1):
-            later_fraction = self.trajectory.solar_fraction_at(
-                now + timedelta(hours=hour)
-            )
-            if later_fraction is None:
-                continue
-            worst_ratio = min(worst_ratio, later_fraction / now_fraction)
-        return current_solar_kw * worst_ratio
-
-    def _is_running(self, room: RoomConfig) -> bool:
-        """Whether the room's unit is cooling, heating or drying now."""
-        return self._compressor_direction(room) != 0 or self._is_drying(room)
-
-    def _note_power_samples(self, now: datetime, context: _PowerContext) -> None:
-        """Keep the last fifteen minutes of house load and solar (DR-067).
-
-        Also keeps, for each room whose unit is not running, the house load
-        as the rest of the house it measures.
-        """
-        cutoff = now - READING_AVERAGE_WINDOW
-        for samples, reading in (
-            (self._budget_house_samples, context.house_load_w),
-            (self._budget_solar_samples, context.solar_w),
-        ):
-            if reading is not None:
-                samples.append((now, reading))
-            while samples and samples[0][0] < cutoff:
-                samples.popleft()
-        if context.house_load_w is None:
-            return
-        for room in self.rooms.values():
-            if self._is_running(room):
-                continue
-            own = self._base_load_samples.setdefault(room.room_id, deque())
-            own.append((now, context.house_load_w))
-            while own and own[0][0] < cutoff:
-                own.popleft()
-
-    def _average_solar_kw(self, context: _PowerContext) -> float:
-        """Solar over the last fifteen minutes, in kW (DR-067)."""
-        mean = mean_recent(self._budget_solar_samples, READING_AVERAGE_WINDOW)
-        if mean is None:
-            mean = context.solar_w or 0.0
-        return max(mean, 0.0) / 1000.0
-
-    def _rest_of_house_kw(
-        self, room: RoomConfig, *, running: bool, own_draw_kw: float
-    ) -> float | None:
-        """What the rest of the house draws, in kW, for this room's budget.
-
-        0.9.4, DR-067. The house load measured while this room's unit was not
-        running, averaged: the room's own draw is never in it. Before the room
-        has been seen off — it has run since Home Assistant started — the
-        averaged house load less the room's estimated draw, as before 0.9.4.
-        None where there is no house-load reading at all.
-        """
-        base = mean_recent(
-            self._base_load_samples.get(room.room_id, ()), READING_AVERAGE_WINDOW
-        )
-        if base is not None:
-            return max(base, 0.0) / 1000.0
-        mean = mean_recent(self._budget_house_samples, READING_AVERAGE_WINDOW)
-        if mean is None:
-            return None
-        return max(mean / 1000.0 - (own_draw_kw if running else 0.0), 0.0)
-
-    def _power_ceiling(
+    async def _decide(
         self,
-        room: RoomConfig,
-        inputs: RoomInputs,
-        trace: DecisionTrace,
+        run: RoomRun,
         now: datetime,
-        capabilities: dict[str, bool],
+        budget: tuple[float | None, bool, float | None, str] | None,
+        location: tuple[float, float],
+        shared_climate: bool,
     ) -> None:
-        """The setpoint ceiling a tight power budget places on this room.
+        """4-7 for one room: Economics, Control, Delivery, Limits."""
+        snap, comfort = run.snapshot, run.comfort_result
+        assert snap is not None and comfort is not None
+        room = run.config
+        prices, p_max = prices_ahead(self.tariff.intervals, now)
+        econ = room_economics(room.power_management, prices, p_max,
+                              budget if budget is not None else (None, False, None, "no limit"))
+        run.economics = econ
+        _note_ceiling(run, econ.ceiling)
+        heat = run.model.heat
+        fig = figures(heat.z) if heat is not None else None
+        # FREE COOLING [D073]: outdoor air would do better in an occupied room
+        outdoor_better = comfort.occupied is True and outdoor_air_would_cool(snap)
+        if not outdoor_better:
+            run.free_cooling_since = None
 
-        0.8.10, findings 10 and 15. Replaces the pre-0.8.10 boolean veto.
-        Extended to three states in 0.8.12.
+        async def replan() -> None:
+            assert heat is not None and fig is not None
+            inputs = self._plan_inputs(run, now, prices, p_max, econ)
+            if inputs is not None:
+                step = room.profile.setpoint_step if room.profile is not None else None
+                g = gains(fig, heat.delay_min, heat.lag_min, actuation_minutes(step))
+                await self.hass.async_add_executor_job(run.control.replan, inputs, g)
+                run.replan = False
 
-        **`power_management` is the single gate for the whole mechanism.**
-        "off" (the default): power management does not touch this room at
-        all. "guidance": the ceiling is computed and reported — the trace and
-        reasons show what the budget would do — but `_regulate` never clamps
-        against it and nothing is stopped. "enforced": the ceiling applies
-        whether the room is inside its band or calling for correction, and
-        where the budget cannot afford even holding the room, the unit is
-        turned off until it can (0.9.3, DR-063; until then enforcement never
-        stopped the compressor). A coasting room is not throttled — it has no
-        setpoint to throttle — but under enforced it is turned off too when
-        nothing can be afforded, since dry mode runs the compressor and the
-        fan draws power.
-
-        This was corrected after being built the other way around: the
-        first version applied a gentle within-band ceiling regardless of the
-        setting, treating it as harmless because comfort was never at risk.
-        That was Claude's own invention, not what was asked for. The
-        setting is the user's choice between comfort and power management
-        being the more important thing for this room, full stop — not a
-        magnitude knob on top of an always-on baseline.
-
-        **Solar forecast (0.9.3, DR-061).** Where a solar forecast is held,
-        the allowance is the largest steady draw that keeps the battery above
-        its reserve until the window clears, counting the forecast generation
-        hour by hour (`power.forecast_allowance_kw`). Without one, the solar
-        being produced now is used, derated by the weather forecast's
-        clear-sky fraction, as before.
-
-        **Hysteresis (0.9.3, DR-062).** The bin moves down at once and up only
-        when the allowance clears the next bin by a margin and has held for a
-        while (`power.held_ceiling_bin`).
-        """
-        if room.power_management == POWER_MANAGEMENT_OFF:
-            # Power management does not touch this room. Comfort wins
-            # unconditionally; nothing below this line applies.
-            return
-        if trace.actuator in (ActuatorStep.OFF, ActuatorStep.COVERS):
-            # Lockout, unoccupied, an opening past its grace, or already
-            # stopped for another reason. Nothing running to throttle.
-            return
-        if trace.mode is Mode.PRECOOL:
-            # 0.8.13, DR-037. Precool runs in a window chosen because energy
-            # is free, and drives to the bottom of its band, not the middle.
-            # Rationing it would throttle the one mode that exists to spend
-            # free energy ahead of a load.
-            trace.reasons.append("power budget: precool is not rationed")
-            return
-        context = self._power_context
-        if context is None or not context.engaged:
-            return
-        if self.tariff is None:
-            return
-        interval = self.tariff.interval_at(now)
-        if interval is None or CONSTRAINT_NO_GRID_IMPORT not in interval.constraints:
-            self._ceiling_bins.pop(room.room_id, None)
-            self._shortfall_since.pop(room.room_id, None)
-            return
-
+        if run.replan and heat is not None and fig is not None and not comfort.off:
+            await replan()
         if (
-            context.battery_soc_percent is None
-            or context.battery_capacity_kwh is None
-            or context.reserve_margin_kwh is None
+            outdoor_better
+            and run.free_cooling_since is None
+            and run.control.plan is not None
+            and run.control.plan.first.kind is StepKind.COOL
+            and heat is not None and fig is not None and not comfort.off
         ):
-            return
-
-        hours_until_clear = self.tariff.hours_until_clear(
-            CONSTRAINT_NO_GRID_IMPORT, now
-        )
-        if hours_until_clear is None or hours_until_clear <= 0:
-            return
-
-        available_kwh = battery_available_kwh(
-            context.battery_soc_percent,
-            context.battery_capacity_kwh,
-            context.reserve_margin_kwh,
-        )
-
-        running = self._is_running(room)
-        own_draw_kw = self._rated_kw_for(room) if running else 0.0
-        # 0.9.4, DR-067. Averages over the last fifteen minutes, and the rest
-        # of the house as measured while this room was not running. Until
-        # 0.9.4 one reading was projected for the whole window, and this
-        # room's own draw beyond its estimate was counted as the house's: the
-        # Office turned itself off the minute after every start.
-        current_solar_kw = self._average_solar_kw(context)
-        rest_kw = self._rest_of_house_kw(
-            room, running=running, own_draw_kw=own_draw_kw
-        )
-
-        slices = self._solar_forecast_slices(now, hours_until_clear)
-        if slices is not None:
-            other_house_kw = rest_kw or 0.0
-            headroom_kwh = context.battery_capacity_kwh * max(
-                0.0, 1.0 - context.battery_soc_percent / 100.0
-            )
-            allowance_kw = forecast_allowance_kw(
-                available_kwh=available_kwh,
-                headroom_kwh=headroom_kwh,
-                slices=slices,
-                other_house_kw=other_house_kw,
-                plant_kw=plant_allowance_kw(
-                    self.battery_max_discharge_kw, current_solar_kw, other_house_kw
-                ),
-            )
-            trace.reasons.append(
-                "power budget: "
-                f"{sum(kwh for _, kwh in slices):.1f} kWh of forecast solar "
-                f"counted over the {hours_until_clear:.1f} h until import is "
-                "allowed again"
-            )
-        else:
-            # 0.8.11, finding 18. Solar checked first, as a direct offset —
-            # the battery only binds where solar is insufficient. The
-            # arithmetic is in `power.budget_allowance_kw`.
-            sustained_solar_kw = self._sustained_solar_kw(
-                now, hours_until_clear, current_solar_kw
-            )
-            allowance_kw = budget_allowance_kw(
-                available_kwh=available_kwh,
-                hours_until_clear=hours_until_clear,
-                max_discharge_kw=self.battery_max_discharge_kw,
-                house_load_w=None if rest_kw is None else rest_kw * 1000.0,
-                own_draw_kw=0.0,
-                sustained_solar_kw=sustained_solar_kw,
-            )
-
-        draw_by_bin = [
-            sum(
-                self.draw_for(group).draw_kw(bin_index, ASSUMED_UNIT_KW)
-                for group in room.groups
-            )
-            for bin_index in range(len(BIN_NAMES))
-        ]
-        previous = self._ceiling_bins.get(room.room_id)
-        bin_index = held_ceiling_bin(
-            allowance_kw,
-            draw_by_bin,
-            previous=previous[0] if previous else None,
-            previous_since=previous[1] if previous else None,
-            now=now,
-        )
-        enforced = room.power_management == POWER_MANAGEMENT_ENFORCED
-        holding_off: datetime | None = None
-        if enforced:
-            # 0.9.4, DR-067. A room that was running is turned off only once
-            # the shortfall has lasted `OFF_HOLD`, held at the gentlest bin
-            # until then. Until 0.9.4 one short reading turned it off.
-            was_on = previous[0] is not None if previous else running
-            afforded = bin_index
-            bin_index, since = hold_before_off(
-                bin_index,
-                was_on=was_on,
-                shortfall_since=self._shortfall_since.get(room.room_id),
+            # the plan is to cool: free cooling is advised from now, and the
+            # plan made again holds a start for 10 minutes before it goes out
+            run.free_cooling_since = now
+            await replan()
+        control: ControlResult | None = None
+        if heat is not None and fig is not None and run.control.plan is not None:
+            direction = 1 if run.control.plan.first.rate >= 0 else -1
+            outdoor = snap.outdoor_temperature.value
+            if outdoor is None:
+                outdoor = heat.last_outdoor
+            slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now)) - heat.u) if outdoor is not None else 0.0
+            control = run.control.cycle(
                 now=now,
+                t_est=heat.z[0],
+                slope_est=slope,
+                u_min=run.model.unit.lowest_rate(fig, direction),
+                top=_pid_top(top_rate(fig, direction),
+                             _ceilings(_budget_direction(run), econ.ceiling, self._draw_for_rate(run), fig),
+                             direction),
+                delivered=not run.not_delivered,
             )
-            if since is None:
-                self._shortfall_since.pop(room.room_id, None)
-            else:
-                self._shortfall_since[room.room_id] = since
-                if afforded is None and bin_index is not None:
-                    holding_off = since + OFF_HOLD
-        if previous is None or previous[0] != bin_index:
-            self._ceiling_bins[room.room_id] = (bin_index, now)
+        run.control_result = control
+        run.other_proposal = None  # the learned controller has no policy yet (4.9) [NYE]
+        if control is None:
+            control = ControlResult(StepKind.NONE, 0.0, None, run.control.arbiter.in_charge, None, None,
+                                    "no plan yet: the model has no reading to plan from")
+        u_min = run.model.unit.lowest_rate(fig, 1) if fig is not None else 0.0
+        delivery = run.delivery.deliver(now=now, control=control, snapshot=snap, comfort=comfort,
+                                        choices=run.state.choices, heat=heat, u_min=u_min,
+                                        cooling_held=run.free_cooling_since is not None)
+        run.delivery_result = delivery
+        run.step = run.limits.step(now=now, proposed=delivery, snapshot=snap, comfort=comfort, economics=econ,
+                                   choices=run.state.choices, shared_climate=shared_climate,
+                                   can_speak=self._engine() is not None)
 
-        guidance_note = (
-            " (guidance only, not enforced)"
-            if room.power_management == POWER_MANAGEMENT_GUIDANCE
-            else ""
-        )
-        trace.power_budget_kw = round(allowance_kw, 3)
-        trace.grid_importing_now = (
-            None if context.grid_import_w is None else context.grid_import_w > 0
-        )
-        coasting = trace.mode is Mode.COAST
-        if holding_off is not None:
-            trace.reasons.append(
-                "power budget: the "
-                f"{allowance_kw:.2f} kW allowance does not cover holding at "
-                "setpoint; held at the gentlest setting, and off at "
-                f"{dt_util.as_local(holding_off):%H:%M} unless it recovers"
-            )
-
-        if bin_index is None:
-            # Even holding at setpoint would exceed the allowance.
-            trace.power_bin = BIN_NAMES[0]
-            if enforced:
-                # 0.9.3, DR-063. Enforced means no grid import is the more
-                # important thing for this room, so it is stopped rather than
-                # held at the room's own temperature and still drawing.
-                trace.power_ceiling_c = None
-                trace.actuator = ActuatorStep.OFF
-                trace.hold_setpoint = False
-                trace.comfort_reduction_active = True
-                trace.reasons.append(
-                    "power budget: even holding at setpoint exceeds the "
-                    f"{allowance_kw:.2f} kW allowance; enforced, so the unit is "
-                    "off until the budget allows it"
-                )
-                return
-            trace.power_ceiling_c = 0.0
-            trace.reasons.append(
-                "power budget: even holding at setpoint exceeds the "
-                f"{allowance_kw:.2f} kW allowance; ceiling held at 0.0 C"
-                + guidance_note
-            )
-            return
-
-        if coasting:
-            # Nothing to throttle: the coasting step has no setpoint.
-            trace.reasons.append(
-                f"power budget: {allowance_kw:.2f} kW allowance, enough for this "
-                "room while it coasts"
-            )
-            return
-
-        trace.power_ceiling_c = self._BIN_CEILING_C[bin_index]
-        trace.power_bin = BIN_NAMES[bin_index]
-        # Whether the room is actually being held back by this right now:
-        # enforced, and the room needs correction.
-        trace.comfort_reduction_active = enforced and trace.demand is not None
-        # 0.9.7, DR-096. The pull-down bin has no limit; its 99 C stand-in is
-        # not printed, and nothing is said to be reduced when nothing is.
-        unlimited = trace.power_ceiling_c >= self._BIN_CEILING_C[-1]
-        if unlimited:
-            trace.comfort_reduction_active = False
-        trace.reasons.append(
-            f"power budget: {allowance_kw:.2f} kW allowance, "
-            f"{BIN_NAMES[bin_index]} bin, "
-            + (
-                "no limit on the setpoint"
-                if unlimited
-                else f"ceiling {trace.power_ceiling_c:.1f} C approach"
-            )
-            + (
-                guidance_note
-                if guidance_note
-                else ", comfort reduction in effect"
-                if trace.comfort_reduction_active
-                else ""
-            )
-        )
-
-    def _interval_at(self, at: datetime) -> Interval | None:
-        """The tariff interval in force, or None if there is no tariff.
-
-        Also None past the end of the fetched series, which is a fetch that
-        has been failing for a day rather than a plan with a gap in it. The
-        repair issue raised by the fetch says which.
-        """
-        if self.tariff is None:
+    def _plan_inputs(
+        self, run: RoomRun, now: datetime, prices: Sequence[float], p_max: float, econ: RoomEconomics
+    ) -> PlanInputs | None:
+        """Everything the plan works within; None without the 72 points
+        of weather the plan needs."""
+        snap, comfort, heat = run.snapshot, run.comfort_result, run.model.heat
+        assert snap is not None and comfort is not None and heat is not None
+        conds = run.conditions
+        if conds is None or len(comfort.points) < len(conds):
             return None
-        interval = self.tariff.interval_at(at)
-        if interval is None:
-            LOGGER.warning(
-                "The tariff series does not reach %s; it covers to %s",
-                at,
-                self.tariff.covers_until,
-            )
-        return interval
+        room = run.config
+        t, rh = snap.room_temperature.value, snap.room_humidity.value
+        if t is not None and rh is not None:
+            e_now = vapour_pressure(t, rh)
+        elif run.model.humidity is not None:
+            e_now = run.model.humidity.z[0]
+        else:
+            return None
+        units = run.outdoor_units
+        running = any(self._unit_running.get(u, False) for u in units)
+        starts = [self._running_since[u] for u in units if u in self._running_since]
+        stops = [self._stopped_since[u] for u in units if u in self._stopped_since]
+        rebound = 0
+        hum = run.model.humidity
+        if hum is not None and hum.last_wet_stop is not None:
+            left = COIL_REBOUND_S - (now - hum.last_wet_stop).total_seconds()
+            rebound = max(math.ceil(left / MODEL_STEP_S), 0)
+        profile = room.profile
+        last_kind = run.control.plan.first.kind if run.control.plan is not None else StepKind.REST
+        cool_cap, heat_cap = _ceilings(_budget_direction(run), econ.ceiling, self._draw_for_rate(run),
+                                       figures(heat.z))
+        return PlanInputs(
+            now=now,
+            heat=heat,
+            humidity=run.model.humidity,
+            e_now=e_now,
+            unit=run.model.unit,
+            bands=comfort.points,
+            conditions=conds,
+            prices=prices,
+            p_max=p_max,
+            draw_for_rate=self._draw_for_rate(run),
+            modes=frozenset(profile.hvac_modes) if profile is not None else frozenset(),
+            blind_control=room.allow_blind_control and bool(room.blinds),
+            transmission_now=snap.sun.transmission,
+            ceiling=cool_cap,
+            ceiling_heat=heat_cap,
+            waking=comfort.waking,
+            compressor_running=running,
+            running_since=max(starts) if running and starts else None,
+            stopped_since=max(stops) if not running and stops else None,
+            occupied=comfort.occupied,
+            free_cooling_advised_at=run.free_cooling_since,
+            rebound_steps=rebound,
+            last_kind=last_kind,
+        )
 
-    def interval_now(self) -> Interval | None:
-        """The interval in force right now, for the sensors."""
-        return self._interval_at(dt_util.utcnow())
+    async def _act_and_record(
+        self, run: RoomRun, now: datetime, states: Mapping[str, RawState], dt_s: float, system_unit: str
+    ) -> list[Speech]:
+        """8-9 for one room: send what is allowed, then the trace, the
+        scorecard and the warnings."""
+        result, snap, comfort = run.limits_result, run.snapshot, run.comfort_result
+        assert result is not None and snap is not None and comfort is not None
+        run.not_delivered = result.not_delivered  # [D054]
+        calls = run.act.calls(now=now, step=result, live=states, system_unit=system_unit, choices=run.state.choices)
+        about = CommandContext(run.control_result.rate if run.control_result else None,
+                               snap.room_temperature.value, comfort.centre_c)
+        records: list[CommandRecord] = []
+        if calls:
+            records = await async_send(self.hass, calls, room_id=run.config.room_id, log=self.commands, now=now,
+                                       about=about)
+        for rec in records:
+            if rec.ok:
+                self._last_command[rec.entity_id] = now  # Act tells Model what was sent [D081]
+                if rec.service == "set_temperature":
+                    head = next((h for h in result.heads if h.climate == rec.entity_id), None)
+                    if head is not None:
+                        run.commanded_c = head.setpoint
+        wanted = [h.wanted for h in (run.delivery_result.heads if run.delivery_result else ()) if h.wanted is not None]
+        if wanted:
+            run.wanted_c = wanted[0]
+        run.trace = trace(snapshot=snap, answers=run.answers, comfort=comfort, economics=run.economics,
+                          control=run.control_result, other_proposal=run.other_proposal,
+                          delivery=run.delivery_result, limits=result, choices=run.state.choices)
+        running = any(h.compressor is CompressorState.RUNNING for h in snap.heads)
+        draws = self._running_draws()
+        rid = run.config.room_id
+        # the room's own share of each outdoor unit it runs, not the whole unit's draw [D097];
+        # a share not yet learned leaves the day unpriced, never priced at 0
+        own = [d for (_u, r), d in draws.items() if r == rid]
+        learned = [d for d in own if d is not None]
+        draw = sum(learned) if running and own and len(learned) == len(own) else None
+        band = (comfort.band_low, comfort.band_high) if comfort.band_low is not None and comfort.band_high is not None \
+            else None
+        run.scorecard.observe(dt_s=dt_s, occupied=comfort.occupied, index=comfort.room_index, band=band,
+                              running=running, draw_kw=draw,
+                              price=snap.tariff_now.price if snap.tariff_now is not None else None)
+        weekly = run.model.trust.weekly_errors
+        run.scorecard.learning = weekly[-1][1] if weekly else None
+        # a sensor is present only when it was read: a unit's own reading
+        # standing in does not hide that it is lost [D074]
+        required = {run.config.temperature_sensor: snap.room_temperature.tag is ValueTag.MEASURED,
+                    run.config.humidity_sensor: snap.room_humidity.tag is ValueTag.MEASURED}
+        required.update({h.climate: h.available for h in snap.heads})
+        run.availability.update(required)
+        off_sent = any(r.ok and r.service == "set_hvac_mode" and r.data.get("hvac_mode") == "off" for r in records)
+        return run.warnings.to_say(
+            result.warnings,
+            room=run.config,
+            engine=self._engine(),
+            automatic=run.state.choices.automatic_control,
+            waiting_for_unit=any(not h.available for h in snap.heads),
+            asleep=comfort.sleeping,
+            unit_on_at_start=any(h.available and h.mode not in (None, "off") for h in snap.heads),
+            held_off=result.held_off,
+            off_sent=off_sent,
+        )
+
+    def _midnight(self, day: str) -> None:
+        """Every day at midnight: the scorecard and the model's day [Prop].
+        The arbiter's daily comparison needs the learned controller's
+        policy, which does not exist yet (4.9) [NYE], so it is not run."""
+        for run in self.rooms.values():
+            run.state.yesterday = run.scorecard.end_of_day()
+            run.model.end_of_day(day)
+        self.memory.learned()
+
+    # ------------------------------------------------------------------
+    # Speech and repairs
+    # ------------------------------------------------------------------
+
+    def _engine(self) -> str | None:
+        """The speech engine chosen; with none chosen, the only one Home
+        Assistant has [D069]."""
+        if self.house.tts_engine is not None:
+            return self.house.tts_engine
+        engines = self.hass.states.async_entity_ids(TTS_DOMAIN)
+        return engines[0] if len(engines) == 1 else None
+
+    def words(self, key: str, placeholders: Mapping[str, str]) -> str:
+        """The text of a spoken warning, from strings.json."""
+        text = self._words.get(f"component.{DOMAIN}.exceptions.spoken_{key}.message", key)
+        try:
+            return text.format(**placeholders)
+        except (KeyError, IndexError, ValueError):
+            return text
+
+    async def _speak(self, s: Speech) -> None:
+        """tts.speak; a failure is logged once, until speech works again
+        [D069]."""
+        try:
+            await self.hass.services.async_call(
+                TTS_DOMAIN, TTS_SERVICE,
+                {ATTR_ENTITY_ID: s.engine, "media_player_entity_id": list(s.media_players),
+                 "message": self.words(s.key, s.placeholders)},
+                blocking=True,
+            )
+        except (HomeAssistantError, ValueError) as err:
+            if not self._tts_failed:
+                _LOGGER.warning("A spoken warning could not be said through %s: %s", s.engine, err)
+            self._tts_failed = True
+            return
+        if self._tts_failed:
+            _LOGGER.info("Spoken warnings work again through %s", s.engine)
+        self._tts_failed = False
+
+    def _repairs(self, now: datetime, shared: Mapping[str, tuple[str, ...]]) -> None:
+        """Raise each repair while its cause stands; clear it when it goes
+        [R18]."""
+        facts = HouseFacts(
+            tariff_configured=self.house.tariff_entry is not None,
+            tariff_error=self.tariff.error,
+            unknown_constraints=self.tariff.unknown,
+            speech_wanted=any(r.config.announce and r.config.announce_through for r in self.rooms.values()),
+            speech_engine=self._engine(),
+            speech_engines_available=len(self.hass.states.async_entity_ids(TTS_DOMAIN)),
+            solar_forecast_configured=bool(self.house.solar_forecast_sources),
+            solar_forecast_error=self.solar_error,
+            grid_sign_contradicted=self.grid.sign_repair if self.grid is not None else False,
+            grid_import_kwh=self.grid.import_repair_kwh if self.grid is not None else None,
+            shared_climates=shared,
+        )
+        issues: list[Issue] = house_issues(facts)
+        # until Home Assistant has started, a sensor whose integration loads
+        # later has no state yet and is not gone [HA]
+        started = self.hass.state is CoreState.running
+        gone_now = {e for run in self.rooms.values()
+                    for e in (run.config.temperature_sensor, run.config.humidity_sensor)
+                    if started and _gone(self.hass, e)}
+        self._gone_since = {e: self._gone_since.get(e, now) for e in gone_now}
+        for run in self.rooms.values():
+            # gone for a quarter hour, so a platform that is only retrying,
+            # which leaves its config entry loaded, raises nothing [D046][Set]
+            missing = tuple(e for e in (run.config.temperature_sensor, run.config.humidity_sensor)
+                            if e in gone_now and (now - self._gone_since[e]).total_seconds() >= ROOM_SENSOR_GONE_REPAIR_S)
+            issues += room_issues(RoomFacts(run.config, missing, run.answers.last_correction, run.learning_since,
+                                            run.answers.last_reason), now)
+        wanted = {i.issue_id: (i.key, tuple(sorted(i.placeholders.items()))) for i in issues}
+        for issue_id in self._issues.keys() - wanted.keys():
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        for issue_id, (key, placeholders) in wanted.items():
+            if self._issues.get(issue_id) == (key, placeholders):
+                continue
+            # new, or its wording or figures changed: Home Assistant updates it in place
+            # (helpers/issue_registry.py, async_get_or_create, 2026.10.4) [HA]
+            ir.async_create_issue(self.hass, DOMAIN, issue_id, is_fixable=False, severity=ir.IssueSeverity.WARNING,
+                                  translation_key=key, translation_placeholders=dict(placeholders))
+        self._issues = wanted
+
+    def clear_repairs(self) -> None:
+        """When the entry unloads, its repairs go with it."""
+        for issue_id in self._issues:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        self._issues = {}
+
+    @staticmethod
+    def _room_failed(run: RoomRun) -> None:
+        """A room's cycle failed: logged once, with the error, until it runs
+        again; its sensors are unavailable meanwhile [R18]."""
+        run.failed = True
+        if not run.fail_logged:
+            _LOGGER.exception("%s: the cycle failed; its sensors are unavailable", run.config.name)
+            run.fail_logged = True
+
+    def _log_failures(self) -> None:
+        for run in self.rooms.values():
+            if not run.failed and run.fail_logged:
+                _LOGGER.info("%s: the cycle runs again", run.config.name)
+                run.fail_logged = False
+
+    # ------------------------------------------------------------------
+    # Publishing
+    # ------------------------------------------------------------------
+
+    def _publish(self) -> CycleData:
+        rooms = {rid: self._room_view(r) for rid, r in self.rooms.items()}
+        return CycleData(rooms, self._house_view())
+
+    def _room_view(self, run: RoomRun) -> RoomView:
+        snap, comfort = run.snapshot, run.comfort_result
+        if run.failed or snap is None or comfort is None:
+            return RoomView(False, None, {}, None, None, None, None, None, None, None, None, None, None, False, False,
+                            None, None, None, run.scorecard.yesterday, {})
+        t, rh = snap.room_temperature.value, snap.room_humidity.value
+        ot, orh, ow = snap.outdoor_temperature.value, snap.outdoor_humidity.value, snap.outdoor_wind_ms.value
+        band = run.trace.get("band") if isinstance(run.trace.get("band"), Mapping) else None
+        arbiter = run.control.arbiter
+        return RoomView(
+            ok=True,
+            mode=mode_state(run.limits_result, comfort),
+            trace=run.trace,
+            comfort_index=comfort.room_index,
+            band_low=comfort.band_low,
+            band_high=comfort.band_high,
+            position=band.get("position") if band else None,
+            target_c=comfort.centre_c,
+            commanded_c=run.commanded_c,
+            wanted_c=run.wanted_c,
+            dew_point_c=dew_point(t, rh) if t is not None and rh is not None else None,
+            outdoor_dew_point_c=dew_point(ot, orh) if ot is not None and orh is not None else None,
+            outdoor_apparent_c=(outdoor_apparent_temperature(ot, orh, ow or 0.0)
+                                if ot is not None and orh is not None else None),
+            free_cooling_advised=run.delivery_result.free_cooling_advised if run.delivery_result else False,
+            condensation_risk=run.delivery_result.condensation_risk if run.delivery_result else False,
+            in_charge=arbiter.in_charge.value,
+            plan=run.trace.get("plan"),
+            learning=run.scorecard.learning,
+            yesterday=run.scorecard.yesterday,
+            rl_score={"reason": arbiter.last_reason, "wins": [w for w in arbiter.wins],
+                      "since": arbiter.since.isoformat() if arbiter.since else None},
+        )
+
+    def _house_view(self) -> HouseView:
+        now = dt_util.utcnow()
+        snaps = [r.snapshot for r in self.rooms.values() if r.snapshot is not None]
+        first = snaps[0] if snaps else None
+        intervals = self.tariff.intervals
+        current: TariffInterval | None = next((i for i in intervals if i.start <= now < i.end), None)
+        if current is not None:
+            in_force = current.constraints
+        else:
+            in_force = ()
+        ot = first.outdoor_temperature.value if first else None
+        orh = first.outdoor_humidity.value if first else None
+        ow = first.outdoor_wind_ms.value if first else None
+        peak = max((h.temperature for h in first.forecast if h.temperature is not None), default=None) if first \
+            else None
+        stale = tuple(sorted({s for snap in snaps for s in snap.stale}))
+        total, per, cost, until, reaches = self._demand(now)
+        return HouseView(
+            demand_kwh=total,
+            demand_per_interval=per,
+            demand_until=until,
+            demand_to_tariff_change=reaches,
+            tariff_now=current.price if current is not None else None,
+            tariff_rate=current.rate_name if current is not None else None,
+            intervals=tuple({"start": i.start.isoformat(), "end": i.end.isoformat(), "rate": i.rate_name,
+                             "price": i.price, "constraints": list(i.constraints), "hints": list(i.hints)}
+                            for i in intervals),
+            constraints=in_force,
+            projected_cost=cost,
+            outdoor_c=ot,
+            outdoor_apparent_c=outdoor_apparent_temperature(ot, orh, ow or 0.0) if ot is not None and orh is not None
+            else None,
+            outdoor_dew_point_c=dew_point(ot, orh) if ot is not None and orh is not None else None,
+            forecast_peak_c=peak,
+            stale=stale,
+            rooms=len(self.rooms),
+        )
+
+    def _demand(self, now: datetime) -> tuple[float | None, tuple[Mapping[str, Any], ...], float | None,
+                                              datetime | None, bool]:
+        """The demand forecast from each room's plan in force, to the next
+        tariff change (economics.py) [D005]."""
+        plans = [(r.control.plan, self._draw_for_rate(r)) for r in self.rooms.values()
+                 if r.control.plan is not None and not r.failed]
+        f = forecast_to_change(plans, self.tariff.intervals, now)
+        if f is None:
+            return None, (), None, None, False
+        rows = tuple({"start": iv.start.isoformat(), "end": iv.end.isoformat(), "rate": iv.rate_name,
+                      "kwh": round(kwh, 3)} for iv, kwh in f.per_interval)
+        return round(f.kwh, 3), rows, round(f.cost, 2) if f.cost is not None else None, f.until, f.to_change
+
+    def grid_sign_suggestion(self, grid_kw: float | None) -> bool | None:
+        """Which way a positive grid reading points, from a moment of grid
+        evidence now (economics.py); None when there is none [D038]."""
+        snaps = [r.snapshot for r in self.rooms.values() if r.snapshot is not None]
+        if not snaps or grid_kw is None:
+            return None
+        load, solar = snaps[0].house_load_kw.value, snaps[0].solar_kw.value
+        if load is None or solar is None or not self._charges:
+            return None
+        fell = self._charges[-1][1] < self._charges[0][1]
+        return grid_evidence(load, solar, fell, grid_kw * 1000.0)
+
+    # ------------------------------------------------------------------
+    # The user acts [D064]
+    # ------------------------------------------------------------------
+
+    async def async_set_choices(self, room_id: str, action: UserAction, **changes: Any) -> None:
+        """Record the choice; Memory saves it within 5 seconds; plan again
+        and run the cycle now [D064]."""
+        run = self.rooms[room_id]
+        choices = replace(run.state.choices, **changes)
+        run.state.choices = choices_after_user_action(choices, action)
+        run.replan = True
+        self.memory.choice()
+        await self.async_refresh()
+
+    async def async_user_command(self, room_id: str, cmd: UserCommand, context: Context | None = None) -> None:
+        """A room control changed by the user: refused with a translated
+        reason while the component runs the room, otherwise sent to every
+        head [D049]; then the cycle runs now."""
+        run = self.rooms[room_id]
+        now = dt_util.utcnow()
+        records = await async_user_command(self.hass, run.config, run.state.choices, cmd, log=self.commands,
+                                           now=now, context=context)
+        for rec in records:
+            self._last_command[rec.entity_id] = now
+        await self.async_refresh()
+
+    def has_room(self, room_id: str) -> bool:
+        return room_id in self.rooms
+
+    # ------------------------------------------------------------------
+    # The rooms change (options saved; no reload) [R18]
+    # ------------------------------------------------------------------
+
+    async def async_rooms_changed(self) -> None:
+        """A room added gets its modules and is seeded; a room edited keeps
+        what it has learned; a room removed takes its device with it
+        [D031]."""
+        now = dt_util.utcnow()
+        wanted = {r.room_id: r for r in rooms_from_options(self.config_entry.options)}
+        added: list[str] = []
+        edited: list[str] = []
+        async with self._lock:
+            for rid in list(self.rooms):
+                if rid not in wanted:
+                    del self.rooms[rid]
+                    self._remove_device(rid)
+                    async_dispatcher_send(self.hass, SIGNAL_ROOM_REMOVED, rid)
+            for rid, room in wanted.items():
+                if rid in self.rooms:
+                    run = self.rooms[rid]
+                    if run.config != room:
+                        if run.config.name != room.name:
+                            self._rename_device(rid, room.name)
+                        profile = room.profile or run.state.profile or self._read_profile(room)
+                        if profile is not None:
+                            run.state.profile = profile
+                        run.edited(replace(room, profile=profile) if profile is not None else room)
+                        edited.append(rid)
+                else:
+                    self._add_room(room, now)
+                    added.append(rid)
+        await self.memory.async_write_now()
+        await self.async_refresh()
+        for rid in added:
+            async_dispatcher_send(self.hass, SIGNAL_ROOM_ADDED, rid)
+        for rid in edited:
+            async_dispatcher_send(self.hass, SIGNAL_ROOM_EDITED, rid)
+        self.start_seeding()
+
+    def start_seeding(self) -> None:
+        """Seed each new room from history, in the background."""
+        for rid in self.unseeded:
+            self.config_entry.async_create_background_task(self.hass, self.async_seed(rid), f"{DOMAIN} seed {rid}")
+        self.unseeded = []
+
+    def _rename_device(self, room_id: str, name: str) -> None:
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device_by_identifier((DOMAIN, room_id), self.config_entry.entry_id)
+        if device is not None:
+            registry.async_update_device(device.id, name=name)
+
+    def _remove_device(self, room_id: str) -> None:
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device_by_identifier((DOMAIN, room_id), self.config_entry.entry_id)
+        if device is not None:
+            registry.async_remove_device(device.id)
+
+    # ------------------------------------------------------------------
+    # Learning: seed and reset [Prop]
+    # ------------------------------------------------------------------
+
+    async def async_seed(self, room_id: str, *, reset: bool = False) -> None:
+        """Run the room's filters over the recorder's history. The replay
+        runs on a copy, in the executor, and replaces the room's model when
+        it is done, so the cycle is never held for it."""
+        run = self.rooms.get(room_id)
+        if run is None or run.seeding:
+            return
+        run.seeding = True
+        try:
+            if self.hass.is_stopping:
+                return
+            end = dt_util.utcnow()
+            days = recorder_keep_days(self.hass, RECORDER_KEEP_DAYS_DEFAULT)
+            start = end - timedelta(days=days)
+            ids = seed_entities(run.config, self.house)
+            try:
+                histories = await async_read_history(self.hass, ids, start, end)
+            except (HomeAssistantError, KeyError) as err:
+                _LOGGER.warning("%s: the recorder's history could not be read: %s", run.config.name, err)
+                return
+            # always from the starting figures: replaying old readings onto a
+            # filter already at now would learn them twice and out of time
+            # order, so seeding replaces what the room has learned [Prop]
+            model = RoomModel()
+            first = min((s.last_changed for h in histories.values() for s in h), default=None)
+            if first is None:
+                if reset:
+                    async with self._lock:
+                        run.state.model = model
+                        run.learning_since = end
+                        run.replan = True
+                return
+            result = await self.hass.async_add_executor_job(self._replay, model, run.config, histories,
+                                                            max(first, start), end)
+            if self._closing or room_id not in self.rooms:
+                return
+            if (model.heat is None or result.corrections == 0) and not reset:
+                # the history taught nothing: what the room has learned stands
+                _LOGGER.info("%s: seeded from %.1f days of history, which taught nothing; what it has learned "
+                             "stands", run.config.name, result.days)
+                return
+            async with self._lock:
+                run.state.model = model
+                run.learning_since = end
+                run.replan = True
+            self.memory.learned()
+            _LOGGER.info("%s: seeded from %.1f days of history, %d corrections", run.config.name, result.days,
+                         result.corrections)
+        finally:
+            run.seeding = False
+
+    def _replay(self, model: RoomModel, room: RoomConfig, histories: Mapping[str, Sequence[RawState]],
+                start: datetime, end: datetime) -> Any:
+        return replay(model, room=room, house=self.house, histories=histories, start=start, end=end,
+                      tz=dt_util.get_default_time_zone(),
+                      location=(self.hass.config.latitude, self.hass.config.longitude),
+                      system_temperature_unit=self.hass.config.units.temperature_unit,
+                      stop=lambda: self._closing)
+
+    # ------------------------------------------------------------------
+    # Diagnostics [D052]
+    # ------------------------------------------------------------------
 
     @callback
-    def _note_availability(self, entity_id: str, available: bool) -> None:
-        """Log each availability transition once, not once per evaluation."""
-        if available:
-            if entity_id in self._unavailable:
-                self._unavailable.discard(entity_id)
-                LOGGER.info("%s is available again", entity_id)
-            return
-        if entity_id not in self._unavailable:
-            self._unavailable.add(entity_id)
-            LOGGER.warning(
-                "%s is unavailable; rooms depending on it will hold or stop "
-                "actuating until it returns",
-                entity_id,
-            )
+    def diagnostics(self) -> dict[str, Any]:
+        from .memory import choices_to_dict, profile_to_dict, room_to_dict
 
-    def _fresh(
-        self,
-        entity_id: str,
-        state: State,
-        tolerance: timedelta | None,
-        room_id: str | None,
-    ) -> bool:
-        """Whether a state is recent enough to act on.
-
-        Home Assistant keeps the last known state of a device that has fallen
-        off the network for as long as it is configured, so a reading that is
-        present is not the same as a reading that is current.
-
-        0.9.3, DR-066. Age is measured from `last_reported`, not
-        `last_updated`. `last_updated` only moves when the value or an
-        attribute changes, so a sensor reporting the same temperature for two
-        hours read as two hours stale, and the room held with no reading.
-        `last_reported` moves on every report, changed or not. A sensor that
-        reports nothing at all is still caught.
-
-        0.9.6, DR-070. Room temperature and humidity have no age limit
-        (`INDOOR_TOLERANCE` is None), so they pass here at any age and only
-        an unavailable or unknown state makes them absent.
-        """
-        verdict = assess(
-            max(state.last_updated, state.last_reported), dt_util.utcnow(), tolerance
-        )
-        if verdict.fresh:
-            return True
-        note = f"{entity_id}: {verdict.reason}"
-        if room_id is not None:
-            self._stale.setdefault(room_id, []).append(note)
-        if entity_id not in self._unavailable:
-            self._unavailable.add(entity_id)
-            LOGGER.warning("%s", note)
-        return False
-
-    def _number(
-        self,
-        entity_id: str | None,
-        tolerance: timedelta | None = INDOOR_TOLERANCE,
-        room_id: str | None = None,
-    ) -> float | None:
-        """A numeric reading, or None where there is none or it is stale."""
-        if entity_id is None:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is not None and not self._fresh(
-            entity_id, state, tolerance, room_id
-        ):
-            return None
-        if state is None or state.state.lower() in _NON_NUMERIC:
-            self._note_availability(entity_id, available=False)
-            return None
-        try:
-            value = float(state.state)
-        except ValueError:
-            # Logged once, on the transition, like any other unavailable
-            # reading. Until 0.9.3 this warned on every evaluation, every
-            # thirty seconds, for as long as the sensor kept the value.
-            if entity_id not in self._unavailable:
-                LOGGER.warning(
-                    "%s reported a non-numeric value: %s", entity_id, state.state
-                )
-            self._note_availability(entity_id, available=False)
-            return None
-        self._note_availability(entity_id, available=True)
-        return value
-
-    def _opening_open_since(self, room: RoomConfig) -> datetime | None:
-        """When the longest-open opening in this room opened.
-
-        `last_changed` rather than anything tracked here: it survives a
-        restart, and a window that was already open before Home Assistant
-        came up should not buy itself a fresh grace.
-
-        None where nothing is open. An opening whose reading is too old to
-        trust is not counted as open at all (see `_bool`), so an open opening
-        always has a state, and with it a time it last changed.
-        """
-        opened: list[datetime] = []
-        for entity_id in room.opening_entity_ids:
-            if self._bool(entity_id, CONTACT_TOLERANCE, room.room_id) is not True:
-                continue
-            state = self.hass.states.get(entity_id)
-            if state is not None:
-                opened.append(state.last_changed)
-        return min(opened) if opened else None
-
-    def _warn_about_opening(
-        self, room: RoomConfig, inputs: RoomInputs, now: datetime
-    ) -> None:
-        """Queue the spoken warnings for an open window or door (DR-050).
-
-        0.9.6, DR-073. Nothing is said for an opening made while outdoor air
-        was judged better than the room's: that is what was advised, and the
-        unit is stopped for it without a warning.
-        """
-        warnings = self._opening_warnings.setdefault(
-            room.room_id, OpeningWarningState()
-        )
-        announcement = evaluate_opening_warnings(
-            warnings,
-            open_since=inputs.opening_open_since if inputs.opening_open else None,
-            now=now,
-            grace=timedelta(minutes=room.opening_grace_minutes),
-            warning_grace=room.grace.warning_grace,
-            announce=room.grace.announce and not inputs.free_cooling_advised,
-        )
-        if announcement is not Announcement.NONE:
-            self._pending_announcements.append((room, announcement))
-
-    def _bool(
-        self,
-        entity_id: str | None,
-        tolerance: timedelta | None = CONTACT_TOLERANCE,
-        room_id: str | None = None,
-    ) -> bool | None:
-        """An on/off reading, or None where there is none or it is stale."""
-        if entity_id is None:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is not None and not self._fresh(
-            entity_id, state, tolerance, room_id
-        ):
-            return None
-        if state is None or state.state.lower() in _NON_NUMERIC:
-            self._note_availability(entity_id, available=False)
-            return None
-        self._note_availability(entity_id, available=True)
-        return state.state == "on"
-
-
-def _comfort_modes_from_store(
-    stored: Mapping[str, str], rooms: set[str]
-) -> dict[str, ComfortMode]:
-    """The kept Comfort modes for rooms that still exist (DR-058).
-
-    A value this build does not know, or a kept Schedule, is dropped: the
-    room is on Schedule, which is what it would be with nothing kept.
-    """
-    modes: dict[str, ComfortMode] = {}
-    for room_id, value in stored.items():
-        if room_id not in rooms:
-            continue
-        try:
-            mode = ComfortMode(value)
-        except ValueError:
-            continue
-        if mode is not ComfortMode.SCHEDULE:
-            modes[room_id] = mode
-    return modes
-
-
-def _watched_entities(rooms: dict[str, RoomConfig]) -> set[str]:
-    """Every entity the coordinator reads, across all rooms."""
-    watched: set[str] = set()
-    for room in rooms.values():
-        watched.update(
-            entity_id
-            for entity_id in (
-                room.temperature_entity_id,
-                room.humidity_entity_id,
-                room.presence_entity_id,
-                room.direct_sun_entity_id,
-                room.heat_load_entity_id,
-                room.air_movement_entity_id,
-                room.sleep_schedule_entity_id,
-            )
-            if entity_id
-        )
-        watched.update(room.climate_entity_ids)
-        watched.update(room.opening_entity_ids)
-        watched.update(room.cover_entity_ids)
-    return watched
-
-
-def _rooms_from_entry(entry: HvacConfigEntry) -> dict[str, RoomConfig]:
-    """Build room objects from configuration.
-
-    Bad configuration raises ConfigEntryError, which Home Assistant shows on
-    the integration page. Letting a KeyError or a ValueError escape here would
-    surface as an unhandled traceback in the log and tell the user nothing.
-    """
-    rooms: dict[str, RoomConfig] = {}
-    raw_rooms: list[dict[str, Any]] = entry.options.get(
-        CONF_ROOMS, entry.data.get(CONF_ROOMS, [])
-    )
-    for raw in raw_rooms:
-        try:
-            bands = {
-                Mode(name): ComfortBand(
-                    low=values[CONF_BAND_LOW], high=values[CONF_BAND_HIGH]
-                )
-                for name, values in raw.get(CONF_BANDS, {}).items()
+        rooms: dict[str, Any] = {}
+        for rid, run in self.rooms.items():
+            r = run.config
+            rooms[rid] = {
+                "settings": settings_dict(r),
+                "choices": choices_to_dict(run.state.choices),
+                "profile": profile_to_dict(r.profile) if r.profile else None,
+                "learned": room_to_dict(run.state),
+                "plan": run.trace.get("plan"),
+                "in_charge": run.control.arbiter.in_charge.value,
+                "arbiter": run.control.arbiter.as_dict(),
+                "yesterday": run.scorecard.as_dict(),
+                "compressors": run.trace.get("compressors"),
+                "trace": run.trace,
+                "failed": run.failed,
             }
-        except (KeyError, TypeError, ValueError) as err:
-            raise ConfigEntryError(
-                translation_domain=DOMAIN,
-                translation_key="room_bands_invalid",
-                translation_placeholders={
-                    "room_id": str(raw.get(CONF_ROOM_ID, "?")),
-                    "error": str(err),
-                },
-            ) from err
-
-        try:
-            room = _room_from_raw(raw, bands)
-        except KeyError as err:
-            raise ConfigEntryError(
-                translation_domain=DOMAIN,
-                translation_key="room_setting_missing",
-                translation_placeholders={
-                    "room_id": str(raw.get(CONF_ROOM_ID, "?")),
-                    "setting": str(err),
-                },
-            ) from err
-        rooms[room.room_id] = room
-    return _lock_out_shared_climate(rooms)
+        return {
+            "rooms": rooms,
+            "last_command": {e: t.isoformat() for e, t in self._last_command.items()},
+            "commands": [
+                {"time": c.time.isoformat(), "room_id": c.room_id, "entity_id": c.entity_id, "service": c.service,
+                 "data": dict(c.data), "rate": c.rate, "room_temperature": c.room_temperature,
+                 "centre_c": c.centre_c, "by_user": c.by_user, "ok": c.ok, "error": c.error}
+                for c in self.commands.records
+            ],
+            "draw": self.house_state.draw.as_dict(),
+            "power_budget": {"allowance_kw": self.budget.last_allowance, "reason": self.budget.last_reason},
+            "tariff": {"error": self.tariff.error, "unknown": sorted(self.tariff.unknown),
+                       "read_at": self.tariff_read_at.isoformat() if self.tariff_read_at else None,
+                       "intervals": list(self.data.house.intervals) if self.data else []},
+            "forecast": {"hours": len(self.forecast), "error": self.forecast_error,
+                         "solar_hours": len(self.solar or []), "solar_error": self.solar_error},
+            "demand": {"kwh": self.data.house.demand_kwh if self.data else None,
+                       "until": self.data.house.demand_until.isoformat()
+                       if self.data and self.data.house.demand_until else None,
+                       "per_interval": list(self.data.house.demand_per_interval) if self.data else []},
+        }
 
 
-def _lock_out_shared_climate(
-    rooms: dict[str, RoomConfig],
-) -> dict[str, RoomConfig]:
-    """Lock out every room that shares its climate entity with another.
+def settings_dict(r: RoomConfig) -> dict[str, Any]:
+    """Every setting of a room, unset ones stated as unset [D048]."""
 
-    Two rooms driving one entity each command their own solved setpoint every
-    cycle, and each one's dedupe cache in `actuator.py` sees only its own
-    writes — so nothing errors, nothing logs, and the unit is left doing
-    whichever arrived last. The configuration is reachable through the options
-    flow today.
+    def v(x: Any) -> Any:
+        if x is None or x == ():
+            return "unset"
+        if isinstance(x, tuple):
+            return list(x)
+        return x
 
-    A lockout is used rather than a `ConfigEntryError` because refusing to load
-    the entry would take every correctly configured room down with the two that
-    are not. The affected rooms stop actuating, say why in their trace, and a
-    repair issue names the entity and the rooms.
-    """
-    claimed: dict[str, list[str]] = {}
-    for room in rooms.values():
-        for entity_id in room.climate_entity_ids:
-            claimed.setdefault(entity_id, []).append(room.room_id)
+    return {
+        "name": r.name,
+        "air_conditioners": [{"climate": h.climate, "outdoor_unit": v(h.outdoor_unit),
+                              "frequency_sensor": v(h.frequency_sensor)} for h in r.heads],
+        "temperature_sensor": r.temperature_sensor,
+        "humidity_sensor": r.humidity_sensor,
+        "presence_sensor": v(r.presence_sensor),
+        "sleep_schedule": v(r.sleep_schedule),
+        "sun_sensor": v(r.sun_sensor),
+        "openings": v(r.openings),
+        "blinds": v(r.blinds),
+        "allow_blind_control": r.allow_blind_control,
+        "window_facing": v(r.window_facing),
+        "overhang_projection_m": v(r.overhang_projection_m),
+        "overhang_height_m": v(r.overhang_height_m),
+        "occupied_after_min": r.occupied_after_s / 60.0,
+        "empty_after_min": r.empty_after_s / 60.0,
+        "warning_grace_min": r.warning_grace_s / 60.0,
+        "announce": r.announce,
+        "announce_through": v(r.announce_through),
+        "opening_grace_min": r.opening_grace_s / 60.0,
+        "lockout_reason": v(r.lockout_reason),
+        "occupied_band": list(r.occupied_band),
+        "sleep_band": list(r.sleep_band),
+        "precool_band": list(r.precool_band),
+        "power_management": r.power_management.value,
+    }
 
-    for entity_id, room_ids in claimed.items():
-        if len(room_ids) < 2:
-            continue
-        others = {room_id: rooms[room_id].name for room_id in room_ids}
-        for room_id in room_ids:
-            named = sorted(name for key, name in others.items() if key != room_id)
-            rooms[room_id] = replace(
-                rooms[room_id],
-                lockout_reason=(
-                    f"{entity_id} is also configured for "
-                    f"{', '.join(named)}; one climate entity cannot be driven "
-                    "by more than one room"
-                ),
-            )
-    return rooms
-
-
-def _heads(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    """A room's heads, reading either shape.
-
-    The scalar `climate_entity_id` is pre-0.8.8. The migration rewrites every
-    stored room, so this fallback exists for an entry that is being read
-    before migration has run, and for nothing else.
-    """
-    heads = raw.get(CONF_CLIMATE_ENTITIES)
-    if heads:
-        return tuple(str(entity) for entity in heads)
-    single = raw.get(CONF_CLIMATE_ENTITY)
-    return (str(single),) if single else ()
-
-
-def _room_from_raw(
-    raw: dict[str, Any], bands: dict[Mode, ComfortBand]
-) -> RoomConfig:
-    """Build one room. Raises KeyError if a required field is absent."""
-    return RoomConfig(
-        room_id=raw[CONF_ROOM_ID],
-        name=raw["name"],
-        climate_entity_ids=_heads(raw),
-        head_groups={
-            str(entity): str(group)
-            for entity, group in (raw.get(CONF_HEAD_GROUPS) or {}).items()
-            if group
-        },
-        bands=bands,
-        temperature_entity_id=raw.get(CONF_TEMPERATURE_ENTITY),
-        humidity_entity_id=raw.get(CONF_HUMIDITY_ENTITY),
-        presence_entity_id=raw.get(CONF_PRESENCE_ENTITY),
-        sleep_schedule_entity_id=raw.get(CONF_SLEEP_SCHEDULE_ENTITY),
-        direct_sun_entity_id=raw.get(CONF_DIRECT_SUN_ENTITY),
-        window_direction=raw.get(CONF_WINDOW_DIRECTION),
-        overhang_projection_m=raw.get(CONF_OVERHANG_PROJECTION),
-        overhang_height_m=raw.get(CONF_OVERHANG_HEIGHT),
-        heat_load_entity_id=raw.get(CONF_HEAT_LOAD_ENTITY),
-        air_movement_entity_id=raw.get(CONF_FAN_ENTITY),
-        grace=GraceSettings.from_minutes(
-            occupied_after=raw.get(CONF_OCCUPIED_AFTER),
-            vacant_after=raw.get(CONF_VACANT_AFTER),
-            warning_grace=raw.get(CONF_WARNING_GRACE),
-            announce=bool(raw.get(CONF_ANNOUNCE, False)),
-        ),
-        announce_target_entity_ids=tuple(raw.get(CONF_ANNOUNCE_TARGETS, []) or []),
-        opening_entity_ids=tuple(raw.get(CONF_OPENING_ENTITIES, []) or []),
-        cover_entity_ids=tuple(raw.get(CONF_COVER_ENTITIES, []) or []),
-        allow_cover_control=bool(raw.get(CONF_ALLOW_COVER_CONTROL, True)),
-        lockout_reason=raw.get(CONF_LOCKOUT_REASON),
-        power_management=power_management_from_raw(
-            raw.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
-        ),
-        opening_grace_minutes=_opening_grace_from_raw(raw.get(CONF_OPENING_GRACE)),
-        capabilities=RoomCapabilities.from_dict(raw.get(CONF_CAPABILITIES)),
-    )
-
-
-def _opening_grace_from_raw(value: object) -> float:
-    """A room's opening grace in minutes, five where none is stored."""
-    try:
-        minutes = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return DEFAULT_OPENING_GRACE_MINUTES
-    return minutes if minutes >= 0 else DEFAULT_OPENING_GRACE_MINUTES
-
-
-def _announcement_text(room: RoomConfig, announcement: Announcement) -> str:
-    """What to say. Plain, and it names the room so it is unambiguous."""
-    if announcement is Announcement.FREE_COOLING:
-        return (
-            f"Opening the windows would help the {room.name} right now — it's "
-            "cooler and drier outside than in."
-        )
-    if announcement is Announcement.OPENING_FIRST_WARNING:
-        minutes = int(room.grace.warning_grace.total_seconds() // 60)
-        return (
-            f"A window or door in the {room.name} has been open for a while. "
-            f"The air conditioning will turn off in about {minutes} minutes "
-            "unless it is closed."
-        )
-    if announcement is Announcement.OPENING_FINAL_WARNING:
-        return (
-            f"Turning the {room.name} air conditioning off because a window or "
-            "door is open."
-        )
-    minutes = int(room.grace.vacant_after.total_seconds() // 60)
-    if announcement is Announcement.FIRST_WARNING:
-        return (
-            f"The {room.name} has been empty for {minutes} minutes and the air "
-            "conditioning is still running."
-        )
-    return f"Turning the {room.name} air conditioning off."

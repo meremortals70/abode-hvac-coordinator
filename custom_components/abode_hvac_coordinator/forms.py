@@ -1,499 +1,462 @@
-"""Pure helpers for turning setup forms into stored configuration.
+"""Form answers to stored settings and back (Section 8, forms.py) [Set].
 
-No Home Assistant imports, so the shaping of configuration can be tested
-directly. `config_flow.py` owns the schemas and the step sequence; everything
-here is data in, data out.
+Turns what the setup and options screens collect into the house's and the
+rooms' settings, fills in defaults, checks the bands, and writes the
+plain-English summary shown on the options menu. It imports nothing from
+Home Assistant, so it is tested without it.
+
+Stored shapes. The config entry's data holds the house: the House screens'
+answers under the CONF_ keys of const.py. Its options hold the rooms, a list
+under "rooms", each a dictionary of the Room screens' answers plus the room
+id and the capability profile read when the room was saved; and the names
+already used for outdoor units and lockout reasons, for the dropdowns.
+Minutes stay minutes in storage, as the screens show them.
 """
 
 from __future__ import annotations
 
-import re
+import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .const import (
-    CONF_ALLOW_COMFORT_REDUCTION,
-    CONF_ALLOW_COVER_CONTROL,
+    CONF_ALLOW_BLIND_CONTROL,
     CONF_ANNOUNCE,
-    CONF_ANNOUNCE_TARGETS,
-    CONF_BAND_HIGH,
-    CONF_BAND_LOW,
-    CONF_BANDS,
-    CONF_CLIMATE_ENTITIES,
-    CONF_COVER_ENTITIES,
-    CONF_DIRECT_SUN_ENTITY,
-    CONF_FAN_ENTITY,
-    CONF_HEAD_GROUPS,
-    CONF_HEAT_LOAD_ENTITY,
-    CONF_HUMIDITY_ENTITY,
+    CONF_ANNOUNCE_THROUGH,
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_MAX_DISCHARGE,
+    CONF_BATTERY_SIZE,
+    CONF_BLINDS,
+    CONF_CLIMATE,
+    CONF_EMPTY_AFTER,
+    CONF_FREQUENCY_SENSOR,
+    CONF_GRID_POSITIVE_IS_IMPORT,
+    CONF_GRID_POWER,
+    CONF_HEADS,
+    CONF_HOUSE_LOAD,
+    CONF_HUMIDITY_SENSOR,
     CONF_LOCKOUT_REASON,
+    CONF_NAME,
     CONF_OCCUPIED_AFTER,
-    CONF_OPENING_ENTITIES,
+    CONF_OCCUPIED_HIGH,
+    CONF_OCCUPIED_LOW,
     CONF_OPENING_GRACE,
+    CONF_OPENINGS,
+    CONF_OUTDOOR_HUMIDITY,
+    CONF_OUTDOOR_TEMPERATURE,
+    CONF_OUTDOOR_UNIT,
+    CONF_OUTDOOR_WIND,
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
-    CONF_PRESENCE_ENTITY,
+    CONF_POWER_MANAGEMENT,
+    CONF_PRECOOL_HIGH,
+    CONF_PRECOOL_LOW,
+    CONF_PRESENCE_SENSOR,
+    CONF_PROFILE,
+    CONF_RESERVE_MARGIN,
     CONF_ROOM_ID,
-    CONF_SLEEP_SCHEDULE_ENTITY,
-    CONF_TEMPERATURE_ENTITY,
-    CONF_VACANT_AFTER,
+    CONF_ROOMS,
+    CONF_SLEEP_HIGH,
+    CONF_SLEEP_LOW,
+    CONF_SLEEP_SCHEDULE,
+    CONF_SOLAR_FORECAST_SOURCES,
+    CONF_SOLAR_POWER,
+    CONF_SUN_SENSOR,
+    CONF_TARIFF_ENTRY,
+    CONF_TEMPERATURE_SENSOR,
+    CONF_TTS_ENGINE,
     CONF_WARNING_GRACE,
-    CONF_WINDOW_DIRECTION,
-    DEFAULT_BANDS,
+    CONF_WEATHER,
+    CONF_WINDOW_FACING,
+    DEFAULT_ALLOW_BLIND_CONTROL,
+    DEFAULT_ANNOUNCE,
+    DEFAULT_EMPTY_AFTER_MIN,
     DEFAULT_LOCKOUT_REASONS,
-    NOT_LOCKED_OUT,
-    OWN_OUTDOOR_UNIT,
-    POWER_MANAGEMENT_ENFORCED,
-    POWER_MANAGEMENT_GUIDANCE,
-    POWER_MANAGEMENT_OFF,
+    DEFAULT_OCCUPIED_AFTER_MIN,
+    DEFAULT_OCCUPIED_BAND,
+    DEFAULT_OPENING_GRACE_MIN,
+    DEFAULT_PRECOOL_BAND,
+    DEFAULT_SLEEP_BAND,
+    DEFAULT_WARNING_GRACE_MIN,
+    LOCKOUT_NOT_LOCKED_OUT,
+    WINDOW_FACINGS,
 )
-from .grace import (
-    DEFAULT_OCCUPIED_AFTER,
-    DEFAULT_VACANT_AFTER,
-    DEFAULT_WARNING_GRACE,
+from .memory import profile_from_dict, profile_to_dict
+from .models import (
+    CapabilityProfile,
+    HeadConfig,
+    HouseConfig,
+    PowerManagement,
+    RoomConfig,
 )
-from .models import Mode
-from .modes import DEFAULT_OPENING_GRACE_MINUTES
+from .observe import _POWER_KW
 
-#: Modes that carry a band of their own. Unoccupied is off, precondition uses
-#: the occupied band, coast inherits, lockout never actuates.
-BAND_MODES = (Mode.OCCUPIED, Mode.SLEEP, Mode.PRECOOL)
+# Option keys beside the rooms: names already used, for the dropdowns [Set]
+CONF_OUTDOOR_UNIT_NAMES = "outdoor_unit_names"
+CONF_LOCKOUT_REASONS = "lockout_reasons"
 
+# The room settings each screen collects
+ROOM_SCREEN_1 = (
+    CONF_NAME, CONF_CLIMATE, CONF_TEMPERATURE_SENSOR, CONF_HUMIDITY_SENSOR, CONF_PRESENCE_SENSOR,
+    CONF_SLEEP_SCHEDULE, CONF_SUN_SENSOR, CONF_OPENINGS, CONF_BLINDS, CONF_ALLOW_BLIND_CONTROL,
+    CONF_WINDOW_FACING, CONF_OVERHANG_PROJECTION, CONF_OVERHANG_HEIGHT, CONF_OCCUPIED_AFTER, CONF_EMPTY_AFTER,
+    CONF_WARNING_GRACE, CONF_ANNOUNCE, CONF_ANNOUNCE_THROUGH, CONF_OPENING_GRACE, CONF_LOCKOUT_REASON,
+)
+BAND_KEYS = (
+    (CONF_OCCUPIED_LOW, CONF_OCCUPIED_HIGH),
+    (CONF_SLEEP_LOW, CONF_SLEEP_HIGH),
+    (CONF_PRECOOL_LOW, CONF_PRECOOL_HIGH),
+)
+ROOM_SCREEN_3 = (*(k for pair in BAND_KEYS for k in pair), CONF_POWER_MANAGEMENT)
 
-def power_management_from_raw(value: Any) -> str:
-    """Coerce a stored power-management value, old or new, to one of the
-    three current states.
+ROOM_DEFAULTS: dict[str, Any] = {
+    CONF_ALLOW_BLIND_CONTROL: DEFAULT_ALLOW_BLIND_CONTROL,
+    CONF_OCCUPIED_AFTER: DEFAULT_OCCUPIED_AFTER_MIN,
+    CONF_EMPTY_AFTER: DEFAULT_EMPTY_AFTER_MIN,
+    CONF_WARNING_GRACE: DEFAULT_WARNING_GRACE_MIN,
+    CONF_ANNOUNCE: DEFAULT_ANNOUNCE,
+    CONF_OPENING_GRACE: DEFAULT_OPENING_GRACE_MIN,
+    CONF_LOCKOUT_REASON: LOCKOUT_NOT_LOCKED_OUT,
+    CONF_OCCUPIED_LOW: DEFAULT_OCCUPIED_BAND[0],
+    CONF_OCCUPIED_HIGH: DEFAULT_OCCUPIED_BAND[1],
+    CONF_SLEEP_LOW: DEFAULT_SLEEP_BAND[0],
+    CONF_SLEEP_HIGH: DEFAULT_SLEEP_BAND[1],
+    CONF_PRECOOL_LOW: DEFAULT_PRECOOL_BAND[0],
+    CONF_PRECOOL_HIGH: DEFAULT_PRECOOL_BAND[1],
+    CONF_POWER_MANAGEMENT: PowerManagement.OFF.value,
+}
 
-    Pre-0.8.12 installs stored a plain bool: True meant the ceiling was
-    enforced, False meant power management did not touch the room at all.
-    Those map straight onto the two states that existed then. Anything else
-    unrecognised — a stale value, a typo written by hand — falls back to
-    "off" rather than guessing at enforcement.
-    """
-    if isinstance(value, bool):
-        return POWER_MANAGEMENT_ENFORCED if value else POWER_MANAGEMENT_OFF
-    if isinstance(value, str) and value in (
-        POWER_MANAGEMENT_OFF,
-        POWER_MANAGEMENT_GUIDANCE,
-        POWER_MANAGEMENT_ENFORCED,
-    ):
-        return value
-    return POWER_MANAGEMENT_OFF
-
-
-def slug(name: str) -> str:
-    """Derive a stable room id from the room name."""
-    return re.sub(r"[^a-z0-9_]+", "_", name.strip().lower()).strip("_")
-
-
-def room_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Turn the room form into a stored room.
-
-    The lockout reason is deliberately left empty here. It is filled in by the
-    lockout step, which is only reached when the box was ticked, so an
-    unticked room can never carry a reason left over from a previous edit.
-    """
-    return {
-        CONF_ROOM_ID: slug(user_input["name"]),
-        "name": user_input["name"],
-        CONF_CLIMATE_ENTITIES: list(user_input[CONF_CLIMATE_ENTITIES]),
-        CONF_TEMPERATURE_ENTITY: user_input.get(CONF_TEMPERATURE_ENTITY),
-        CONF_HUMIDITY_ENTITY: user_input.get(CONF_HUMIDITY_ENTITY),
-        CONF_PRESENCE_ENTITY: user_input.get(CONF_PRESENCE_ENTITY),
-        CONF_SLEEP_SCHEDULE_ENTITY: user_input.get(CONF_SLEEP_SCHEDULE_ENTITY),
-        CONF_DIRECT_SUN_ENTITY: user_input.get(CONF_DIRECT_SUN_ENTITY),
-        CONF_HEAT_LOAD_ENTITY: user_input.get(CONF_HEAT_LOAD_ENTITY),
-        CONF_FAN_ENTITY: user_input.get(CONF_FAN_ENTITY),
-        CONF_WINDOW_DIRECTION: user_input.get(CONF_WINDOW_DIRECTION),
-        CONF_OVERHANG_PROJECTION: user_input.get(CONF_OVERHANG_PROJECTION),
-        CONF_OVERHANG_HEIGHT: user_input.get(CONF_OVERHANG_HEIGHT),
-        CONF_OPENING_ENTITIES: user_input.get(CONF_OPENING_ENTITIES, []),
-        CONF_COVER_ENTITIES: user_input.get(CONF_COVER_ENTITIES, []),
-        CONF_ALLOW_COVER_CONTROL: bool(
-            user_input.get(CONF_ALLOW_COVER_CONTROL, True)
-        ),
-        CONF_OCCUPIED_AFTER: user_input.get(CONF_OCCUPIED_AFTER),
-        CONF_VACANT_AFTER: user_input.get(CONF_VACANT_AFTER),
-        CONF_WARNING_GRACE: user_input.get(CONF_WARNING_GRACE),
-        CONF_ANNOUNCE: bool(user_input.get(CONF_ANNOUNCE, False)),
-        CONF_ANNOUNCE_TARGETS: user_input.get(CONF_ANNOUNCE_TARGETS, []),
-        CONF_OPENING_GRACE: opening_grace_from_input(user_input),
-        CONF_LOCKOUT_REASON: _lockout_reason(user_input.get(CONF_LOCKOUT_REASON)),
-        CONF_ALLOW_COMFORT_REDUCTION: power_management_from_raw(
-            user_input.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
-        ),
-    }
+HOUSE_KEYS = (
+    CONF_TARIFF_ENTRY, CONF_OUTDOOR_TEMPERATURE, CONF_OUTDOOR_HUMIDITY, CONF_OUTDOOR_WIND, CONF_WEATHER,
+    CONF_BATTERY_CHARGE, CONF_BATTERY_SIZE, CONF_BATTERY_MAX_DISCHARGE, CONF_SOLAR_POWER, CONF_HOUSE_LOAD,
+    CONF_RESERVE_MARGIN, CONF_GRID_POWER, CONF_GRID_POSITIVE_IS_IMPORT, CONF_SOLAR_FORECAST_SOURCES,
+    CONF_TTS_ENGINE,
+)
 
 
-def opening_grace_from_input(user_input: dict[str, Any]) -> float:
-    """The room form's opening grace, in minutes (DR-050).
+# --------------------------------------------------------------------------
+# Reading values
+# --------------------------------------------------------------------------
 
-    Five where the field is blank or not a usable number. Zero is allowed and
-    means the unit is stopped as soon as an opening is seen open.
-    """
+
+def _text(value: Any) -> str | None:
+    """A non-empty string, or None."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    v = float(value)
+    return v if math.isfinite(v) else None
+
+
+def _texts(value: Any) -> tuple[str, ...]:
+    """A list of entity ids or names, empty ones and repeats left out."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(dict.fromkeys(t for t in (_text(v) for v in value) if t is not None))
+
+
+def _flag(value: Any, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _minutes(value: Any, default: float) -> float:
+    n = _number(value)
+    return n if n is not None and n >= 0.0 else default
+
+
+# --------------------------------------------------------------------------
+# The house
+# --------------------------------------------------------------------------
+
+
+def house_from_data(data: Mapping[str, Any]) -> HouseConfig:
+    """The house's settings from the config entry's data."""
+    grid_sign = data.get(CONF_GRID_POSITIVE_IS_IMPORT)
+    return HouseConfig(
+        tariff_entry=_text(data.get(CONF_TARIFF_ENTRY)),
+        outdoor_temperature=_text(data.get(CONF_OUTDOOR_TEMPERATURE)),
+        outdoor_humidity=_text(data.get(CONF_OUTDOOR_HUMIDITY)),
+        outdoor_wind=_text(data.get(CONF_OUTDOOR_WIND)),
+        weather=_text(data.get(CONF_WEATHER)),
+        battery_charge=_text(data.get(CONF_BATTERY_CHARGE)),
+        battery_size_kwh=_number(data.get(CONF_BATTERY_SIZE)),
+        battery_max_discharge_kw=_number(data.get(CONF_BATTERY_MAX_DISCHARGE)),
+        solar_power=_text(data.get(CONF_SOLAR_POWER)),
+        house_load=_text(data.get(CONF_HOUSE_LOAD)),
+        reserve_margin_kwh=_number(data.get(CONF_RESERVE_MARGIN)),
+        grid_power=_text(data.get(CONF_GRID_POWER)),
+        grid_positive_is_import=grid_sign if isinstance(grid_sign, bool) else None,
+        solar_forecast_sources=_texts(data.get(CONF_SOLAR_FORECAST_SOURCES)),
+        tts_engine=_text(data.get(CONF_TTS_ENGINE)),
+    )
+
+
+def clean_house(answers: Mapping[str, Any]) -> dict[str, Any]:
+    """The House screens' answers as stored: only the house's keys, and
+    nothing for a field left empty."""
+    out: dict[str, Any] = {}
+    for key in HOUSE_KEYS:
+        value = answers.get(key)
+        if value is None or value == "" or value == []:
+            continue
+        out[key] = value
+    return out
+
+
+def grid_sensor_changed(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+    """Grid direction is asked only when the grid sensor is new or changed
+    [D038]."""
+    sensor = _text(new.get(CONF_GRID_POWER))
+    return sensor is not None and (
+        sensor != _text(old.get(CONF_GRID_POWER)) or not isinstance(old.get(CONF_GRID_POSITIVE_IS_IMPORT), bool)
+    )
+
+
+def power_kw(state: str, unit: Any) -> float | None:
+    """A power reading in kW, in the units Observe reads [D038]."""
     try:
-        minutes = float(user_input.get(CONF_OPENING_GRACE))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return DEFAULT_OPENING_GRACE_MINUTES
-    return minutes if minutes >= 0 else DEFAULT_OPENING_GRACE_MINUTES
-
-
-def head_groups_from_input(user_input: dict[str, Any]) -> dict[str, str]:
-    """The outdoor-unit step's answers, as entity id to group name.
-
-    The sentinel first option is dropped rather than stored. A head with no
-    entry is on an outdoor unit of its own, which is the same statement and
-    leaves nothing behind if the head is later moved to a different room.
-    """
-    return {
-        entity_id: str(group).strip()
-        for entity_id, group in user_input.items()
-        if group and str(group).strip() not in ("", OWN_OUTDOOR_UNIT)
-    }
-
-
-def known_head_groups(stored: list[str]) -> list[str]:
-    """Every outdoor unit group any room has named, in a stable order."""
-    return sorted(set(stored))
-
-
-def extend_head_groups(stored: list[str], room: dict[str, Any]) -> list[str]:
-    """Add this room's outdoor unit names to the list a later room picks from.
-
-    Kept even when the room that named a group is removed. The name costs
-    nothing to offer, and a house that re-adds the room should not have to
-    retype it.
-    """
-    named = {
-        str(group).strip()
-        for group in (room.get(CONF_HEAD_GROUPS) or {}).values()
-        if str(group).strip()
-    }
-    return sorted({*stored, *named})
-
-
-def _lockout_reason(chosen: str | None) -> str | None:
-    """The stored lockout reason, or None when the room is not locked out.
-
-    One dropdown answers both questions. The first option means not locked out,
-    so there is no toggle to tick and no second screen to reach.
-    """
-    if chosen is None:
+        value = float(state)
+    except ValueError:
         return None
-    reason = str(chosen).strip()
-    if not reason or reason == NOT_LOCKED_OUT:
-        return None
-    return reason
+    convert = _POWER_KW.get(unit if isinstance(unit, str) else None)
+    return convert(value) if convert is not None and math.isfinite(value) else None
 
 
-def bands_from_input(user_input: dict[str, Any]) -> dict[str, dict[str, float]]:
-    """Collect only the bands where both bounds were supplied."""
-    bands: dict[str, dict[str, float]] = {}
-    for mode in BAND_MODES:
-        low = user_input.get(f"{mode}_{CONF_BAND_LOW}")
-        high = user_input.get(f"{mode}_{CONF_BAND_HIGH}")
-        if low is not None and high is not None:
-            bands[str(mode)] = {CONF_BAND_LOW: float(low), CONF_BAND_HIGH: float(high)}
-    return bands
+# --------------------------------------------------------------------------
+# Rooms
+# --------------------------------------------------------------------------
 
 
-def bands_are_valid(bands: dict[str, dict[str, float]]) -> bool:
-    """Every configured band must have its low below its high."""
-    return all(
-        values[CONF_BAND_LOW] < values[CONF_BAND_HIGH] for values in bands.values()
+def _band(data: Mapping[str, Any], keys: tuple[str, str]) -> tuple[float, float]:
+    lo = _number(data.get(keys[0]))
+    hi = _number(data.get(keys[1]))
+    return (
+        lo if lo is not None else float(ROOM_DEFAULTS[keys[0]]),
+        hi if hi is not None else float(ROOM_DEFAULTS[keys[1]]),
     )
 
 
-def bands_as_suggestions(bands: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Flatten stored bands back into form field values, for editing."""
-    return {
-        f"{mode}_{bound}": values[bound]
-        for mode, values in bands.items()
-        for bound in (CONF_BAND_LOW, CONF_BAND_HIGH)
-        if bound in values
-    }
+def room_from_options(data: Mapping[str, Any]) -> RoomConfig:
+    """One room's settings, with defaults for anything not set.
 
-
-def default_band_suggestions() -> dict[str, float]:
-    """The seeded bands, flattened into form field values.
-
-    Every room starts from the same numbers, so a fresh install is consistent
-    and needs no configuration to be sensible.
+    Raises ValueError for a room that cannot run at all: no id, no name,
+    no air conditioner, or no temperature or humidity sensor [D046].
     """
-    return bands_as_suggestions(DEFAULT_BANDS)
+    room_id = _text(data.get(CONF_ROOM_ID))
+    name = _text(data.get(CONF_NAME))
+    temperature = _text(data.get(CONF_TEMPERATURE_SENSOR))
+    humidity = _text(data.get(CONF_HUMIDITY_SENSOR))
+    heads_raw = data.get(CONF_HEADS)
+    heads: list[HeadConfig] = []
+    if isinstance(heads_raw, list):
+        for h in heads_raw:
+            if isinstance(h, Mapping) and (climate := _text(h.get(CONF_CLIMATE))) is not None:
+                heads.append(HeadConfig(climate, _text(h.get(CONF_OUTDOOR_UNIT)), _text(h.get(CONF_FREQUENCY_SENSOR))))
+    if room_id is None or name is None or temperature is None or humidity is None or not heads:
+        raise ValueError("the room's id, name, air conditioners and sensors are required")
+    management_raw = data.get(CONF_POWER_MANAGEMENT, PowerManagement.OFF.value)
+    try:
+        management = PowerManagement(management_raw)
+    except ValueError:
+        management = PowerManagement.OFF
+    facing = _text(data.get(CONF_WINDOW_FACING))
+    lockout = _text(data.get(CONF_LOCKOUT_REASON))
+    return RoomConfig(
+        room_id=room_id,
+        name=name,
+        heads=tuple(heads),
+        temperature_sensor=temperature,
+        humidity_sensor=humidity,
+        occupied_band=_band(data, BAND_KEYS[0]),
+        sleep_band=_band(data, BAND_KEYS[1]),
+        precool_band=_band(data, BAND_KEYS[2]),
+        power_management=management,
+        presence_sensor=_text(data.get(CONF_PRESENCE_SENSOR)),
+        sleep_schedule=_text(data.get(CONF_SLEEP_SCHEDULE)),
+        sun_sensor=_text(data.get(CONF_SUN_SENSOR)),
+        openings=_texts(data.get(CONF_OPENINGS)),
+        blinds=_texts(data.get(CONF_BLINDS)),
+        allow_blind_control=_flag(data.get(CONF_ALLOW_BLIND_CONTROL), DEFAULT_ALLOW_BLIND_CONTROL),
+        window_facing=facing.upper() if facing is not None and facing.upper() in WINDOW_FACINGS else None,
+        overhang_projection_m=_number(data.get(CONF_OVERHANG_PROJECTION)),
+        overhang_height_m=_number(data.get(CONF_OVERHANG_HEIGHT)),
+        occupied_after_s=_minutes(data.get(CONF_OCCUPIED_AFTER), DEFAULT_OCCUPIED_AFTER_MIN) * 60.0,
+        empty_after_s=_minutes(data.get(CONF_EMPTY_AFTER), DEFAULT_EMPTY_AFTER_MIN) * 60.0,
+        warning_grace_s=_minutes(data.get(CONF_WARNING_GRACE), DEFAULT_WARNING_GRACE_MIN) * 60.0,
+        announce=_flag(data.get(CONF_ANNOUNCE), DEFAULT_ANNOUNCE),
+        announce_through=_texts(data.get(CONF_ANNOUNCE_THROUGH)),
+        opening_grace_s=_minutes(data.get(CONF_OPENING_GRACE), DEFAULT_OPENING_GRACE_MIN) * 60.0,
+        lockout_reason=None if lockout in (None, LOCKOUT_NOT_LOCKED_OUT) else lockout,
+        profile=profile_from_dict(p) if isinstance(p := data.get(CONF_PROFILE), Mapping) else None,
+    )
 
 
-def default_grace_suggestions() -> dict[str, float | bool]:
-    """Grace timings the room form arrives pre-filled with."""
-    return {
-        CONF_OCCUPIED_AFTER: DEFAULT_OCCUPIED_AFTER.total_seconds() / 60,
-        CONF_VACANT_AFTER: DEFAULT_VACANT_AFTER.total_seconds() / 60,
-        CONF_WARNING_GRACE: DEFAULT_WARNING_GRACE.total_seconds() / 60,
-        CONF_ANNOUNCE: False,
-        CONF_OPENING_GRACE: DEFAULT_OPENING_GRACE_MINUTES,
-    }
+def rooms_from_options(options: Mapping[str, Any]) -> list[RoomConfig]:
+    """Every room that can be read. One stored in a form that cannot be
+    read is left out, never fatal to the others."""
+    raw = options.get(CONF_ROOMS)
+    out: list[RoomConfig] = []
+    if not isinstance(raw, list):
+        return out
+    for r in raw:
+        if not isinstance(r, Mapping):
+            continue
+        try:
+            out.append(room_from_options(r))
+        except ValueError:
+            continue
+    return out
 
 
-def known_lockout_reasons(stored: list[str]) -> list[str]:
-    """The lockout dropdown: not-locked-out first, then every known reason."""
-    return [NOT_LOCKED_OUT, *sorted({*DEFAULT_LOCKOUT_REASONS, *stored})]
+def room_answers(stored: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored room as the Room screens' answers, to pre-fill Edit: the
+    heads' climate entities as one list, the defaults for anything unset."""
+    out = {**ROOM_DEFAULTS, **{k: v for k, v in stored.items() if k not in (CONF_HEADS, CONF_PROFILE)}}
+    heads = stored.get(CONF_HEADS)
+    out[CONF_CLIMATE] = [h[CONF_CLIMATE] for h in heads if isinstance(h, Mapping) and CONF_CLIMATE in h] if (
+        isinstance(heads, list)
+    ) else []
+    return out
 
 
-def extend_lockout_reasons(stored: list[str], room: dict[str, Any]) -> list[str]:
-    """Add this room's reason to the stored list if it is a new custom one.
+def build_room(
+    room_id: str,
+    screen1: Mapping[str, Any],
+    heads: Sequence[Mapping[str, Any]],
+    screen3: Mapping[str, Any],
+    profile: CapabilityProfile,
+) -> dict[str, Any]:
+    """The stored room from its three screens and the profile read when it
+    was saved [D048]."""
+    out: dict[str, Any] = {CONF_ROOM_ID: room_id}
+    for key in ROOM_SCREEN_1:
+        if key == CONF_CLIMATE:
+            continue
+        value = screen1.get(key, ROOM_DEFAULTS.get(key))
+        if value is None or value == "" or value == []:
+            continue
+        out[key] = value
+    out[CONF_HEADS] = [
+        {k: v for k, v in h.items() if k in (CONF_CLIMATE, CONF_OUTDOOR_UNIT, CONF_FREQUENCY_SENSOR) and v}
+        for h in heads
+    ]
+    for key in ROOM_SCREEN_3:
+        out[key] = screen3.get(key, ROOM_DEFAULTS[key])
+    out[CONF_PROFILE] = profile_to_dict(profile)
+    return out
 
-    Built-in reasons are not stored: they are always offered, and storing them
-    would leave stale copies behind if the built-in list ever changed.
-    """
-    reason = room.get(CONF_LOCKOUT_REASON)
-    if (
-        not reason
-        or reason == NOT_LOCKED_OUT
-        or reason in DEFAULT_LOCKOUT_REASONS
-        or reason in stored
-    ):
-        return sorted(stored)
-    return sorted([*stored, reason])
+
+def band_inverted(screen3: Mapping[str, Any]) -> str | None:
+    """The first band whose low is not below its high, or None. A band
+    with no width has no leeway and is refused (decision of 27 October
+    2026) [Set]."""
+    for name, keys in zip(("occupied", "sleep", "precool"), BAND_KEYS, strict=True):
+        lo, hi = _band(screen3, keys)
+        if lo >= hi:
+            return name
+    return None
 
 
-def describe_room(room: dict[str, Any]) -> str:
-    """A room's whole configuration, as readable lines.
+def climate_used_elsewhere(
+    stored_rooms: Sequence[Mapping[str, Any]], climates: Sequence[str], room_id: str | None
+) -> tuple[str, str] | None:
+    """An air conditioner already used by another room, and that room's
+    name [D021]."""
+    for r in stored_rooms:
+        if r.get(CONF_ROOM_ID) == room_id:
+            continue
+        heads = r.get(CONF_HEADS)
+        used = {h.get(CONF_CLIMATE) for h in heads if isinstance(h, Mapping)} if isinstance(heads, list) else set()
+        for c in climates:
+            if c in used:
+                return c, str(r.get(CONF_NAME, ""))
+    return None
 
-    Shown on the menu so the current settings can be read without opening the
-    form that set them. A configuration you have to edit to inspect is a
-    configuration nobody checks.
-    """
+
+def replace_room(options: Mapping[str, Any], room: Mapping[str, Any]) -> dict[str, Any]:
+    """The options with this room added, or replacing the one with its id;
+    its outdoor unit names and lockout reason remembered for the dropdowns
+    [Set]."""
+    rooms = [r for r in options.get(CONF_ROOMS, []) if isinstance(r, Mapping)]
+    rid = room[CONF_ROOM_ID]
+    replaced = [dict(room) if r.get(CONF_ROOM_ID) == rid else dict(r) for r in rooms]
+    if not any(r.get(CONF_ROOM_ID) == rid for r in rooms):
+        replaced.append(dict(room))
+    units = list(options.get(CONF_OUTDOOR_UNIT_NAMES, []))
+    for h in room.get(CONF_HEADS, []):
+        name = _text(h.get(CONF_OUTDOOR_UNIT))
+        if name is not None and name not in units:
+            units.append(name)
+    reasons = list(options.get(CONF_LOCKOUT_REASONS, []))
+    reason = _text(room.get(CONF_LOCKOUT_REASON))
+    if reason is not None and reason != LOCKOUT_NOT_LOCKED_OUT and reason not in (*DEFAULT_LOCKOUT_REASONS, *reasons):
+        reasons.append(reason)
+    return {**options, CONF_ROOMS: replaced, CONF_OUTDOOR_UNIT_NAMES: units, CONF_LOCKOUT_REASONS: reasons}
+
+
+def remove_room(options: Mapping[str, Any], room_id: str) -> dict[str, Any]:
+    """The options without this room."""
+    rooms = [dict(r) for r in options.get(CONF_ROOMS, []) if isinstance(r, Mapping) and r.get(CONF_ROOM_ID) != room_id]
+    return {**options, CONF_ROOMS: rooms}
+
+
+def lockout_choices(options: Mapping[str, Any]) -> list[str]:
+    """The lockout dropdown: "Not locked out" first, then the default
+    reasons, then any the user has typed before [D021][Set]."""
+    typed = [r for r in options.get(CONF_LOCKOUT_REASONS, []) if isinstance(r, str)]
+    return list(dict.fromkeys([LOCKOUT_NOT_LOCKED_OUT, *DEFAULT_LOCKOUT_REASONS, *typed]))
+
+
+def outdoor_unit_choices(options: Mapping[str, Any]) -> list[str]:
+    """The outdoor unit dropdown: names already used [D020]."""
+    return [u for u in options.get(CONF_OUTDOOR_UNIT_NAMES, []) if isinstance(u, str)]
+
+
+# --------------------------------------------------------------------------
+# Migration [Set]
+# --------------------------------------------------------------------------
+
+ENTRY_VERSION = 1
+ENTRY_MINOR_VERSION = 1
+
+
+def migrate_entry(version: int, minor: int, data: Mapping[str, Any], options: Mapping[str, Any]) -> tuple[
+    dict[str, Any], dict[str, Any]
+]:
+    """A configuration stored in an older format, converted; never refused.
+    Version 1.1 is the first, so nothing is converted yet."""
+    return dict(data), dict(options)
+
+
+# --------------------------------------------------------------------------
+# The summary on the options menu [Set]
+# --------------------------------------------------------------------------
+
+
+def summary(house: HouseConfig, rooms: Sequence[RoomConfig]) -> str:
+    """The configuration in plain English, one line per part."""
     lines: list[str] = []
-
-    def entry(label: str, value: Any, suffix: str = "") -> None:
-        lines.append(f"  {label}: {value}{suffix}" if value else f"  {label}: —")
-
-    lines.append(f"**{room.get('name', '?')}**")
-    heads = room.get(CONF_CLIMATE_ENTITIES) or []
-    groups = room.get(CONF_HEAD_GROUPS) or {}
-    entry("Air conditioners", ", ".join(heads))
-    for head in heads:
-        if groups.get(head):
-            lines.append(f"    {head} → outdoor unit: {groups[head]}")
-    entry("Temperature", room.get(CONF_TEMPERATURE_ENTITY))
-    entry("Humidity", room.get(CONF_HUMIDITY_ENTITY))
-    entry("Presence", room.get(CONF_PRESENCE_ENTITY))
-    entry("Sleep schedule", room.get(CONF_SLEEP_SCHEDULE_ENTITY))
-    entry("Heat source", room.get(CONF_HEAT_LOAD_ENTITY))
-    entry("Air movement", room.get(CONF_FAN_ENTITY))
-    entry("Windows face", room.get(CONF_WINDOW_DIRECTION))
-
-    projection = room.get(CONF_OVERHANG_PROJECTION)
-    if projection:
-        height = room.get(CONF_OVERHANG_HEIGHT)
-        lines.append(f"  Overhang: {projection} m out, {height} m above the glass")
-    else:
-        lines.append("  Overhang: none")
-
-    openings = room.get(CONF_OPENING_ENTITIES) or []
-    covers = room.get(CONF_COVER_ENTITIES) or []
-    lines.append(f"  Windows and doors: {len(openings) or '—'}")
-    if covers and not room.get(CONF_ALLOW_COVER_CONTROL, True):
-        lines.append(f"  Blinds: {len(covers)} configured, control disabled")
-    else:
-        lines.append(f"  Blinds: {len(covers) or '—'}")
-
-    bands = room.get(CONF_BANDS) or {}
-    if bands:
-        described = ", ".join(
-            f"{mode} {v[CONF_BAND_LOW]}–{v[CONF_BAND_HIGH]}"
-            for mode, v in sorted(bands.items())
-        )
-        lines.append(f"  Bands: {described}")
-    else:
-        lines.append("  Bands: none — this room will never be actuated")
-
-    lines.append(
-        "  Waiting: {} min to start, {} min to stop".format(
-            room.get(CONF_OCCUPIED_AFTER, "?"), room.get(CONF_VACANT_AFTER, "?")
-        )
-    )
-    if room.get(CONF_ANNOUNCE):
-        targets = room.get(CONF_ANNOUNCE_TARGETS) or []
-        lines.append(f"  Announces before shutdown through {len(targets)} player(s)")
-
-    reason = room.get(CONF_LOCKOUT_REASON)
-    if reason:
-        lines.append(f"  **LOCKED OUT — {reason}**")
-
-    return "\n".join(lines)
-
-
-def describe_rooms(rooms: list[dict[str, Any]]) -> str:
-    """Every room and every setting on it."""
+    lines.append(f"Tariff: {'from Abode Power Tariffs' if house.tariff_entry else 'none; every hour priced the same'}.")
+    lines.append(f"Forecast: {house.weather or 'none'}.")
+    power = [n for n, v in (("battery", house.battery_charge), ("solar", house.solar_power),
+                            ("house load", house.house_load), ("grid", house.grid_power)) if v]
+    lines.append(f"Power sensors: {', '.join(power) if power else 'none'}.")
     if not rooms:
-        return "No rooms configured yet."
-    return "\n".join(describe_room(room) for room in rooms)
-
-
-def describe_tariff(tariff_title: str | None) -> str:
-    """Where the tariff comes from, or that none is selected.
-
-    The plan itself is not shown: it lives in Abode Power Tariffs and is
-    displayed there. Repeating it here would be a second copy to keep in step.
-    """
-    if not tariff_title:
-        return (
-            "Nothing selected. Without a tariff the controller holds comfort "
-            "and nothing else: no precool window, no import constraint and no "
-            "costed forecast."
-        )
-    return f"{tariff_title} (Abode Power Tariffs)"
-
-
-def describe_global(
-    tariff_title: str | None,
-    outdoor_entity_id: str | None,
-    outdoor_humidity_entity_id: str | None = None,
-    outdoor_wind_entity_id: str | None = None,
-    weather_entity_id: str | None = None,
-    tts_engine_entity_id: str | None = None,
-) -> str:
-    """The house-wide settings, as readable lines."""
-    return "\n".join(
-        [
-            "**Tariff**",
-            f"  {describe_tariff(tariff_title)}",
-            "",
-            "**Outdoor temperature**",
-            f"  {outdoor_entity_id or 'Nothing selected'}",
-            "",
-            "**Outdoor humidity**",
-            f"  {outdoor_humidity_entity_id or 'Nothing selected'}"
-            + (
-                ""
-                if outdoor_humidity_entity_id
-                else " — without it there is no free-cooling advice at all"
-            ),
-            "",
-            "**Outdoor wind**",
-            f"  {outdoor_wind_entity_id or 'Nothing selected'}"
-            + (
-                ""
-                if outdoor_wind_entity_id
-                else " — still air is assumed, so a breezy evening will be "
-                "judged as though it were calm"
-            ),
-            "",
-            "**Weather forecast**",
-            f"  {weather_entity_id or 'Nothing selected'}"
-            + (
-                ""
-                if weather_entity_id
-                else " — precool falls back to comparing conditions right now, "
-                "which at midday cannot see the afternoon coming"
-            ),
-            "",
-            "**Spoken warnings**",
-            f"  {tts_engine_entity_id or 'Nothing selected'}"
-            + (
-                ""
-                if tts_engine_entity_id
-                else " — the only text-to-speech engine is used where there is "
-                "exactly one"
-            ),
-        ]
-    )
-
-
-def describe_power(
-    battery_soc_entity_id: str | None,
-    battery_capacity_kwh: str | None,
-    solar_entity_id: str | None,
-    house_load_entity_id: str | None,
-    reserve_margin_kwh: str | None,
-    grid_entity_id: str | None = None,
-    battery_max_discharge_kw: str | None = None,
-    solar_forecasts: list[str] | None = None,
-) -> str:
-    """The power-aware settings, as readable lines.
-
-    The first five are required together before any of this engages. Showing
-    which are missing is more useful than a single on/off line, because a
-    partial setup is the state most installs will pass through on the way to
-    a complete one.
-
-    The grid sensor (0.8.10, finding 11) is not part of that group — the
-    budget still runs on the energy figure alone without it, just without a
-    measured breach figure afterward.
-
-    The maximum discharge power is a nameplate spec, entered rather than
-    learned — see `CONF_BATTERY_MAX_DISCHARGE_KW`. Optional: without it the
-    budget is bounded only by the energy figure, not by what the inverter
-    can physically deliver.
-    """
-    fields = {
-        "Battery charge sensor": battery_soc_entity_id,
-        "Battery usable capacity": (
-            f"{battery_capacity_kwh} kWh" if battery_capacity_kwh else None
-        ),
-        "Solar output sensor": solar_entity_id,
-        "House load sensor": house_load_entity_id,
-        "Reserve margin": (
-            f"{reserve_margin_kwh} kWh" if reserve_margin_kwh else None
-        ),
-    }
-    lines = [f"  {label}: {value or 'Nothing selected'}" for label, value in fields.items()]
-    lines.append(
-        "  Battery max discharge power: "
-        + (f"{battery_max_discharge_kw} kW" if battery_max_discharge_kw else "Not set")
-    )
-    lines.append(f"  Grid power sensor: {grid_entity_id or 'Nothing selected'}")
-    lines.append(
-        "  Solar forecast: "
-        + (", ".join(solar_forecasts) if solar_forecasts else "Nothing selected")
-    )
-    if all(fields.values()):
+        lines.append("No rooms yet.")
+    for r in rooms:
+        heads = len(r.heads)
+        lo, hi = r.occupied_band
+        extra = f" Locked out: {r.lockout_reason}." if r.lockout_reason else ""
         lines.append(
-            "  Active: while the tariff forbids grid import, a room set to "
-            "guidance is shown what the battery and the forecast sun can "
-            "afford, and a room set to enforced is held to it. Where even "
-            "holding an enforced room cannot be afforded, it is turned off "
-            "until it can."
-        )
-        if not solar_forecasts:
-            lines.append(
-                "  Without a solar forecast, only the solar being produced "
-                "now is counted, so at sunrise the morning's generation is "
-                "not."
-            )
-        if not battery_max_discharge_kw:
-            lines.append(
-                "  Without the maximum discharge power, the throttle is "
-                "bounded only by stored energy, not by what the battery can "
-                "physically deliver."
-            )
-        if not grid_entity_id:
-            lines.append(
-                "  Without the grid sensor, no breach is measured afterward."
-            )
-    else:
-        lines.append(
-            "  Inactive — every field above must be set. Until then "
-            "no_grid_import is observed but never acted on, exactly as "
-            "before this feature existed."
+            f"{r.name}: {heads} air conditioner{'s' if heads != 1 else ''}, comfort {lo:g} to {hi:g}, "
+            f"power management {r.power_management.value}.{extra}"
         )
     return "\n".join(lines)
 
-
-def describe_configuration(
-    rooms: list[dict[str, Any]],
-    tariff_title: str | None,
-    outdoor_entity_id: str | None,
-) -> str:
-    """Everything currently configured, for the menu screen."""
-    lines: list[str] = ["**Rooms**"]
-    if rooms:
-        lines.extend(describe_room(room) for room in rooms)
-    else:
-        lines.append("  None configured.")
-
-    lines.append("")
-    lines.append("**House**")
-    lines.append(f"  Tariff: {describe_tariff(tariff_title)}")
-    lines.append(f"  Outdoor temperature: {outdoor_entity_id or '—'}")
-    return "\n".join(lines)

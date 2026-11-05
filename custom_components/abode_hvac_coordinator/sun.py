@@ -1,190 +1,147 @@
-"""Sun geometry.
+"""Is the sun on the glass? (Section 9) [D023]
 
-Pure. No Home Assistant imports.
-
-Answers one question: **is the sun on this room's windows right now?**
-
-WHY THIS EXISTS
----------------
-Covers are the cheapest actuator, but only when there is something for them to
-block. The obvious signal — indoor light level — does not work. A
-semi-transparent blind reads bright when it is fully closed, so illuminance
-reports nothing to block at exactly the moment the blind is already blocking.
-
-The signal that does work is geometry: where the sun is, against which way the
-window faces. That needs no sensor in the room and no assumption about the
-blind's material.
-
-WHAT IT NEEDS
--------------
-The direction the window faces and the sun's position, which Home Assistant
-already publishes as `sun.sun` from the latitude and longitude configured in
-its own settings. Nothing needs to be told to this integration twice.
-
-**Overhang shading is separate and matters.** A window under a soffit, an
-eave, a balcony or a verandah is shaded whenever the sun is high enough that
-the overhang's shadow reaches past the bottom of the glass. In a subtropical
-summer that is most of the middle of the day, which is exactly when the sun
-would otherwise be worst. A model that ignores it will insist a north-facing
-window is in full sun at noon when it is completely shaded.
-
-Two numbers describe it: how far the overhang projects from the wall, and how
-far it sits above the bottom of the window. Both are measured once with a tape
-measure and never change.
+The sun's position uses NOAA's solar calculation (the equations of its
+solar calculator spreadsheet, after Meeus), with its approximation for
+atmospheric refraction, because light reaches the glass along the
+apparent, refracted direction. Accuracy is checked in the tests against
+NREL's solar position algorithm.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 
-#: Half-width of the acceptance angle either side of the window normal, in
-#: degrees. Beyond about 90 degrees off-normal the sun is behind the wall and
-#: cannot reach the glass at all, so 90 is geometry rather than a preference.
-ACCEPTANCE_HALF_ANGLE = 90.0
-
-#: Below this elevation the sun is on the horizon: weak, and usually behind
-#: something. Above zero rather than at it, because a sun a degree up is
-#: contributing nothing worth moving a blind for.
-MIN_ELEVATION = 5.0
-
-#: Compass directions offered at setup, with the azimuth each faces.
-#: Azimuth is degrees clockwise from north, matching what `sun.sun` reports.
-WINDOW_DIRECTIONS: dict[str, float] = {
-    "north": 0.0,
-    "north_east": 45.0,
-    "east": 90.0,
-    "south_east": 135.0,
-    "south": 180.0,
-    "south_west": 225.0,
-    "west": 270.0,
-    "north_west": 315.0,
-}
+from .const import SUN_MAX_OFF_SQUARE_DEG, SUN_MIN_ELEVATION_DEG
 
 
-def angle_between(first: float, second: float) -> float:
-    """Smallest angle between two compass bearings, 0 to 180 degrees."""
-    difference = abs(first - second) % 360.0
-    return 360.0 - difference if difference > 180.0 else difference
+@dataclass(frozen=True, slots=True)
+class SunPosition:
+    """Azimuth clockwise from north, and apparent elevation, in degrees."""
+
+    azimuth: float
+    elevation: float
 
 
-def shading_elevation(
-    overhang_projection_m: float | None,
-    overhang_height_m: float | None,
-) -> float | None:
-    """Sun elevation above which an overhang fully shades the glass.
+def _refraction_deg(elevation: float) -> float:
+    """NOAA's atmospheric refraction approximation, in degrees."""
+    if elevation > 85.0:
+        return 0.0
+    te = math.tan(math.radians(elevation))
+    if elevation > 5.0:
+        arcsec = 58.1 / te - 0.07 / te**3 + 0.000086 / te**5
+    elif elevation > -0.575:
+        arcsec = 1735.0 + elevation * (-518.2 + elevation * (103.4 + elevation * (-12.79 + elevation * 0.711)))
+    else:
+        arcsec = -20.772 / te
+    return arcsec / 3600.0
 
-    Geometry: the shadow of an overhang projecting `p` from the wall reaches
-    down the wall by `p * tan(elevation)`. Once that exceeds the height of the
-    overhang above the bottom of the glass, the whole window is in shade.
 
-        elevation = atan(height / projection)
+def sun_position(latitude: float, longitude: float, when: datetime) -> SunPosition:
+    """The sun's azimuth and apparent elevation for an aware moment.
 
-    Returns None when the window has no overhang described, which means no
-    shading is applied rather than assuming any.
-
-    This is the head-on case. A window lit obliquely is shaded at a higher
-    elevation than this, because the effective projection shortens — handled
-    by the caller, which knows the horizontal angle.
+    Raises ValueError for a naive datetime: a moment without a time zone
+    cannot place the sun.
     """
-    if not overhang_projection_m or overhang_height_m is None:
-        return None
-    if overhang_projection_m <= 0:
-        return None
-    return math.degrees(math.atan(overhang_height_m / overhang_projection_m))
-
-
-def sun_on_window(
-    sun_azimuth: float | None,
-    sun_elevation: float | None,
-    window_azimuth: float | None,
-    *,
-    overhang_projection_m: float | None = None,
-    overhang_height_m: float | None = None,
-) -> bool | None:
-    """Whether the sun is reaching the glass of a window facing `window_azimuth`.
-
-    None means the question cannot be answered — no sun position, or no window
-    direction configured — and the caller must treat that as "do not move the
-    covers" rather than as either answer.
-    """
-    if sun_azimuth is None or sun_elevation is None or window_azimuth is None:
-        return None
-    if sun_elevation < MIN_ELEVATION:
-        return False
-
-    horizontal = angle_between(sun_azimuth, window_azimuth)
-    if horizontal > ACCEPTANCE_HALF_ANGLE:
-        return False
-
-    cutoff = shading_elevation(overhang_projection_m, overhang_height_m)
-    if cutoff is None:
-        return True
-
-    # Obliquely lit, the overhang projects less usefully, so it shades only at
-    # higher elevations. cos(0) = 1 head-on; approaching 90 degrees off-normal
-    # the overhang stops shading at all.
-    effective = math.cos(math.radians(horizontal))
-    if effective <= 1e-6:
-        return True
-    return sun_elevation < math.degrees(
-        math.atan(math.tan(math.radians(cutoff)) / effective)
-    )
-
-
-def azimuth_for_direction(direction: str | None) -> float | None:
-    """Azimuth for a configured compass direction, or None if unset."""
-    if direction is None:
-        return None
-    return WINDOW_DIRECTIONS.get(direction)
-
-
-def solar_position(
-    latitude: float, longitude: float, when: datetime
-) -> tuple[float, float]:
-    """The sun's azimuth and elevation, in degrees, at a place and time.
-
-    0.9.0, DR-053. Pure: the NOAA general solar position equations, good to a
-    degree or so, which is all a window facing one of eight compass directions
-    needs. Azimuth is clockwise from north. `when` must be timezone-aware.
-    The coordinator reads the sun's position from `sun.sun` for the present
-    moment; this is for the moments the room's projection has not reached yet.
-    """
+    if when.tzinfo is None or when.utcoffset() is None:
+        raise ValueError("when must be timezone-aware")
     utc = when.astimezone(UTC)
-    day = utc.timetuple().tm_yday
-    hour = utc.hour + utc.minute / 60.0 + utc.second / 3600.0
-    gamma = 2.0 * math.pi / 365.0 * (day - 1 + (hour - 12.0) / 24.0)
-    equation_of_time = 229.18 * (
-        0.000075
-        + 0.001868 * math.cos(gamma)
-        - 0.032077 * math.sin(gamma)
-        - 0.014615 * math.cos(2 * gamma)
-        - 0.040849 * math.sin(2 * gamma)
+    jd = utc.timestamp() / 86400.0 + 2440587.5
+    jc = (jd - 2451545.0) / 36525.0
+
+    l0 = (280.46646 + jc * (36000.76983 + jc * 0.0003032)) % 360.0
+    m = 357.52911 + jc * (35999.05029 - 0.0001537 * jc)
+    ecc = 0.016708634 - jc * (0.000042037 + 0.0000001267 * jc)
+    m_r = math.radians(m)
+    centre = (
+        math.sin(m_r) * (1.914602 - jc * (0.004817 + 0.000014 * jc))
+        + math.sin(2 * m_r) * (0.019993 - 0.000101 * jc)
+        + math.sin(3 * m_r) * 0.000289
     )
-    declination = (
-        0.006918
-        - 0.399912 * math.cos(gamma)
-        + 0.070257 * math.sin(gamma)
-        - 0.006758 * math.cos(2 * gamma)
-        + 0.000907 * math.sin(2 * gamma)
-        - 0.002697 * math.cos(3 * gamma)
-        + 0.00148 * math.sin(3 * gamma)
+    true_long = l0 + centre
+    omega = math.radians(125.04 - 1934.136 * jc)
+    app_long = true_long - 0.00569 - 0.00478 * math.sin(omega)
+    mean_obliq = 23.0 + (26.0 + (21.448 - jc * (46.815 + jc * (0.00059 - jc * 0.001813))) / 60.0) / 60.0
+    obliq = math.radians(mean_obliq + 0.00256 * math.cos(omega))
+    decl = math.asin(math.sin(obliq) * math.sin(math.radians(app_long)))
+
+    y = math.tan(obliq / 2.0) ** 2
+    l0_r = math.radians(l0)
+    eq_time = 4.0 * math.degrees(
+        y * math.sin(2 * l0_r)
+        - 2 * ecc * math.sin(m_r)
+        + 4 * ecc * y * math.sin(m_r) * math.cos(2 * l0_r)
+        - 0.5 * y * y * math.sin(4 * l0_r)
+        - 1.25 * ecc * ecc * math.sin(2 * m_r)
     )
-    solar_minutes = hour * 60.0 + equation_of_time + 4.0 * longitude
-    hour_angle = math.radians(solar_minutes / 4.0 - 180.0)
+    minutes = utc.hour * 60.0 + utc.minute + utc.second / 60.0 + utc.microsecond / 6e7
+    true_solar = (minutes + eq_time + 4.0 * longitude) % 1440.0
+    hour_angle = math.radians(true_solar / 4.0 - 180.0)
+
     lat = math.radians(latitude)
-    sin_elevation = math.sin(lat) * math.sin(declination) + math.cos(
-        lat
-    ) * math.cos(declination) * math.cos(hour_angle)
-    elevation = math.degrees(math.asin(max(-1.0, min(1.0, sin_elevation))))
+    cos_zen = math.sin(lat) * math.sin(decl) + math.cos(lat) * math.cos(decl) * math.cos(hour_angle)
+    zenith = math.acos(max(-1.0, min(1.0, cos_zen)))
+    geometric = 90.0 - math.degrees(zenith)
     azimuth = (
         math.degrees(
             math.atan2(
                 math.sin(hour_angle),
-                math.cos(hour_angle) * math.sin(lat)
-                - math.tan(declination) * math.cos(lat),
+                math.cos(hour_angle) * math.sin(lat) - math.tan(decl) * math.cos(lat),
             )
         )
         + 180.0
     ) % 360.0
-    return azimuth, elevation
+    return SunPosition(azimuth=azimuth, elevation=geometric + _refraction_deg(geometric))
+
+
+class SunOnWindow(StrEnum):
+    """Whether the sun is on a window's glass."""
+
+    ON = "on"
+    OFF = "off"
+    CANNOT_SAY = "cannot_say"
+
+
+def off_square_deg(azimuth: float, facing: float) -> float:
+    """How far the sun is off the way the window faces, 0 to 180 degrees."""
+    diff = abs((azimuth - facing + 180.0) % 360.0 - 180.0)
+    return diff
+
+
+def sun_on_window(
+    position: SunPosition | None,
+    facing: float | None,
+    overhang_projection_m: float | None = None,
+    overhang_height_m: float | None = None,
+) -> SunOnWindow:
+    """Whether the sun is on the glass of a window [D023].
+
+    Unknown position or direction: cannot say. Below 5 degrees elevation
+    [Set], or more than 90 degrees off square [Der]: not on the glass.
+    With an overhang (a projection above zero and a height), the glass is
+    shaded when the sun's profile angle is at or above the cutoff
+    atan(height / projection); the profile angle is atan(tan(elevation) /
+    cos(angle off square)) [Der], computed as atan2 so that it stays
+    defined at 90 degrees off square. The overhang is taken as wide enough
+    that sun cannot pass its ends [NYE].
+    """
+    if position is None or facing is None:
+        return SunOnWindow.CANNOT_SAY
+    if position.elevation < SUN_MIN_ELEVATION_DEG:
+        return SunOnWindow.OFF
+    gamma = off_square_deg(position.azimuth, facing)
+    if gamma > SUN_MAX_OFF_SQUARE_DEG:
+        return SunOnWindow.OFF
+    if (
+        overhang_projection_m is not None
+        and overhang_height_m is not None
+        and overhang_projection_m > 0.0
+    ):
+        cutoff = math.atan2(overhang_height_m, overhang_projection_m)
+        beta = math.radians(position.elevation)
+        profile = math.atan2(math.sin(beta), math.cos(beta) * math.cos(math.radians(gamma)))
+        if profile >= cutoff:
+            return SunOnWindow.OFF
+    return SunOnWindow.ON

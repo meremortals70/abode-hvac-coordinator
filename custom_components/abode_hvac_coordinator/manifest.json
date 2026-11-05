@@ -1,24 +1,30 @@
 {
   "domain": "abode_hvac_coordinator",
   "name": "Abode HVAC Coordinator",
-  "version": "0.9.7",
-  "codeowners": [
-    "@meremortals70"
-  ],
-  "documentation": "https://github.com/meremortals70/abode-hvac-coordinator",
-  "issue_tracker": "https://github.com/meremortals70/abode-hvac-coordinator/issues",
-  "integration_type": "hub",
-  "iot_class": "calculated",
-  "config_flow": true,
-  "single_config_entry": true,
-  "quality_scale": "custom",
-  "dependencies": [
-    "climate"
-  ],
   "after_dependencies": [
     "abode_power_tariffs",
     "energy",
+    "tts",
     "weather"
   ],
-  "requirements": []
+  "categories": [
+    "climate.heat_pumps_air_conditioning",
+    "energy.solar_batteries"
+  ],
+  "codeowners": [
+    "@meremortals70"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "climate",
+    "recorder"
+  ],
+  "documentation": "https://github.com/meremortals70/abode-hvac-coordinator",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/meremortals70/abode-hvac-coordinator/issues",
+  "quality_scale": "platinum",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.10.0"
 }

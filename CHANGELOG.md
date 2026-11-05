@@ -6,6 +6,451 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.0 - unreleased
+
+A rewrite of the whole component to the design specification of 23 October
+2026 (revised 27-29 October 2026), built one module at a time. It needs
+Home Assistant 2026.9.4 or later.
+
+### Added
+
+- **Step 0, foundation and helpers.** `const.py` (every design value of the
+  specification's Section 10, with its basis), `models.py` (shared
+  enumerations, house and room settings, a unit's capability profile),
+  `linalg.py` (matrix arithmetic, no external package), `hci.py` (the comfort
+  index), `psychro.py` (dew point, free cooling, condensation), `sun.py` (sun
+  position and sun on the glass) and `capabilities.py` (what a unit can do).
+  Pure tests for each, plus a structure test that fails if any decision module
+  or helper imports Home Assistant.
+- **Step 1, Observe.** `observe.py` builds one snapshot of a room each cycle
+  from the states the coordinator hands over, with every value tagged as
+  measured, stood in, estimated, missing or unknown; ages readings and lists
+  stale feeds; stands the unit's own reading in for a missing room reading;
+  decides whether each compressor ran, from frequency, `hvac_action` or a
+  house-load step, and says which; works out the sun on the glass. Readings
+  are converted to C, kW and m/s; a reading in a unit it does not know is
+  treated as missing.
+- **Step 2, Model.** `model/` learns each room: `physics.py` (the two-store
+  heat balance, the unit's rising rate curve, exact 5-minute matrices),
+  `filter.py` (one Kalman filter carrying the room, the mass and all 23
+  figures, with the sensor's noise learned from the readings), `unit.py` (the
+  unit's effort, delay and lag, lowest steady rate, and each outdoor unit's
+  draw from house-load steps), `humidity.py` (the moisture filter),
+  `trust.py` (one- and six-hour forecast errors, weekly errors) and
+  `forecast.py` (drift, forecasts with their uncertainty, the setpoint for a
+  rate). The unit's delay and lag are learned as two more states of the
+  heat filter (27 in all) instead of by a separate fit after each start,
+  stop or setpoint change, which could not recover them at 0.2 C sensor
+  steps (decision of 27 October 2026). On the specification's simulated
+  room over 14 days at 0.2 C steps the filter learned a total delay and lag
+  of 19-20 minutes against a true 21, the unit's rate at effort 2 within
+  11 %, and forecast resting hours to 0.06-0.10 C.
+- **Step 3, Comfort.** `comfort.py` decides whether the room is occupied,
+  with a grace each way; runs Precool and ends it; follows Comfort mode and
+  the sleep schedule; chooses the band in force by the first rule that
+  applies; moves a changed band steadily over an hour and asks for the room
+  to be decided again at once; marks a room waking on its way out of Sleep;
+  and gives the band at every 5-minute point of the next six hours, with
+  its centre as a dry-bulb temperature.
+- **Step 4, Economics.** `economics.py` reads Abode Power Tariffs'
+  `get_intervals` response; prices each half-hour ahead; finds the
+  no-grid-import window in force; works out the house's one power allowance
+  from the battery, the solar forecast (or, without one, the solar now) and
+  the rest of the house's load; turns it into each room's ceiling, which
+  drops at once and rises only after 10 minutes with 0.3 kW to spare; asks
+  an enforced room that cannot run even its lowest rate for 10 minutes to
+  turn off; checks the grid sensor's sign and adds up import in a
+  no-import window; and adds the rooms' planned energy into a demand
+  forecast by tariff interval.
+- **Step 5, Control.** `control/plan.py` finds, every 5 minutes, the
+  cheapest six hours that keep the room near the centre of its band: a
+  beam search over rest, dry, cool and heat at each rate of the learned
+  curve, and the blinds, ranked first by time outside the band (with a
+  one-sigma margin) and then by comfort, energy and start costs.
+  `control/pid.py` holds the room on the plan's path every cycle, with
+  gains worked out from the room's model. `control/rl.py` and
+  `control/arbiter.py` hold the learned controller (inactive until a policy
+  exists) and the rules for when it may take over. In a whole-loop
+  simulation of the specification's room from day one, the room was in its
+  band 99.7-100 % of the time with 1-2 compressor starts a day after the
+  first day.
+
+- **Step 6, Delivery.** `delivery.py` turns the action and rate Control chose
+  into what each head and blind is asked for. Cooling and heating: the
+  setpoint is the unit's own reading less, or plus, the effort the learned
+  curve gives for the rate, worked out for each head from its own reading,
+  and kept within the unit's range. Dry: the setpoint cooling would have at
+  the lowest steady rate. Rest: fan-only at the quietest fan speed, or off
+  for a unit with no fan-only mode. A unit that holds only a range gets the
+  setpoint -1.0 to +1.0 C. A unit with a coarse setpoint step is moved
+  between the two nearest values so the 30-minute average is the setpoint
+  wanted, each value held at least 10 minutes. Blinds go to the plan's
+  position when more than 5 points away; one whose position is unknown is
+  left alone. Fan speed and, under Automatic vane control, the vertical
+  vane are chosen from what the unit offers. Free cooling is advised in an
+  occupied room, and condensation risk reported. Where a setpoint cannot
+  be worked out the unit is left alone and the reason named.
+- **Step 7, Limits.** `limits.py` decides what may reach the unit, the same
+  way whichever controller is in charge. In order, the first that applies:
+  lockout, off every cycle; Automatic control switched off, off once, then
+  nothing; Leave, off at once; an empty room, off, after a spoken warning
+  where one can be heard; an open door or window, nothing new started and,
+  after the room's grace and two warnings, off, or off at once if it was
+  opened on free-cooling advice; a missing reading, nothing sent; enforced
+  power management, off. Then always: only what the unit offers, within
+  its range; the short-cycle guard, 10 minutes on and 5 off per outdoor
+  unit across every room on it, which never holds lockout, Automatic
+  control off or Leave; and the tariff's constraints, recorded, with any
+  this component does not know reported. Whenever a rule changes the step
+  the PID is told, so its integral holds.
+- **Step 8, Act.** `act.py` compares the allowed step with each unit's live
+  state and sends only what differs: the mode, the setpoint (or range) when
+  it is a step or more away, the fan speed, and the vertical vane under
+  Automatic vane control; the horizontal vane is never moved. A command
+  sent in the last cycle that the unit has not yet reported is not sent
+  again. Blinds are moved when more than 5 points away. Every command is
+  logged at INFO with the rate it was for, the room temperature and the
+  centre, and the last 200 are kept; a command that fails is logged and the
+  room's other commands still go. A user's change from a room control is
+  refused, with a translated reason, while Automatic control (or, for a
+  vane, Automatic vane control) is on, or if the unit does not offer it;
+  otherwise it goes to every head. Temperatures are sent in the system's
+  unit. First tests through Home Assistant (`tests/ha`).
+- **Step 9, Evidence.** `evidence.py` builds each room's decision trace for
+  its Mode sensor: the band and why, the comfort index and where it sits,
+  who is in charge, the plan with its forecast, its costs and every first
+  action not taken with the reason, the PID's terms, the model's figures
+  and how far they can be trusted, the power ceiling or "no limit", each
+  limit that changed the step, and each compressor's state and source. The
+  Mode sensor's state is the band rule in force, with lockout and
+  Automatic control off first. It counts each room's day: share of
+  occupied time inside the band and near its centre, starts per running
+  hour, and cost. It decides which warnings are said, never while
+  Automatic control is off, the room is asleep or its unit is not on, and
+  one held by the minimum run is said with the off it warned of. It works
+  out every repair that should stand, and logs each lost and regained
+  reading once.
+- **Step 10, Memory.** `memory.py` keeps, in one versioned file in Home
+  Assistant's storage, what each room has learned (both filters with their
+  uncertainty and the sensor's learned noise, the unit's lowest steady
+  rate, trust, who is in charge and the arbiter's scores), each outdoor
+  unit's draw, every choice the user has made, occupancy, the unit's
+  capability profile and yesterday's scorecard. The PID's integral is not
+  kept. A number that is not finite is discarded and relearned. Learning is
+  saved at most 5 minutes after it happens, and a waiting save is never
+  pushed later; a user's choice within 5 seconds; everything when the
+  component unloads. A new room can be seeded by running its filters over
+  the recorder's history, minute by minute, exactly as the live path does,
+  with the weather entity's recorded cloud cover standing in for the
+  forecast.
+- **Step 11, the integration.** The component can now be installed and set
+  up from the UI. First setup asks for the house (tariff, outdoor sensors,
+  forecast, power, grid direction, speech engine) and then the first room;
+  Reconfigure reopens the house; the options add, edit and remove rooms
+  without a reload, and seed or reset a room's learning. The coordinator runs
+  every room each 30 seconds through the ten modules, with the filters and the
+  plan in the executor; one failing room never stops the others. Each room is
+  a device with its mode sensor (carrying the full decision trace), comfort
+  index, target and commanded setpoint, dew point, settings, controller,
+  learning and yesterday's scores, the Automatic control and Automatic vane
+  control switches, Comfort mode and the unit's own controls, the setpoint,
+  and Leave and Precool buttons. The house shows the demand forecast, the
+  tariff now, constraints in force, projected cost, outdoor readings, the
+  forecast peak, stale feeds and the number of rooms. The `precool` and
+  `cancel_precool` actions, repairs, spoken warnings, diagnostics (the home's
+  position redacted), icons, brand images and the quality scale file are
+  included. Requires Home Assistant 2026.9 or later.
+- **Step 12, documentation and CI.** A README and user guides in `docs/`
+  (use cases, installation and removal, configuration, entities, actions,
+  data updates, examples, known limitations, troubleshooting), the design
+  (`docs/architecture.md`) and one file per design rule
+  (`docs/decisions/`). `hacs.json`. CI on every push and pull request to
+  main: ruff 0.17.3 and mypy --strict; the pure tests and the whole-loop
+  simulation with nothing installed; and the whole suite through Home
+  Assistant 2026.9.4 and 2026.10.4, failing if any module is at or below
+  95 % coverage.
+
+### Fixed (since step 12, from live testing on Home Assistant 2026.11.0b0)
+
+- **Blinds were closed with no sun on the glass.** The plan now moves blinds
+  only in a half-hour with the sun on the glass, and leaves them alone in one
+  without; sun that cannot be worked out (no window facing) counts as none.
+  (DR-023)
+- **Turning Automatic control back on could stop a compressor you had just
+  started.** The short-cycle guard did not count a start made by hand while
+  Automatic control was off, so it held the "start" for five minutes and put
+  the unit on its fan. It now follows the compressor as it is seen to run
+  whenever the unit is left alone. (DR-016)
+- **A sensor whose integration had gone did not raise the missing-sensor
+  repair.** Home Assistant keeps such a sensor as an "unavailable" stand-in;
+  that now counts as missing, as a deleted sensor does. (DR-046)
+- **A countdown could read "off in 0 s" while it still waited.** Countdowns
+  round up.
+- **A first long run at full rate became the unit's lowest steady rate,** so
+  after a hot-afternoon pull-down the plan could only rest or cool at full
+  rate. The lowest rate is now learned only from a run held at or below the
+  lowest rate offered at the time. (DR-100)
+- **From the independent review of 31 October:**
+  - A run with the room at its setpoint could store a lowest rate of 0, which
+    then never changed. Minutes with no effort asked now break the run, and
+    a stored 0 is relearned. (DR-100)
+  - A room run by hand kept its shared outdoor unit running, yet another room
+    on that unit was held on after its own stop. The guard now counts the
+    hand-run room as wanting the unit. (DR-016, DR-020)
+  - The missing-sensor repair was raised while the sensor's own integration
+    was only retrying or reloading, and for a moment at every start. It is
+    now raised only once Home Assistant has started, and only when nothing is
+    about to provide the sensor. (DR-046)
+- **From the second independent review, 1 November:**
+  - The plan could find no allowed first step, and the room failed: a waking
+    room that had been heating under ten minutes, or a power ceiling below
+    the lowest rate. Where it did find one, a cold waking room could be put on
+    dry. The minimum run now binds the plan only where the running mode can
+    carry on; otherwise it may rest, and the short-cycle guard holds the stop.
+    (DR-016, DR-085)
+  - Setup failed for good when a solar forecast source was still starting.
+    A source not yet loaded is read on the next 15-minute read, and anything
+    another integration's forecast raises becomes the forecast repair.
+    (DR-061)
+  - The lowest steady rate was never learned from heating, and a low figure
+    learned early could never rise. Heating holds count, a hold at the lowest
+    rate offered replaces it, and nothing below the curve's first point is
+    offered. (DR-100)
+  - A unit working in °F on a °C system (or the reverse) had its setpoint
+    step converted from the wrong unit. The step is read in the unit's own
+    unit, which Home Assistant does not convert. (DR-051)
+  - The missing-sensor repair could appear while a sensor's platform was only
+    retrying. It now waits until the sensor has been gone 15 minutes, and says
+    to check the integration it comes from.
+  - Seeding a room that had already learned replayed its old readings on top
+    of what it knew, out of time order. A seed now starts from the starting
+    figures; a history that teaches nothing leaves the room as it was.
+- **From the third independent review, 1 November:**
+  - A compressor-frequency sensor shared by the heads on one outdoor unit
+    made a head that was off read as running, so a hand-run room could let
+    another room stop 3 minutes into its 10-minute minimum run. A head that
+    is off or on its fan now counts as not running, whatever the sensor
+    says. (DR-025, DR-016)
+  - Heating and cooling shared one lowest steady rate, and the plan offered
+    heating from the cooling curve's floor. Each now has its own. (DR-100)
+  - The missing-sensor repair never appeared for a sensor whose integration
+    had failed for good or been disabled. Only one still setting up or
+    retrying is waited for. (DR-046)
+  - A disabled solar forecast source was waited for forever, with no repair;
+    and one whose integration had not finished starting raised the repair
+    for 15 minutes at boot. A disabled source now counts as unreadable, and
+    one still starting is waited for. (DR-061)
+  - Seed or Reset chosen while a room was already seeding was dropped, though
+    the screen said it had started. The screen now says it is already
+    seeding.
+- **From the fourth independent review, 2 November:**
+  - The power budget found a heating room's limit on the cooling curve, so a
+    heating room in Enforced mode could be held below what its allowance
+    covers, or, resting, never be offered heat for the rest of the window.
+    The budget now works on the curve of the way the room runs, or must go.
+    (DR-028, I10)
+  - The plan and the demand forecast priced heating at the cooling curve's
+    draw. Each rate is now priced on its own curve. (DR-028)
+  - A head turned on beside one already running its outdoor unit was learned
+    as that unit starting, so a small load step became the unit's whole draw.
+    A head joining or leaving a running unit is no longer learned from.
+    (DR-028)
+  - A setpoint for a unit working in °F on a °C system (or the reverse) was
+    rounded so that Home Assistant's conversion landed a hair under the
+    degree; an integration that truncates set a degree lower. What is sent
+    now converts onto the unit's own degree, never under it. (DR-051)
+- **From the fifth independent review, 2 November:**
+  - In a °F house, a °C unit sent its maximum setpoint was refused by Home
+    Assistant every cycle: the value converted to a hair over the maximum.
+    At the top of the range the value now converts to a hair under it.
+    (DR-051)
+  - In a °F house, Home Assistant shows a °C unit's setpoint in whole °F, so
+    a half-degree drop looked already done and was never sent. A shown value
+    now counts as done only within half a shown degree, and a value other
+    than the one last sent is always sent. (DR-007)
+  - The enforced power ceiling limited the plan but not the PID's
+    corrections, so the unit could be asked for more than the allowance; and
+    a lower ceiling waited up to 5 minutes for the next plan. The PID is now
+    held to the ceiling, and a new ceiling is planned under at once.
+    (DR-041, DR-062)
+- **From the sixth independent review, 2 November:**
+  - In a °F house, a °C unit's limits were read from Home Assistant's shown,
+    rounded figures (whole °F), so a setpoint at full cooling or heating
+    could fall just outside the unit's real limits and be refused every
+    cycle. The unit's own limits are read from the entity; failing that, the
+    shown ones are moved inside. (DR-051)
+  - A setpoint shown too coarsely to tell from the wanted one (22.0 and
+    22.5 °C both show as 72 °F) was never sent after a restart, or after the
+    unit was set by hand with Automatic control off. It is now sent once, and
+    what was sent is forgotten while the room is not run. (DR-007)
+  - The enforced ceiling, found for the way a resting room must go, also
+    capped the other direction's steps by the same figure. It is now turned
+    into the other direction's rate for the same power. (DR-028, DR-041)
+  - One head stopping as another started on the same outdoor unit in the
+    same minute could be learned as the unit stopping and starting. Neither
+    is learned now. (DR-028)
+
+- **From the ninth independent review, 5 November:**
+  - Seeding a room in a house with no outdoor temperature sensor replaced
+    what it had learned with the starting figures: the replay had no
+    outdoor temperature, so it corrected nothing. The weather entity's own
+    temperature and humidity now stand in, in its own units, as they do
+    live; and a replay that corrects nothing leaves what the room has
+    learned as it was. (DR-099)
+  - A compressor started by hand while Automatic control was off was
+    stopped as soon as control came back to a plan that rests. Its stop is
+    now held until it has run 10 minutes, keeping it as it runs. (DR-016,
+    DR-089)
+  - Another enforced outdoor unit running was taken off a room's power
+    allowance twice: once in the rest of the house and again as its own
+    draw. The rest of the house is now measured with the enforced units
+    stopped. (DR-067, I10)
+  - Yesterday's cost read 0.00 while the room's draw was not yet learned.
+    It now reads unknown. (DR-097)
+  - After a restart while the unit ran, the room's model took the unit as
+    having rested and learned its delay, lag and curve from that. Nothing
+    is learned now until the unit's last 40 minutes have been seen.
+
+- **From the eighth independent review, 2 November:**
+  - The power budget walked the whole solar forecast, today's past hours
+    and tomorrow's included, instead of the no-grid-import window. It now
+    walks from now to the window's end, counting a forecast hour partly
+    inside for its part, and no solar where the forecast has none. (DR-061)
+  - A room waking from Sleep below its daytime band was never heated: it
+    stayed waking until it warmed up, and a waking room is not heated.
+    Waking now ends when the hour's ramp ends. (DR-085, DR-092)
+  - A unit running in heat_cool or auto was learned as a resting room.
+    Nothing is learned from those minutes now. (DR-074)
+  - The 10-minute hold on a start when outdoor air would cool the room
+    never held anything: the advice was judged after the start had gone
+    out. It is now judged first, and the start waits 10 minutes. (DR-073)
+  - An empty room waited for a spoken warning when no speech engine could
+    say it. It goes off at once now. (DR-069, DR-082)
+  - The Precool action's description said it runs whether or not anyone
+    is in; it ends once the room counts as occupied. The description now
+    says so. (DR-080)
+
+- **From the seventh independent review, 2 November:**
+  - A room with one head that takes only a low and high setpoint and another
+    that cannot take them was accepted, and the second head was sent a range
+    Home Assistant refused every cycle. Such a room is now refused at setup.
+    A room set up before this keeps running as it was; open its options and
+    save to check it. (DR-024)
+  - The hourly trust check scored the air conditioner's own reading when the
+    room sensor was unavailable. Only the room sensor's own reading is
+    scored now. (DR-074)
+  - A lost room sensor was not logged while the air conditioner's own
+    reading stood in for it. It is now. (DR-074)
+  - The Controller sensor's plan was kept in the recorder's history. It is
+    kept out now, as documented.
+
+### Changed (since step 12, for Home Assistant 2026.11)
+
+- Ready for Home Assistant 2026.11, and still runs on 2026.9.4 and later.
+- The manifest declares its integration categories,
+  `climate.heat_pumps_air_conditioning` and `energy.solar_batteries`, which
+  the Marketplace browses by and the HACS action checks.
+- `hacs.json` drops `render_readme`, which neither HACS nor the
+  Marketplace reads.
+- From 2026.11 a form field with no effect without another is shown only
+  with it, and not saved while hidden: battery size, rated discharge and
+  reserve margin with the battery charge sensor; solar forecast sources
+  with the solar power sensor; the overhang with the window direction;
+  Announce through with Announce. Before 2026.11 every field is shown, as
+  it was.
+- A room's device names the house's device it is reached through in the
+  form both the old and the new device information take.
+- The documentation covers installing through the Marketplace.
+- CI also tests against 2026.11.0 (released 4 November), with Home Assistant's own
+  `pytest-homeassistant`, which replaces
+  `pytest-homeassistant-custom-component` from 2026.11. The tests import
+  the helpers through `tests/ha/harness.py`, which uses whichever is
+  installed.
+
+### Fixed (since step 12, from the review of 29 October 2026)
+
+- Seeding replays every recorded row, including those where only an
+  attribute changed (a unit's `hvac_action`, the forecast's cloud cover),
+  each at the time it was written. It had read only rows where the state
+  changed [D002].
+- Rooms on one outdoor unit are budgeted as one draw on the battery: a
+  room's allowance is less what the other rooms on its unit draw now,
+  whatever their power management, and a room's scorecard is charged its
+  own share, not the whole unit's [D097].
+- An edited room keeps what its modules remember between cycles: the
+  running command the short-cycle guard holds a stop on, today's
+  scorecard, the plan, the band's ramp, warnings already given and
+  commands still to be reported. An edit had started each of them afresh
+  [D098].
+- An edited room's entities are made again from its new settings, so a
+  Precool button comes or goes with the presence sensor and the controls
+  follow a changed unit. Registry entries are kept; that of an entity the
+  room no longer has is removed [D098].
+- Without an outdoor temperature sensor, or with one gone quiet, the
+  forecast's value for the hour now stands in, so the room still learns
+  [D099].
+- A choice's 5-second save is no longer pushed out to 5 minutes by the
+  model learning just after it [D064].
+- The model's 5-minute and hourly steps run on a copy in the executor, so
+  a save or a diagnostics download never reads a model being changed.
+- A repair whose wording or figures change is updated; it had kept the
+  first wording until cleared.
+- Room screen 3: a comfort field emptied on Edit takes its default again,
+  as on screen 1.
+
+### Fixed (since step 7)
+
+- A unit's setpoint limits and step are now read in the system's
+  temperature unit and stored in C; on a Fahrenheit system they were
+  stored in F while everything else works in C.
+
+### Fixed
+
+- The unit's lowest steady rate was learned from its lagged rate after
+  each start, and so came out too low; it is now learned from the steady
+  rate the unit is asked for, as "a rate held" requires.
+- Below the curve's first effort the model now gives the first effort's
+  rate, as an inverter that runs at all runs at least at its lowest rate.
+- Observe: a unit that is off or in fan-only counts as not running, so the
+  model learns on units that report no `hvac_action`; an outdoor unit's draw
+  is also learned when a head goes from cool, heat or dry to off or fan-only
+  (decisions of 27 October 2026).
+
+### Changed
+
+- A band whose low is not below its high is refused; a room whose heads'
+  setpoint ranges do not overlap is refused at setup; a room with any
+  range-only head is sent a range (decisions of 27 October 2026).
+- The comfort index is T + 0.33 e - 4.00 from the room's measured
+  temperature and humidity, with nothing added. The added terms for sun on
+  the occupant (3.0), still air (1.0) and a heat source (1.0) are gone. The
+  sun still counts, through the warmth the model learns and forecasts it
+  brings (decision of 27 October 2026).
+- Default bands are now 23-26 occupied, 20-23 sleep and 23-26 precool.
+  They are the old defaults less the 1.0 still-air term that was always in
+  them, so each band still means 22-24 C (sleep 19.5-22 C) at 60 % humidity.
+
+- A compressor-frequency sensor is never taken as the unit's effort. The
+  effort is always the unit's reading against its setpoint, which is what
+  the component sends; the frequency sensor still answers first whether
+  the compressor is running (decision of 28 October 2026).
+- **An enforced room keeps cooling until the battery can't.** When even
+  its lowest rate cannot last to the end of a no-grid-import window, the
+  room cools at its lowest rate instead of being turned off after 10
+  minutes. It is turned off only when the battery is down to its reserve,
+  cannot supply the lowest rate's draw, or that draw is not yet known, and
+  runs again when the battery can supply it (decision of 29 October 2026).
+- **The demand forecast runs to the next tariff change**, not 8 hours: the
+  energy the rooms' plans will use until the rate, price or rules next
+  change, what it is priced at, and when that is. Where the change is
+  beyond the plans' six hours it runs to their end and says so. The tariff
+  is read 24 hours ahead (decision of 29 October 2026).
+
+### Removed
+
+- The room's heat source and air mover settings. They existed only for the
+  index terms removed above.
+
 ## 0.9.7 - 2026-10-15
 
 From the living room on the night of 14–15 October, the owner's instructions of

@@ -1,69 +1,59 @@
-"""Button platform.
-
-One per room: **Leave** (0.9.7, DR-088).
-
-Pressing it says the owner has left the room. The room is empty from that
-moment, its air conditioning is turned off at once, and it stays off - no
-precool, no warnings - until someone comes back: the presence sensor sees the
-room clear and then sees a person again. A room with no presence sensor stays
-off until the owner turns it back on, by switching Automatic control, choosing
-a Comfort mode or asking for it with a heading-home request.
-"""
+"""Per room: Leave, and Precool in rooms with a presence sensor (Section 7)
+[D088][I8]."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from homeassistant.components.button import ButtonEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from . import HvacConfigEntry
-from .coordinator import HvacCoordinator
-from .entity import HvacRoomEntity
-from .models import RoomConfig
+from . import AbodeHvacConfigEntry
+from .comfort import UserAction
+from .coordinator import AbodeHvacCoordinator
+from .entity import RoomEntity, add_room_entities
 
-# Pressing hands the request to the coordinator, which serialises actuation.
 PARALLEL_UPDATES = 1
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: HvacConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
-) -> None:
-    """Set up each room's Leave button, and add more as rooms are configured."""
-    coordinator = entry.runtime_data
-    known: set[str] = set()
+class LeaveButton(RoomEntity, ButtonEntity):
+    """Turns the room off at once until someone comes back [D088]."""
 
-    @callback
-    def _add_new_rooms() -> None:
-        new = [
-            RoomLeaveButton(coordinator, room)
-            for room_id, room in coordinator.rooms.items()
-            if room_id not in known
-        ]
-        known.update(coordinator.rooms)
-        if new:
-            async_add_entities(new)
-
-    _add_new_rooms()
-    entry.async_on_unload(coordinator.async_add_listener(_add_new_rooms))
-
-
-class RoomLeaveButton(HvacRoomEntity, ButtonEntity):
-    """The owner has left the room: turn it off until someone comes back."""
-
-    _attr_translation_key = "leave"
-
-    def __init__(self, coordinator: HvacCoordinator, room: RoomConfig) -> None:
-        """Initialize the button."""
-        super().__init__(coordinator, room)
-        self._attr_unique_id = f"{room.room_id}_leave"
+    def __init__(self, coordinator: AbodeHvacCoordinator, room_id: str) -> None:
+        super().__init__(coordinator, room_id, "leave")
 
     @property
     def available(self) -> bool:
-        """Usable whether or not the room has been evaluated yet."""
-        return self.coordinator.last_update_success
+        return self.coordinator.last_update_success and self.run is not None
 
     async def async_press(self) -> None:
-        """Leave the room."""
-        await self.coordinator.async_leave_room(self._room_id)
+        await self.coordinator.async_set_choices(self.room_id, UserAction.OTHER, leave_pressed_at=dt_util.utcnow())
+
+
+class PrecoolButton(RoomEntity, ButtonEntity):
+    """Starts Precool now: the room runs to the centre of its precool band
+    until someone comes in or it is ended [I8]."""
+
+    def __init__(self, coordinator: AbodeHvacCoordinator, room_id: str) -> None:
+        super().__init__(coordinator, room_id, "precool")
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self.run is not None
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_choices(self.room_id, UserAction.PRECOOL, precool_ready_by=dt_util.utcnow())
+
+
+def _room_entities(coordinator: AbodeHvacCoordinator, room_id: str) -> Iterable[ButtonEntity]:
+    yield LeaveButton(coordinator, room_id)
+    if coordinator.rooms[room_id].config.presence_sensor is not None:
+        yield PrecoolButton(coordinator, room_id)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: AbodeHvacConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
+) -> None:
+    add_room_entities(hass, entry.runtime_data.coordinator, async_add_entities, _room_entities)

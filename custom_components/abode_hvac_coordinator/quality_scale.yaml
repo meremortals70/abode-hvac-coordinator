@@ -1,64 +1,35 @@
-# Progress against the integration quality scale.
-# Rule list taken from developers.home-assistant
-# docs/core/integration-quality-scale/_includes/tiers.json
-#
-# Note: a custom integration cannot be graded. "Custom" is a special tier
-# alongside Internal and Legacy. This file tracks compliance so the integration
-# is ready if it is ever submitted to core.
-
 rules:
-  # --- Bronze ---
+  # Bronze
   action-setup: done
   appropriate-polling:
     status: done
-    comment: |
-      The coordinator refreshes every 30 seconds (EVALUATION_INTERVAL) as a
-      backstop, and at once when any entity a room reads changes state. Only
-      Home Assistant's own state machine is read; no device or service is
-      polled. The tariff and the solar forecast are fetched every 15 minutes
-      and the weather forecast every 30.
+    comment: Nothing is polled from a device; the cycle runs every 30 s on Home Assistant's own states, the tariff is read every 15 min and the forecast every 30 min.
   brands: done
   common-modules: done
-  config-flow-test-coverage:
-    status: done
-    comment: |
-      config_flow.py is at 100% line coverage at 0.9.6 (pytest with coverage,
-      Home Assistant 2026.8.3, Python 3.14.6). 55 tests in
-      tests/test_config_flow.py cover every step of the config and options
-      flows, including the error and abort paths.
   config-flow: done
+  config-flow-test-coverage: done
   dependency-transparency:
     status: exempt
-    comment: No external dependencies. requirements is empty.
+    comment: The integration has no external dependencies; its matrix arithmetic is its own (linalg.py).
   docs-actions: done
-  docs-triggers:
-    status: exempt
-    comment: |
-      The integration defines no custom triggers. Standard state triggers on
-      its entities are documented in docs/examples.md.
   docs-conditions:
     status: exempt
-    comment: The integration defines no custom conditions.
+    comment: The integration provides no conditions.
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
   entity-event-setup: done
   entity-unique-id: done
   has-entity-name: done
   runtime-data: done
-  test-before-configure:
-    status: exempt
-    comment: |
-      Nothing is connected to. Configuration is a set of references to entities
-      that already exist in Home Assistant.
-  test-before-setup:
-    status: exempt
-    comment: |
-      No device or service to reach. A room whose source entities are missing
-      reports unavailable rather than failing setup.
+  test-before-configure: done
+  test-before-setup: done
   unique-config-entry: done
 
-  # --- Silver ---
+  # Silver
   action-exceptions: done
   config-entry-unloading: done
   docs-configuration-parameters: done
@@ -69,75 +40,41 @@ rules:
   parallel-updates: done
   reauthentication-flow:
     status: exempt
-    comment: No authentication of any kind.
-  test-coverage:
-    status: done
-    comment: |
-      Every one of the 28 modules is at 98% line coverage or better at 0.9.6,
-      99% overall, measured with coverage.py over the whole suite against Home
-      Assistant 2026.8.3 on Python 3.14.6. 995 tests: 627 over the pure
-      modules and 8 static checks on the source, which also run without Home
-      Assistant, and 360 against a running Home Assistant. Every fix from
-      0.9.3 on was checked by putting the defect back and watching its test
-      fail.
+    comment: The integration reads Home Assistant's own entities and needs no authentication.
+  test-coverage: done
 
-  # --- Gold ---
+  # Gold
   devices: done
   diagnostics: done
-  discovery-update-info:
-    status: exempt
-    comment: Nothing is discovered; rooms are declared by the user.
   discovery:
     status: exempt
-    comment: |
-      A room is a decision the user makes about their house. There is nothing
-      on a network to find.
+    comment: A room is a choice the user makes, not something on the network.
+  discovery-update-info:
+    status: exempt
+    comment: The integration's devices cannot be discovered.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
-  docs-supported-devices:
-    status: exempt
-    comment: |
-      No devices are supported or unsupported. The integration consumes any
-      climate entity Home Assistant already has.
+  docs-supported-devices: done
   docs-supported-functions: done
   docs-troubleshooting: done
   docs-use-cases: done
   dynamic-devices: done
   entity-category: done
   entity-device-class: done
-  entity-disabled-by-default:
-    status: exempt
-    comment: |
-      Each room carries its sensors, two switches and the controls its air
-      conditioner offers (mode, fan speed, vanes, setpoint). All of them are what
-      the integration exists to provide, and none is noisy enough to warrant
-      being disabled by default.
+  entity-disabled-by-default: done
   entity-translations: done
   exception-translations: done
   icon-translations: done
-  reconfiguration-flow:
-    status: exempt
-    comment: |
-      The rule exempts "integrations that don't have settings in their
-      configuration flow". The config flow creates an empty entry with no
-      settings; every setting lives in the options flow, which offers add,
-      edit and remove for rooms and every house-level setting.
+  reconfiguration-flow: done
   repair-issues: done
   stale-devices: done
 
-  # --- Platinum ---
+  # Platinum
   async-dependency:
     status: exempt
-    comment: No external library. All integration code is async.
+    comment: The integration has no external dependencies; its heavy calculation runs in the executor.
   inject-websession:
     status: exempt
-    comment: No HTTP calls are made.
-  strict-typing:
-    status: done
-    comment: |
-      mypy --strict reports no issues in all 28 modules against Home
-      Assistant 2026.8.3, and CI runs it on every push and pull request to
-      main. py.typed is shipped.
-      The typed HvacConfigEntry (ConfigEntry[HvacCoordinator]) is used
-      throughout for runtime_data.
+    comment: The integration makes no HTTP requests.
+  strict-typing: done

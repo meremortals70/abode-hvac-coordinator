@@ -1,280 +1,90 @@
-"""Dew point, free cooling and condensation risk.
-
-Pure. No Home Assistant imports.
-
-TWO QUESTIONS, TWO TESTS
-------------------------
-**Will it feel better with the windows open?** Not "is it cooler outside" —
-dry bulb is the wrong comparison. What arrives through an open window is air at
-some temperature, carrying some humidity, moving at some speed, and all three
-change how the room feels. So the comparison is outdoor apparent temperature
-against the room's comfort index: the same Steadman formula evaluated outdoors
-with wind and indoors without. A 26 C breeze beats a still 26 C room, and dry
-bulb cannot see that.
-
-**Will I regret it in an hour?** A separate question, and it is the one dry
-bulb *and* apparent temperature both get wrong. A Brisbane evening after rain
-can feel cooler on arrival while carrying far more water than the room holds.
-The breeze drops, the moisture stays, and the air conditioner spends an hour
-removing it. Apparent temperature says open up; dew point says you will pay for
-it. Dew point wins, because the felt benefit is transient and the latent load
-is not.
-
-Both tests must pass. Neither is redundant.
-
-**Will the coil, the duct or the glass sweat?** Condensation forms wherever a
-surface sits below the dew point of the air touching it. Aggressive setpoints
-in humid weather put surfaces there, and the result is mould in places nobody
-inspects.
-
-WHAT THIS DOES NOT DO
----------------------
-It does not open windows and it does not command anything. Free cooling is
-published as an advisory for the occupant or for an automation that owns a
-window actuator; this controller owns the air conditioner and the covers, and
-nothing else.
-"""
+"""Dew point, free cooling and condensation risk (Section 4.1, Section 9)."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 
-from .hci import apparent_temperature
+from .const import (
+    CONDENSATION_MARGIN_C,
+    DEW_POINT_MIN_RH,
+    FREE_COOLING_DEW_POINT_MARGIN_C,
+    FREE_COOLING_INDEX_MARGIN,
+    FREE_COOLING_WIND_SHARE,
+)
+from .hci import outdoor_apparent_temperature
 
-#: Magnus coefficients over water, valid across the range a house sees.
-#: Sonntag 1990. Accurate to better than 0.1 C between -45 C and 60 C, which
-#: is far more than this needs.
-_MAGNUS_B = 17.62
-_MAGNUS_C = 243.12
-
-#: How much better outdoors must feel, in HCI, before opening up is advised.
-#: Small margins produce advice that flips on and off with sensor noise, and
-#: advice nobody can act on twice in a row is worse than none.
-FREE_COOLING_MARGIN_HCI = 2.0
-
-#: How much drier outdoors must be at the dew point. Separate from the felt
-#: comparison and not tradeable against it: a room can feel better and still be
-#: taking on water.
-FREE_COOLING_DEW_POINT_MARGIN_C = 1.0
-
-#: Fraction of the free-stream wind that actually reaches a person in a room
-#: with the windows open. Outdoor wind is measured at ten metres in the clear;
-#: what gets through a window opening, past a flyscreen, around furniture and
-#: into the middle of a room is a fraction of it.
-#:
-#: A stated assumption rather than a setting. Using the full outdoor figure
-#: would overstate the benefit by roughly three degrees on a windy day, which
-#: is the difference between good advice and advice that sends you to open the
-#: windows on an evening you should not.
-WIND_PENETRATION = 0.3
-
-#: How close a surface may come to the dew point before it is called a risk.
-#: Not zero: the coldest surface in a room is never the one being measured, and
-#: the supply air off a coil is colder than any setpoint.
-CONDENSATION_MARGIN_C = 2.5
+# Magnus form, WMO-No. 8 coefficients [Set][R5]
+_MAGNUS_A = 17.62
+_MAGNUS_B = 243.12
 
 
-def dew_point_c(temp_c: float, relative_humidity: float) -> float:
-    """Dew point from dry bulb and relative humidity, in Celsius.
+def dew_point(t_c: float, rh: float) -> float:
+    """Dew point (C) by the Magnus form; RH is taken as at least 0.5 % [Set][R5].
 
-    Relative humidity is clamped away from zero rather than allowed to produce
-    a logarithm of zero. A sensor reporting 0% is broken, and the honest
-    handling is a very low dew point rather than a traceback.
+    g = ln(RH/100) + 17.62 T / (243.12 + T); Td = 243.12 g / (17.62 - g)
     """
-    rh = min(max(relative_humidity, 0.5), 100.0) / 100.0
-    gamma = math.log(rh) + (_MAGNUS_B * temp_c) / (_MAGNUS_C + temp_c)
-    return (_MAGNUS_C * gamma) / (_MAGNUS_B - gamma)
+    rh = max(rh, DEW_POINT_MIN_RH)
+    g = math.log(rh / 100.0) + _MAGNUS_A * t_c / (_MAGNUS_B + t_c)
+    return _MAGNUS_B * g / (_MAGNUS_A - g)
 
 
 @dataclass(frozen=True, slots=True)
-class FreeCooling:
-    """Whether outdoor air would help, and why or why not."""
+class FreeCoolingAdvice:
+    """Whether opening up would cool the room, both figures, and why [Set]."""
 
     advised: bool
-    #: Outdoor apparent temperature, on the comfort index scale, with the
-    #: damped wind term applied. None when the outdoor feeds are incomplete.
-    outdoor_apparent_c: float | None
-    indoor_dew_point_c: float | None
-    outdoor_dew_point_c: float | None
+    outdoors_feels: float | None
+    room_index: float | None
+    outdoor_dew_point: float | None
+    room_dew_point: float | None
     reason: str
 
 
 def free_cooling(
     *,
-    indoor_hci: float | None,
-    indoor_c: float | None,
-    indoor_rh: float | None,
-    outdoor_c: float | None,
+    needs_cooling: bool,
+    room_index: float | None,
+    room_t: float | None,
+    room_rh: float | None,
+    outdoor_t: float | None,
     outdoor_rh: float | None,
     outdoor_wind_ms: float | None,
-    demand: str | None,
-) -> FreeCooling:
-    """Whether opening up would make the room feel better without wetting it.
+) -> FreeCoolingAdvice:
+    """Free cooling advice, only when the plan is to cool the room [Set].
 
-    Two independent tests, both of which must pass. The felt comparison is on
-    the comfort index scale so that indoor and outdoor are the same quantity.
-    The dew point test is a veto: it is not traded against the felt benefit,
-    because the benefit stops when the breeze does and the moisture does not.
-
-    Wind is damped by `WIND_PENETRATION` before it is applied. The outdoor
-    figure is measured in the clear at ten metres; a room with the windows open
-    sees a fraction of it.
+    Advised only when outdoors feels at least 2.0 below the room's index,
+    using wind x 0.3, and the outdoor dew point is at least 1.0 C below
+    the room's. A missing wind reading counts as still air.
     """
-    if demand != "cool":
-        return FreeCooling(
-            advised=False,
-            outdoor_apparent_c=None,
-            indoor_dew_point_c=None,
-            outdoor_dew_point_c=None,
-            reason="free cooling: the room is not asking to be cooled",
-        )
-
-    if indoor_hci is None or None in (indoor_c, indoor_rh, outdoor_c, outdoor_rh):
-        return FreeCooling(
-            advised=False,
-            outdoor_apparent_c=None,
-            indoor_dew_point_c=None,
-            outdoor_dew_point_c=None,
-            reason=(
-                "free cooling: needs a comfort reading indoors and both "
-                "temperature and humidity outdoors"
-            ),
-        )
-
-    assert indoor_c is not None and indoor_rh is not None
-    assert outdoor_c is not None and outdoor_rh is not None
-
-    wind = (outdoor_wind_ms or 0.0) * WIND_PENETRATION
-    outdoor_at = apparent_temperature(outdoor_c, outdoor_rh, wind)
-    indoor_dp = dew_point_c(indoor_c, indoor_rh)
-    outdoor_dp = dew_point_c(outdoor_c, outdoor_rh)
-
-    feels_better = outdoor_at <= indoor_hci - FREE_COOLING_MARGIN_HCI
-    dry_enough = outdoor_dp <= indoor_dp - FREE_COOLING_DEW_POINT_MARGIN_C
-
-    breeze = (
-        f", {outdoor_wind_ms:.1f} m/s of wind included"
-        if outdoor_wind_ms
-        else ", no wind reading so still air assumed"
-    )
-
-    if feels_better and dry_enough:
+    if not needs_cooling:
+        return FreeCoolingAdvice(False, None, room_index, None, None, "The room does not need cooling.")
+    if room_index is None or room_t is None or room_rh is None or outdoor_t is None or outdoor_rh is None:
+        return FreeCoolingAdvice(False, None, room_index, None, None, "A reading needed to judge outdoor air is missing.")
+    wind = (outdoor_wind_ms or 0.0) * FREE_COOLING_WIND_SHARE
+    feels = outdoor_apparent_temperature(outdoor_t, outdoor_rh, wind)
+    out_dp = dew_point(outdoor_t, outdoor_rh)
+    room_dp = dew_point(room_t, room_rh)
+    cooler = feels <= room_index - FREE_COOLING_INDEX_MARGIN
+    drier = out_dp <= room_dp - FREE_COOLING_DEW_POINT_MARGIN_C
+    if cooler and drier:
         reason = (
-            f"free cooling: outdoors feels {indoor_hci - outdoor_at:.1f} better "
-            f"and is {indoor_dp - outdoor_dp:.1f} C drier at the dew point"
-            f"{breeze} — opening up would help"
+            f"Outdoors feels {feels:.1f}, {room_index - feels:.1f} below the room, "
+            f"and its dew point {out_dp:.1f} C is {room_dp - out_dp:.1f} C below the room's."
         )
-    elif feels_better:
-        reason = (
-            f"free cooling: outdoors feels {indoor_hci - outdoor_at:.1f} better, "
-            f"but its dew point is {outdoor_dp:.1f} C against {indoor_dp:.1f} C "
-            "indoors — the breeze stops and the moisture stays"
-        )
-    elif dry_enough:
-        reason = (
-            f"free cooling: outdoors is drier, but feels {outdoor_at:.1f} "
-            f"against {indoor_hci:.1f} indoors{breeze} — not enough to help"
-        )
+    elif not cooler:
+        reason = f"Outdoors feels {feels:.1f}, not {FREE_COOLING_INDEX_MARGIN:.1f} below the room's {room_index:.1f}."
     else:
         reason = (
-            f"free cooling: outdoors feels {outdoor_at:.1f} against "
-            f"{indoor_hci:.1f} indoors and is no drier{breeze}"
+            f"The outdoor dew point {out_dp:.1f} C is not {FREE_COOLING_DEW_POINT_MARGIN_C:.1f} C "
+            f"below the room's {room_dp:.1f} C."
         )
-
-    return FreeCooling(
-        advised=feels_better and dry_enough,
-        outdoor_apparent_c=round(outdoor_at, 1),
-        indoor_dew_point_c=round(indoor_dp, 1),
-        outdoor_dew_point_c=round(outdoor_dp, 1),
-        reason=reason,
-    )
+    return FreeCoolingAdvice(cooler and drier, feels, room_index, out_dp, room_dp, reason)
 
 
-@dataclass(frozen=True, slots=True)
-class CondensationRisk:
-    """Whether the commanded conditions put a surface near the dew point."""
+def condensation_risk(setpoint_c: float, room_dew_point_c: float) -> bool:
+    """True when the setpoint is within 2.5 C of the room's dew point.
 
-    at_risk: bool
-    dew_point_c: float | None
-    margin_c: float | None
-    reason: str | None
-
-
-def condensation_risk(
-    *, indoor_c: float | None, indoor_rh: float | None, setpoint_c: float | None
-) -> CondensationRisk:
-    """Whether the commanded setpoint sits too near the room's dew point.
-
-    The setpoint stands in for the coldest surface the room's air will touch.
-    It is an understatement — supply air off the coil is colder still — which
-    is why the margin is wide rather than tight.
-
-    Nothing is refused on the strength of this. It is reported, because the
-    right response to a humid room is to dehumidify it, and that is a decision
-    the actuator ordering already makes.
+    Reported only, never acted on [Set].
     """
-    if indoor_c is None or indoor_rh is None or setpoint_c is None:
-        return CondensationRisk(
-            at_risk=False, dew_point_c=None, margin_c=None, reason=None
-        )
-
-    dew = dew_point_c(indoor_c, indoor_rh)
-    margin = setpoint_c - dew
-    if margin >= CONDENSATION_MARGIN_C:
-        return CondensationRisk(
-            at_risk=False, dew_point_c=round(dew, 1), margin_c=round(margin, 1),
-            reason=None,
-        )
-
-    return CondensationRisk(
-        at_risk=True,
-        dew_point_c=round(dew, 1),
-        margin_c=round(margin, 1),
-        reason=(
-            f"condensation: dew point is {dew:.1f} C and the setpoint is "
-            f"{setpoint_c:.1f} C, a {margin:.1f} C margin — surfaces in this "
-            "room may sweat, dehumidify rather than chase the setpoint"
-        ),
-    )
-
-
-def weather_works_against_compressor(
-    demand: str | None,
-    *,
-    band_low: float,
-    band_high: float,
-    outdoor_c: float | None,
-    outdoor_rh: float | None,
-    outdoor_wind_ms: float | None,
-    direct_sun: bool | None,
-) -> str | None:
-    """A reason the compressor would be working against the weather, or None.
-
-    DR-053. The floor under the learned projection, used only while the room
-    has not learned enough to project: no heating while outdoors feels at
-    least as warm as the band's lower bound, and no cooling while it feels no
-    warmer than the upper bound unless the sun is on the glass. Compared on the
-    comfort index scale, exactly as free cooling compares - this is the second
-    and last place the outdoor apparent temperature is compared, and like the
-    first it is a comparison and never an input to the room's own computation.
-
-    A missing outdoor reading answers None, never a guess.
-    """
-    if demand not in ("cool", "heat") or outdoor_c is None or outdoor_rh is None:
-        return None
-    apparent = apparent_temperature(outdoor_c, outdoor_rh, outdoor_wind_ms or 0.0)
-    if demand == "heat" and apparent >= band_low:
-        return (
-            f"coast: outdoors feels {apparent:.1f}, at or above the band's "
-            f"lower bound {band_low:.1f}, so heating would work against the "
-            "weather (no model yet to say how long it takes)"
-        )
-    if demand == "cool" and apparent <= band_high and direct_sun is not True:
-        return (
-            f"coast: outdoors feels {apparent:.1f}, at or below the band's "
-            f"upper bound {band_high:.1f} and the sun is not on the room, so "
-            "cooling would work against the weather (no model yet to say how "
-            "long it takes)"
-        )
-    return None
+    return setpoint_c - room_dew_point_c < CONDENSATION_MARGIN_C

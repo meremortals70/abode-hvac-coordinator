@@ -1,213 +1,166 @@
-"""Abode HVAC Coordinator — Layer 3.
+"""The Abode HVAC Coordinator: setting up and taking down (Section 8).
 
-Owns rooms, modes, the comfort index, actuator ordering, the thermal model and
-the decision trace. It commands climate entities and covers directly. It never
-writes battery actuators.
-
-It does not own a tariff. The plan is held by Abode Power Tariffs and read from
-it as a forward interval series; this integration acts on the constraints that
-series declares and holds no periods, prices or rates of its own.
+Each room is learned as it is run: a model of the room is learned from its
+own readings, and every half-hour of the next six is planned on that model
+to keep the room near the centre of its comfort band for the least cost.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from datetime import datetime
 
-import voluptuous as vol
+import probatio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryNotReady,
+    ServiceValidationError,
+    UnsupportedStorageVersionError,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
+from .comfort import UserAction
 from .const import (
-    ATTR_DEADLINE,
+    ATTR_READY_BY,
     ATTR_ROOM_ID,
-    CONF_CLIMATE_ENTITIES,
-    CONF_CLIMATE_ENTITY,
-    CONF_ROOM_ID,
-    CONF_ROOMS,
     DOMAIN,
-    SERVICE_CLEAR_OVERRIDE,
-    SERVICE_HEADING_HOME,
+    SERVICE_CANCEL_PRECOOL,
+    SERVICE_PRECOOL,
 )
-from .coordinator import HvacCoordinator
-from .store import ModelStore
+from .coordinator import AbodeHvacCoordinator
+from .entity import register_house_device
+from .forms import ENTRY_MINOR_VERSION, ENTRY_VERSION, migrate_entry
 
-PLATFORMS: list[Platform] = [
-    Platform.BUTTON,
-    Platform.NUMBER,
-    Platform.SELECT,
-    Platform.SENSOR,
-    Platform.SWITCH,
-]
+PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.NUMBER, Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-type HvacConfigEntry = ConfigEntry[HvacCoordinator]
-
-_ROOM_SERVICE_SCHEMA = vol.Schema({vol.Required(ATTR_ROOM_ID): cv.string})
-
-_HEADING_HOME_SCHEMA = _ROOM_SERVICE_SCHEMA.extend(
-    {vol.Optional(ATTR_DEADLINE): cv.datetime}
+PRECOOL_SCHEMA = probatio.Schema(
+    {probatio.Required(ATTR_ROOM_ID): cv.string, probatio.Optional(ATTR_READY_BY): cv.datetime}
 )
+CANCEL_PRECOOL_SCHEMA = probatio.Schema({probatio.Required(ATTR_ROOM_ID): cv.string})
+
+
+@dataclass(slots=True)
+class AbodeHvacRuntime:
+    """What a loaded entry holds: the coordinator, which holds Memory [R18]."""
+
+    coordinator: AbodeHvacCoordinator
+
+
+type AbodeHvacConfigEntry = ConfigEntry[AbodeHvacRuntime]
+
+
+def _coordinator_for(hass: HomeAssistant, room_id: str) -> AbodeHvacCoordinator:
+    """The loaded coordinator that runs this room, or a translated refusal
+    [R18]."""
+    entries: list[AbodeHvacConfigEntry] = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        raise ServiceValidationError(translation_domain=DOMAIN, translation_key="not_loaded")
+    for entry in entries:
+        coordinator = entry.runtime_data.coordinator
+        if coordinator.has_room(room_id):
+            return coordinator
+    raise ServiceValidationError(translation_domain=DOMAIN, translation_key="unknown_room",
+                                 translation_placeholders={"room_id": room_id})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register services.
+    """Register the actions precool and cancel_precool, once for the
+    integration, not per entry [R18]."""
 
-    Services are registered here rather than in async_setup_entry so that
-    automations referencing them validate even when the entry is not loaded.
-    """
-
-    def _coordinators() -> list[HvacCoordinator]:
-        return [
-            entry.runtime_data
-            for entry in hass.config_entries.async_loaded_entries(DOMAIN)
-        ]
-
-    def _resolve(room_id: str) -> HvacCoordinator:
-        for coordinator in _coordinators():
-            if room_id in coordinator.rooms:
-                return coordinator
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="unknown_room",
-            translation_placeholders={"room_id": room_id},
-        )
-
-    async def _handle_heading_home(call: ServiceCall) -> None:
+    async def precool(call: ServiceCall) -> None:
         room_id: str = call.data[ATTR_ROOM_ID]
-        coordinator = _resolve(room_id)
-        coordinator.async_request_heading_home(room_id, call.data.get(ATTR_DEADLINE))
-        await coordinator.async_request_refresh()
+        coordinator = _coordinator_for(hass, room_id)
+        run = coordinator.rooms[room_id]
+        if run.config.presence_sensor is None:  # [I8]
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="precool_needs_presence",
+                                         translation_placeholders={"room": run.config.name})
+        ready_by: datetime | None = call.data.get(ATTR_READY_BY)
+        when = dt_util.as_utc(ready_by) if ready_by is not None else dt_util.utcnow()
+        await coordinator.async_set_choices(room_id, UserAction.PRECOOL, precool_ready_by=when)
 
-    async def _handle_clear_override(call: ServiceCall) -> None:
+    async def cancel_precool(call: ServiceCall) -> None:
         room_id: str = call.data[ATTR_ROOM_ID]
-        coordinator = _resolve(room_id)
-        coordinator.async_clear_override(room_id)
-        await coordinator.async_request_refresh()
+        coordinator = _coordinator_for(hass, room_id)
+        await coordinator.async_set_choices(room_id, UserAction.OTHER, precool_ready_by=None)
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_HEADING_HOME,
-        _handle_heading_home,
-        schema=_HEADING_HOME_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAR_OVERRIDE,
-        _handle_clear_override,
-        schema=_ROOM_SERVICE_SCHEMA,
-    )
+    hass.services.async_register(DOMAIN, SERVICE_PRECOOL, precool, schema=PRECOOL_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_CANCEL_PRECOOL, cancel_precool, schema=CANCEL_PRECOOL_SCHEMA)
     return True
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:
-    """Bring an older entry up to the current shape.
-
-    **Version 1 to 2 — a room's head became a list.** Every stored room
-    carried one `climate_entity_id`; from 0.8.8 it carries
-    `climate_entity_ids`, because a room can be served by two indoor units.
-
-    No outdoor unit groups are written. Every existing head becomes its own
-    compressor, which is exactly how the short-cycle guard behaved before the
-    change, so nothing about an existing house moves until it is told to.
-
-    A version bump ships a migration, always. Without one every existing
-    install logs "Migration handler not found" and refuses to load, and the
-    user is told to delete and re-add — which is never an acceptable answer to
-    a change of ours.
-    """
-    if entry.version > 2:
-        # Downgraded from a future release. Nothing here can help.
-        return False
-
-    if entry.version == 1:
-        data = {**entry.data}
-        options = {**entry.options}
-        for holder in (data, options):
-            rooms = holder.get(CONF_ROOMS)
-            if not rooms:
-                continue
-            holder[CONF_ROOMS] = [_room_to_v2(room) for room in rooms]
-        hass.config_entries.async_update_entry(
-            entry, data=data, options=options, version=2
-        )
-
-    return True
-
-
-def _room_to_v2(room: dict[str, Any]) -> dict[str, Any]:
-    """One stored room, scalar head to list of heads."""
-    migrated = {**room}
-    single = migrated.pop(CONF_CLIMATE_ENTITY, None)
-    if not migrated.get(CONF_CLIMATE_ENTITIES):
-        migrated[CONF_CLIMATE_ENTITIES] = [single] if single else []
-    return migrated
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:
-    """Set up from a config entry."""
-    store = ModelStore(hass)
-    await store.async_load()
-
-    coordinator = HvacCoordinator(hass, entry, store)
-    await coordinator.async_prepare()
+async def async_setup_entry(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -> bool:
+    """Start Memory and the coordinator; run the first cycle before any
+    entity exists; then the platforms [R18][D049]."""
+    coordinator = AbodeHvacCoordinator(hass, entry)
+    try:
+        await coordinator.async_start()
+    except UnsupportedStorageVersionError as err:
+        raise ConfigEntryNotReady(translation_domain=DOMAIN, translation_key="memory_unreadable",
+                                  translation_placeholders={"error": str(err)}) from err
     await coordinator.async_config_entry_first_refresh()
-
-    entry.runtime_data = coordinator
-
+    entry.runtime_data = AbodeHvacRuntime(coordinator)
+    register_house_device(hass, coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+    entry.async_on_unload(entry.add_update_listener(_async_options_changed))
+    coordinator.start_seeding()
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> bool:
-    """Unload a config entry, writing learned state and choices out first.
+async def _async_options_changed(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -> None:
+    """Rooms added, changed or removed in place, without a reload [R18].
+    The house's data changes only through Reconfigure; then the entry is
+    reloaded."""
+    coordinator = entry.runtime_data.coordinator
+    if dict(entry.data) != coordinator.house_data:
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
+    await coordinator.async_rooms_changed()
 
-    A reload builds a new store and reads the file straight away, so anything
-    this store has not yet written would be lost to it (DR-064).
-    """
+
+async def async_unload_entry(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -> bool:
+    """Unload the platforms; the timers and listeners go with the entry;
+    Memory writes everything [D064][R18]."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        await entry.runtime_data.store.async_flush()
+        coordinator = entry.runtime_data.coordinator
+        await coordinator.async_shutdown_rooms()
+        coordinator.clear_repairs()
     return unloaded
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> None:
-    """Drop learned state when the entry is removed."""
-    await ModelStore(hass).async_remove()
+async def async_remove_entry(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -> None:
+    """The integration removed: Memory's file goes too [Prop]."""
+    from .memory import Memory
+
+    await Memory(hass, dict).async_remove()
 
 
 async def async_remove_config_entry_device(
-    hass: HomeAssistant, entry: HvacConfigEntry, device_entry: dr.DeviceEntry
+    hass: HomeAssistant, entry: AbodeHvacConfigEntry, device: dr.DeviceEntry
 ) -> bool:
-    """Allow deleting a room device once the room is no longer configured.
-
-    runtime_data only exists while the entry is loaded. Home Assistant can call
-    this with the entry unloaded, so fall back to the stored configuration
-    rather than raising AttributeError.
-    """
-    if (coordinator := getattr(entry, "runtime_data", None)) is not None:
-        configured = set(coordinator.rooms)
-    else:
-        configured = {
-            room[CONF_ROOM_ID]
-            for room in entry.options.get(
-                CONF_ROOMS, entry.data.get(CONF_ROOMS, [])
-            )
-            if CONF_ROOM_ID in room
-        }
-    return not any(
-        identifier[1] in configured
-        for identifier in device_entry.identifiers
-        if identifier[0] == DOMAIN
-    )
+    """True only for a room no longer configured, so a leftover device can
+    be deleted [R18]."""
+    coordinator = entry.runtime_data.coordinator
+    for domain, identifier in device.identifiers:
+        if domain != DOMAIN:
+            continue
+        if identifier == entry.entry_id or coordinator.has_room(identifier):
+            return False
+    return True
 
 
-async def _async_reload_entry(hass: HomeAssistant, entry: HvacConfigEntry) -> None:
-    """Reload when options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
+async def async_migrate_entry(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -> bool:
+    """Convert an older configuration; never refuse to load [Set]."""
+    if (entry.version, entry.minor_version) == (ENTRY_VERSION, ENTRY_MINOR_VERSION):
+        return True
+    data, options = migrate_entry(entry.version, entry.minor_version, entry.data, entry.options)
+    hass.config_entries.async_update_entry(entry, data=data, options=options, version=ENTRY_VERSION,
+                                           minor_version=ENTRY_MINOR_VERSION)
+    return True

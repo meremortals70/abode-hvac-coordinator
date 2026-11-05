@@ -1,0 +1,6 @@
+# Ruff is pinned in CI (.github/workflows/ci.yml) to 0.17.3, and its rules
+# are that release's default set: pinning the version pins the rules.
+target-version = "py314"
+
+[lint]
+preview = false

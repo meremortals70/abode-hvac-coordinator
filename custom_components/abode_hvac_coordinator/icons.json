@@ -2,112 +2,63 @@
   "entity": {
     "sensor": {
       "mode": {
-        "default": "mdi:state-machine",
+        "default": "mdi:home-thermometer",
         "state": {
           "lockout": "mdi:lock",
+          "automatic_off": "mdi:hand-back-right",
+          "left": "mdi:exit-run",
           "unoccupied": "mdi:home-outline",
-          "occupied": "mdi:home",
-          "sleep": "mdi:sleep",
-          "precondition": "mdi:home-clock",
           "precool": "mdi:snowflake-alert",
-          "coast": "mdi:sail-boat"
+          "sleep": "mdi:sleep",
+          "occupied": "mdi:account-check"
         }
       },
-      "comfort_index": {
-        "default": "mdi:thermometer-lines"
+      "comfort_index": { "default": "mdi:thermometer-water" },
+      "target_temperature": { "default": "mdi:thermometer-check" },
+      "commanded_setpoint": { "default": "mdi:thermostat" },
+      "dew_point": { "default": "mdi:water-thermometer" },
+      "settings": { "default": "mdi:cog" },
+      "controller": {
+        "default": "mdi:brain",
+        "state": { "plan_pid": "mdi:chart-timeline-variant", "rl": "mdi:brain" }
       },
-      "target_dry_bulb": {
-        "default": "mdi:thermometer-check"
-      },
-      "demand_forecast": {
-        "default": "mdi:transmission-tower-export"
-      },
-      "tariff_rate": {
-        "default": "mdi:cash-clock"
-      },
-      "active_constraints": {
-        "default": "mdi:gate"
-      },
-      "projected_cost": {
-        "default": "mdi:cash"
-      },
-      "outdoor_temperature": {
-        "default": "mdi:home-thermometer-outline"
-      },
-      "rooms_configured": {
-        "default": "mdi:home-group"
-      },
-      "settings": {
-        "default": "mdi:clipboard-list-outline"
-      },
-      "commanded_dry_bulb": {
-        "default": "mdi:thermostat-cog"
-      },
-      "dew_point": {
-        "default": "mdi:water-thermometer"
-      },
-      "outdoor_dew_point": {
-        "default": "mdi:water-thermometer-outline"
-      },
-      "stale_feeds": {
-        "default": "mdi:timer-alert-outline"
-      },
-      "outdoor_apparent_temperature": {
-        "default": "mdi:sun-thermometer-outline"
-      },
-      "forecast_peak": {
-        "default": "mdi:weather-sunny-alert"
-      }
+      "learning": { "default": "mdi:school" },
+      "comfort_in_band": { "default": "mdi:percent" },
+      "near_centre": { "default": "mdi:target" },
+      "starts_per_hour": { "default": "mdi:engine" },
+      "cost_of_comfort": { "default": "mdi:cash" },
+      "demand_forecast": { "default": "mdi:lightning-bolt" },
+      "tariff_rate": { "default": "mdi:currency-usd" },
+      "constraints": { "default": "mdi:transmission-tower-off" },
+      "projected_cost": { "default": "mdi:cash-clock" },
+      "outdoor_temperature": { "default": "mdi:thermometer" },
+      "outdoor_apparent_temperature": { "default": "mdi:sun-thermometer" },
+      "outdoor_dew_point": { "default": "mdi:water-thermometer-outline" },
+      "forecast_peak": { "default": "mdi:thermometer-chevron-up" },
+      "stale_feeds": { "default": "mdi:timer-sand-paused" },
+      "rooms_configured": { "default": "mdi:floor-plan" }
     },
     "switch": {
-      "automatic_control": {
-        "default": "mdi:robot",
-        "state": {
-          "off": "mdi:robot-off"
-        }
-      },
-      "automatic_vane_control": {
-        "default": "mdi:air-filter",
-        "state": {
-          "off": "mdi:hand-back-right"
-        }
-      }
+      "automatic_control": { "default": "mdi:robot", "state": { "off": "mdi:robot-off" } },
+      "automatic_vane_control": { "default": "mdi:arrow-oscillating", "state": { "off": "mdi:arrow-oscillating-off" } }
     },
     "select": {
-      "comfort_mode": {
-        "default": "mdi:bed-clock",
-        "state": {
-          "schedule": "mdi:calendar-clock",
-          "sleep": "mdi:sleep",
-          "awake": "mdi:white-balance-sunny"
-        }
-      },
-      "unit_mode": {
-        "default": "mdi:air-conditioner"
-      },
-      "fan_speed": {
-        "default": "mdi:fan"
-      },
-      "vertical_vane": {
-        "default": "mdi:arrow-up-down"
-      },
-      "horizontal_vane": {
-        "default": "mdi:arrow-left-right"
-      }
+      "comfort_mode": { "default": "mdi:calendar-clock" },
+      "unit_mode": { "default": "mdi:hvac" },
+      "fan_speed": { "default": "mdi:fan" },
+      "vertical_vane": { "default": "mdi:arrow-up-down" },
+      "horizontal_vane": { "default": "mdi:arrow-left-right" }
     },
     "number": {
-      "setpoint": {
-        "default": "mdi:thermometer-auto"
-      }
+      "setpoint": { "default": "mdi:thermostat" }
     },
     "button": {
-      "leave": {
-        "default": "mdi:exit-run"
-      }
+      "leave": { "default": "mdi:exit-run" },
+      "precool": { "default": "mdi:snowflake" }
     }
   },
   "services": {
-    "heading_home": "mdi:home-import-outline",
-    "clear_override": "mdi:close-circle-outline"
+    "precool": { "service": "mdi:snowflake" },
+    "cancel_precool": { "service": "mdi:snowflake-off" }
   }
 }

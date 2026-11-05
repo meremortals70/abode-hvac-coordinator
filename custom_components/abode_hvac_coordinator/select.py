@@ -1,208 +1,97 @@
-"""Select platform: the room's Comfort mode, and its mode, fan speed and vanes.
+"""Per room: Comfort mode, and the unit's mode, fan speed and vanes
+(Section 7) [D058][D049].
 
-**Comfort mode** (DR-058) is Schedule, Sleep or Awake: whether the room counts
-as sleeping, which decides the band it aims for. It is always available and
-always writable, whatever Automatic control is set to, because it states the
-user's intent rather than commanding the unit. It never turns the automation
-off; only the Automatic control switch does that.
-
-The rest are DR-049. Built from the room's stored capability profile (DR-048), so a control
-exists only where the room's units offered the choice when the room was set
-up, and offers exactly what they offered. Each shows the live state of the
-room's units. While Automatic control is on, mode and fan speed refuse changes;
-the vanes refuse them while Automatic vane control is on. Otherwise a change
-goes to every head in the room.
+Comfort mode is always writable and stands until the user changes it. The
+unit's controls show its live value; they are writable only while
+Automatic control (for a vane, Automatic vane control) is off, and offered
+only where the unit advertised the choice [D048].
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Iterable
 
-from homeassistant.components.climate.const import (
-    ATTR_FAN_MODE,
-    ATTR_SWING_HORIZONTAL_MODE,
-    ATTR_SWING_MODE,
-)
 from homeassistant.components.select import SelectEntity
-from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import HvacConfigEntry
-from .capabilities import RoomCapabilities
-from .coordinator import HvacCoordinator
-from .entity import HvacRoomControl, HvacRoomEntity
-from .models import ComfortMode, RoomConfig
+from . import AbodeHvacConfigEntry
+from .act import UserCommand
+from .comfort import UserAction
+from .coordinator import AbodeHvacCoordinator
+from .entity import RoomControlEntity, RoomEntity, add_room_entities
+from .models import ComfortMode
 
-# A change goes to the unit through the actuator, which awaits each service
-# call. One at a time per platform keeps two quick taps from interleaving.
 PARALLEL_UPDATES = 1
 
-
-@dataclass(frozen=True, kw_only=True)
-class _ControlSpec:
-    """One select: what it is called, where its options and value come from."""
-
-    key: str
-    translation_key: str
-    options: Callable[[RoomCapabilities], tuple[str, ...]]
-    value: Callable[[State], str | None]
-    command: str
-    is_vane: bool = False
+# the unit's attribute each control shows (climate/const.py, 2026.10.3) [HA]
+_LIVE = {
+    "fan_speed": "fan_mode",
+    "vertical_vane": "swing_mode",
+    "horizontal_vane": "swing_horizontal_mode",
+}
 
 
-def _attribute(name: str) -> Callable[[State], str | None]:
-    def read(state: State) -> str | None:
-        value = state.attributes.get(name)
-        return None if value is None else str(value)
+class ComfortModeSelect(RoomEntity, SelectEntity):
+    """Schedule, Sleep or Awake [D058][D083]."""
 
-    return read
-
-
-_SPECS: tuple[_ControlSpec, ...] = (
-    _ControlSpec(
-        key="unit_mode",
-        translation_key="unit_mode",
-        options=lambda profile: profile.hvac_modes,
-        value=lambda state: state.state,
-        command="hvac_mode",
-    ),
-    _ControlSpec(
-        key="fan_speed",
-        translation_key="fan_speed",
-        options=lambda profile: profile.fan_modes,
-        value=_attribute(ATTR_FAN_MODE),
-        command="fan_mode",
-    ),
-    _ControlSpec(
-        key="vertical_vane",
-        translation_key="vertical_vane",
-        options=lambda profile: profile.swing_modes,
-        value=_attribute(ATTR_SWING_MODE),
-        command="swing_mode",
-        is_vane=True,
-    ),
-    _ControlSpec(
-        key="horizontal_vane",
-        translation_key="horizontal_vane",
-        options=lambda profile: profile.swing_horizontal_modes,
-        value=_attribute(ATTR_SWING_HORIZONTAL_MODE),
-        command="swing_horizontal_mode",
-        is_vane=True,
-    ),
-)
-
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: HvacConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
-) -> None:
-    """Set up the room controls, and add more as rooms and profiles appear."""
-    coordinator = entry.runtime_data
-    known: set[tuple[str, str]] = set()
-
-    @callback
-    def _add_new_controls() -> None:
-        new: list[SelectEntity] = []
-        for room_id, room in coordinator.rooms.items():
-            # Every room has a Comfort mode, whether or not its units have
-            # reported what they can do: it is not a control of the unit.
-            if (room_id, _COMFORT_MODE_KEY) not in known:
-                known.add((room_id, _COMFORT_MODE_KEY))
-                new.append(RoomComfortModeSelect(coordinator, room))
-            profile = room.capabilities
-            if profile is None:
-                continue
-            for spec in _SPECS:
-                if (room_id, spec.key) in known or not spec.options(profile):
-                    continue
-                known.add((room_id, spec.key))
-                new.append(RoomSelect(coordinator, room, spec))
-        if new:
-            async_add_entities(new)
-
-    _add_new_controls()
-    entry.async_on_unload(coordinator.async_add_listener(_add_new_controls))
-
-
-_COMFORT_MODE_KEY = "comfort_mode"
-
-
-class RoomComfortModeSelect(HvacRoomEntity, SelectEntity):
-    """Whether the room is sleeping: by its schedule, or by the user's choice."""
-
-    _attr_translation_key = _COMFORT_MODE_KEY
-    _attr_options = [mode.value for mode in ComfortMode]
-
-    def __init__(self, coordinator: HvacCoordinator, room: RoomConfig) -> None:
-        """Initialize the select."""
-        super().__init__(coordinator, room)
-        self._attr_unique_id = f"{room.room_id}_{_COMFORT_MODE_KEY}"
+    def __init__(self, coordinator: AbodeHvacCoordinator, room_id: str) -> None:
+        super().__init__(coordinator, room_id, "comfort_mode")
+        self._attr_options = [m.value for m in ComfortMode]
 
     @property
     def available(self) -> bool:
-        """Usable whether or not the room has been evaluated yet.
-
-        The choice is held by the coordinator, the same as Automatic control,
-        so it has something true to say before the first decision exists.
-        """
-        return self.coordinator.last_update_success
+        return self.coordinator.last_update_success and self.run is not None
 
     @property
     def current_option(self) -> str:
-        """The room's Comfort mode."""
-        return self.coordinator.comfort_mode(self._room_id).value
+        return self.room.state.choices.comfort_mode.value
 
     async def async_select_option(self, option: str) -> None:
-        """Set the Comfort mode. The owner's choice is never refused or
-        undone by the component (0.9.7, DR-083)."""
-        await self.coordinator.async_set_comfort_mode(
-            self._room_id, ComfortMode(option)
-        )
+        await self.coordinator.async_set_choices(self.room_id, UserAction.COMFORT_MODE,
+                                                 comfort_mode=ComfortMode(option))
 
 
-class RoomSelect(HvacRoomControl, SelectEntity):
-    """One of the room's mode, fan speed or vane controls."""
+class UnitSelect(RoomControlEntity, SelectEntity):
+    """One of the unit's own controls, as the first head reports it."""
 
-    def __init__(
-        self, coordinator: HvacCoordinator, room: RoomConfig, spec: _ControlSpec
-    ) -> None:
-        """Initialize the select."""
-        super().__init__(coordinator, room)
-        self._spec = spec
-        self._is_vane = spec.is_vane
-        self._attr_translation_key = spec.translation_key
-        self._attr_unique_id = f"{room.room_id}_{spec.key}"
-
-    @property
-    def options(self) -> list[str]:
-        """What the room's units offered when the room was set up."""
-        room = self._room
-        if room is None or room.capabilities is None:
-            return []
-        return list(self._spec.options(room.capabilities))
+    def __init__(self, coordinator: AbodeHvacCoordinator, room_id: str, key: str, options: tuple[str, ...]) -> None:
+        super().__init__(coordinator, room_id, key)
+        self._key = key
+        self._attr_options = list(options)
 
     @property
     def current_option(self) -> str | None:
-        """The live state of the room's first unit, where it is one of the options."""
-        state = self._head_state
-        if state is None:
-            return None
-        value = self._spec.value(state)
-        return value if value in self.options else None
+        st = self.unit_state
+        value = st.state if self._key == "unit_mode" else st.attributes.get(_LIVE[self._key])
+        return str(value) if value is not None and str(value) in self._attr_options else None
 
     async def async_select_option(self, option: str) -> None:
-        """Send the choice to every unit in the room, if it may be changed now."""
-        room = self._require_writable()
-        command = self._spec.command
-        await self.coordinator.actuator.async_user_command(
-            room,
-            hvac_mode=option if command == "hvac_mode" else None,
-            fan_mode=option if command == "fan_mode" else None,
-            swing_mode=option if command == "swing_mode" else None,
-            swing_horizontal_mode=(
-                option if command == "swing_horizontal_mode" else None
-            ),
-        )
-        await self.coordinator.async_request_refresh()
+        cmd = {
+            "unit_mode": UserCommand(hvac_mode=option),
+            "fan_speed": UserCommand(fan_mode=option),
+            "vertical_vane": UserCommand(vertical_vane=option),
+            "horizontal_vane": UserCommand(horizontal_vane=option),
+        }[self._key]
+        await self.coordinator.async_user_command(self.room_id, cmd, self._context)
+
+
+def _room_entities(coordinator: AbodeHvacCoordinator, room_id: str) -> Iterable[SelectEntity]:
+    yield ComfortModeSelect(coordinator, room_id)
+    profile = coordinator.rooms[room_id].config.profile
+    if profile is None:
+        return
+    for key, options in (
+        ("unit_mode", profile.hvac_modes),
+        ("fan_speed", profile.fan_modes),
+        ("vertical_vane", profile.vertical_vanes),
+        ("horizontal_vane", profile.horizontal_vanes),
+    ):
+        if options:
+            yield UnitSelect(coordinator, room_id, key, options)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: AbodeHvacConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
+) -> None:
+    add_room_entities(hass, entry.runtime_data.coordinator, async_add_entities, _room_entities)

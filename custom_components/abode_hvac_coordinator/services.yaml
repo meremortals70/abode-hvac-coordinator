@@ -1,18 +1,18 @@
-heading_home:
+precool:
   fields:
     room_id:
       required: true
-      example: office
+      example: "3f2b9c0e8d5a4b7c9e1f2a3b4c5d6e7f"
       selector:
         text:
-    deadline:
+    ready_by:
+      required: false
       selector:
         datetime:
-
-clear_override:
+cancel_precool:
   fields:
     room_id:
       required: true
-      example: office
+      example: "3f2b9c0e8d5a4b7c9e1f2a3b4c5d6e7f"
       selector:
         text:

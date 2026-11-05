@@ -1,1182 +1,629 @@
-"""Config, options and reconfigure flows.
+"""The setup, reconfigure and options screens (Sections 7 and 8) [R18].
 
-Only what a user cannot get a correct result without is exposed. Regulation
-thresholds, model parameters and filter tuning are not settings.
-
-The initial setup collects the first room, so the integration does something
-the moment it is added; further rooms, edits and removals go through the
-options flow.
-
-Comfort bands arrive seeded with defaults derived from the ASHRAE 55 comfort
-zone, so a fresh install is sensible with no configuration. Nothing specific to
-any house is seeded: entity IDs are always the user's own.
-
-The tariff is not entered here. It belongs to Abode Power Tariffs; this flow
-collects only which of its entries to read from.
+First setup asks for the house, then adds the first room. Reconfigure
+reopens the house's screens. The options add, edit and remove rooms
+without a reload, and seed or reset a room's learning. Every field has a
+selector, a label and an explanation in strings.json; every error is
+translated and the form is shown again so it can be corrected.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import uuid
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
-import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.helpers import selector
+import probatio
+from homeassistant import data_entry_flow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.const import UnitOfEnergy, UnitOfLength, UnitOfPower, UnitOfTime
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    ConfigEntrySelector,
+    ConfigEntrySelectorConfig,
+    EntitySelector,
+    EntitySelectorConfig,
+    EntityWithDeviceFilterSelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+)
 
-from .actuator import profile_from_states
+from . import capabilities
 from .const import (
-    CONF_ALLOW_COMFORT_REDUCTION,
-    CONF_ALLOW_COVER_CONTROL,
+    BAND_FIELD_MAX,
+    BAND_FIELD_MIN,
+    BAND_FIELD_STEP,
+    CONF_ALLOW_BLIND_CONTROL,
     CONF_ANNOUNCE,
-    CONF_ANNOUNCE_TARGETS,
-    CONF_CAPABILITIES,
-    CONF_BAND_HIGH,
-    CONF_BAND_LOW,
-    CONF_BANDS,
-    CONF_BATTERY_CAPACITY_KWH,
-    CONF_BATTERY_MAX_DISCHARGE_KW,
-    CONF_BATTERY_SOC_ENTITY,
-    CONF_CLIMATE_ENTITIES,
-    CONF_COVER_ENTITIES,
-    CONF_DIRECT_SUN_ENTITY,
-    CONF_FAN_ENTITY,
-    CONF_GRID_ENTITY,
-    CONF_GRID_SIGN,
-    CONF_HEAD_GROUPS,
-    CONF_HEAT_LOAD_ENTITY,
-    CONF_HOUSE_LOAD_ENTITY,
-    CONF_HUMIDITY_ENTITY,
-    CONF_KNOWN_HEAD_GROUPS,
+    CONF_ANNOUNCE_THROUGH,
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_MAX_DISCHARGE,
+    CONF_BATTERY_SIZE,
+    CONF_BLINDS,
+    CONF_CLIMATE,
+    CONF_EMPTY_AFTER,
+    CONF_FREQUENCY_SENSOR,
+    CONF_GRID_POSITIVE_IS_IMPORT,
+    CONF_GRID_POWER,
+    CONF_HOUSE_LOAD,
+    CONF_HUMIDITY_SENSOR,
     CONF_LOCKOUT_REASON,
-    CONF_LOCKOUT_REASONS,
+    CONF_NAME,
     CONF_OCCUPIED_AFTER,
     CONF_OPENING_GRACE,
-    CONF_OPENING_ENTITIES,
-    CONF_OUTDOOR_HUMIDITY_ENTITY,
-    CONF_OUTDOOR_TEMPERATURE_ENTITY,
-    CONF_OUTDOOR_WIND_ENTITY,
+    CONF_OPENINGS,
+    CONF_OUTDOOR_HUMIDITY,
+    CONF_OUTDOOR_TEMPERATURE,
+    CONF_OUTDOOR_UNIT,
+    CONF_OUTDOOR_WIND,
     CONF_OVERHANG_HEIGHT,
     CONF_OVERHANG_PROJECTION,
-    CONF_PRESENCE_ENTITY,
-    CONF_RESERVE_MARGIN_KWH,
+    CONF_POWER_MANAGEMENT,
+    CONF_PRESENCE_SENSOR,
+    CONF_RESERVE_MARGIN,
     CONF_ROOM_ID,
     CONF_ROOMS,
-    CONF_SLEEP_SCHEDULE_ENTITY,
-    CONF_SOLAR_FORECAST_ENTRIES,
-    CONF_SOLAR_POWER_ENTITY,
-    CONF_TARIFF_ENTRY_ID,
-    CONF_TEMPERATURE_ENTITY,
-    CONF_VACANT_AFTER,
-    CONF_WARNING_GRACE,
+    CONF_SLEEP_SCHEDULE,
+    CONF_SOLAR_FORECAST_SOURCES,
+    CONF_SOLAR_POWER,
+    CONF_SUN_SENSOR,
+    CONF_TARIFF_ENTRY,
+    CONF_TEMPERATURE_SENSOR,
     CONF_TTS_ENGINE,
-    CONF_WEATHER_ENTITY,
-    CONF_WINDOW_DIRECTION,
+    CONF_WARNING_GRACE,
+    CONF_WEATHER,
+    CONF_WINDOW_FACING,
     DOMAIN,
-    LOGGER,
-    NOT_LOCKED_OUT,
-    OWN_OUTDOOR_UNIT,
-    POWER_MANAGEMENT_ENFORCED,
-    POWER_MANAGEMENT_GUIDANCE,
-    POWER_MANAGEMENT_OFF,
-    TARIFF_DOMAIN,
+    OVERHANG_FIELD_MAX_M,
+    OVERHANG_FIELD_STEP_M,
+    WINDOW_FACINGS,
 )
+from .coordinator import native_limits, native_temperature_unit
 from .forms import (
-    BAND_MODES,
-    bands_are_valid,
-    bands_as_suggestions,
-    bands_from_input,
-    default_band_suggestions,
-    default_grace_suggestions,
-    describe_configuration,
-    describe_global,
-    describe_power,
-    describe_rooms,
-    extend_head_groups,
-    extend_lockout_reasons,
-    head_groups_from_input,
-    known_head_groups,
-    known_lockout_reasons,
-    power_management_from_raw,
-    room_from_input,
+    BAND_KEYS,
+    ENTRY_MINOR_VERSION,
+    ENTRY_VERSION,
+    ROOM_DEFAULTS,
+    band_inverted,
+    build_room,
+    clean_house,
+    climate_used_elsewhere,
+    grid_sensor_changed,
+    house_from_data,
+    lockout_choices,
+    outdoor_unit_choices,
+    power_kw,
+    remove_room,
+    replace_room,
+    room_answers,
+    rooms_from_options,
+    summary,
 )
-from .power import (
-    GRID_SIGN_EXPORTING,
-    GRID_SIGN_IMPORTING,
-    energy_dashboard_solar_forecasts,
-    implied_sign,
-)
-from .sun import WINDOW_DIRECTIONS
+from .models import CapabilityProfile, PowerManagement
 
-ROOM_SCHEMA = vol.Schema(
-    {
-        vol.Required("name"): selector.TextSelector(),
-        # A list from 0.8.8. One entry is the normal case and reads exactly
-        # as the single field did; two is a room served by two indoor units.
-        vol.Required(CONF_CLIMATE_ENTITIES): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="climate", multiple=True)
-        ),
-        # Required from 0.8.9. Without both the comfort index cannot be
-        # computed, and without the index this component has nothing to
-        # offer that a thermostat does not. `RoomConfig` keeps both fields
-        # nullable regardless — required at setup is not the same as present
-        # at runtime, and a sensor can still go unavailable after the room
-        # is saved.
-        vol.Required(CONF_TEMPERATURE_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
-        ),
-        vol.Required(CONF_HUMIDITY_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
-        ),
-        vol.Optional(CONF_PRESENCE_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="binary_sensor")
-        ),
-        vol.Optional(CONF_SLEEP_SCHEDULE_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(
-                domain=["schedule", "input_boolean", "binary_sensor"]
-            )
-        ),
-        vol.Optional(CONF_DIRECT_SUN_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="binary_sensor")
-        ),
-        # Both of these were read by the coordinator and printed in the room
-        # summary from the day they were written, and no form ever set them —
-        # so `HEAT_LOAD_HCI` had never applied to any room, and air movement
-        # always fell through to "is the air conditioner running".
-        vol.Optional(CONF_HEAT_LOAD_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="binary_sensor")
-        ),
-        # Wider than heat load: `_bool` tests `state == "on"`, which is true
-        # of a fan entity and a switched circuit as well as a binary sensor,
-        # and a ceiling fan is as likely to be either.
-        vol.Optional(CONF_FAN_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(
-                domain=["binary_sensor", "fan", "switch"]
-            )
-        ),
-        vol.Optional(CONF_OPENING_ENTITIES): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="binary_sensor", multiple=True)
-        ),
-        vol.Optional(CONF_COVER_ENTITIES): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="cover", multiple=True)
-        ),
-        vol.Optional(
-            CONF_ALLOW_COVER_CONTROL, default=True
-        ): selector.BooleanSelector(),
+if TYPE_CHECKING:
+    from . import AbodeHvacConfigEntry
+
+TITLE = "Abode HVAC Coordinator"
+TARIFF_INTEGRATION = "abode_power_tariffs"
+MINUTES_FIELD_MAX = 240.0  # [Set]
+GRID_IMPORT = "import"
+GRID_EXPORT = "export"
+
+
+def _shown_if(key: str, field: str, value: bool | None = None) -> probatio.Optional:
+    """An optional field shown only while another field is filled in (value
+    None) or holds value. Home Assistant 2026.11 hides it and leaves it out
+    of the answers otherwise (data_entry_flow.Optional's visible,
+    helpers/field_visibility.py, 2026.11.0b0); before 2026.11 the field is
+    always shown, as before [HA]."""
+    marker = getattr(data_entry_flow, "Optional", None)
+    if marker is None:
+        return probatio.Optional(key)
+    condition: dict[str, Any] = (
+        {"field": field, "operator": "exists"} if value is None else {"field": field, "value": value}
+    )
+    shown: probatio.Optional = marker(key, visible=condition)
+    return shown
+
+
+def _entity(domain: str | list[str], device_class: str | None = None, multiple: bool = False) -> EntitySelector:
+    f = EntityWithDeviceFilterSelectorConfig(domain=domain)
+    if device_class is not None:
+        f["device_class"] = device_class
+    return EntitySelector(EntitySelectorConfig(filter=f, multiple=multiple))
+
+
+def _number(lo: float, hi: float, step: float, unit: str | None = None) -> NumberSelector:
+    cfg = NumberSelectorConfig(min=lo, max=hi, step=step, mode=NumberSelectorMode.BOX)
+    if unit is not None:
+        cfg["unit_of_measurement"] = unit
+    return NumberSelector(cfg)
+
+
+def _minutes() -> NumberSelector:
+    return _number(0.0, MINUTES_FIELD_MAX, 0.5, UnitOfTime.MINUTES)
+
+
+def _band() -> NumberSelector:
+    return _number(BAND_FIELD_MIN, BAND_FIELD_MAX, BAND_FIELD_STEP)
+
+
+# --------------------------------------------------------------------------
+# The house's screens, shared by first setup and Reconfigure
+# --------------------------------------------------------------------------
+
+
+TARIFF_SCHEMA = probatio.Schema({
+    probatio.Optional(CONF_TARIFF_ENTRY): ConfigEntrySelector(ConfigEntrySelectorConfig(integration=TARIFF_INTEGRATION)),
+})
+OUTDOOR_SCHEMA = probatio.Schema({
+    probatio.Optional(CONF_OUTDOOR_TEMPERATURE): _entity("sensor", "temperature"),
+    probatio.Optional(CONF_OUTDOOR_HUMIDITY): _entity("sensor", "humidity"),
+    probatio.Optional(CONF_OUTDOOR_WIND): _entity("sensor", "wind_speed"),
+})
+FORECAST_SCHEMA = probatio.Schema({probatio.Optional(CONF_WEATHER): _entity("weather")})
+ANNOUNCE_SCHEMA = probatio.Schema({probatio.Optional(CONF_TTS_ENGINE): _entity("tts")})
+
+
+async def _solar_forecast_options(hass: HomeAssistant) -> list[SelectOptionDict]:
+    """Every config entry whose integration offers the energy platform's
+    solar forecast [D061]."""
+    from homeassistant.components.energy.websocket_api import async_get_energy_platforms
+
+    domains = await async_get_energy_platforms(hass)
+    return [SelectOptionDict(value=e.entry_id, label=e.title) for e in hass.config_entries.async_entries()
+            if e.domain in domains]
+
+
+def _power_schema(solar_options: list[SelectOptionDict]) -> probatio.Schema:
+    fields: dict[Any, Any] = {
+        probatio.Optional(CONF_BATTERY_CHARGE): _entity("sensor", "battery"),
+        # without a charge sensor the budget sets no limit, so the battery's figures are asked for with it
+        _shown_if(CONF_BATTERY_SIZE, CONF_BATTERY_CHARGE): _number(0.0, 1000.0, 0.1, UnitOfEnergy.KILO_WATT_HOUR),
+        _shown_if(CONF_BATTERY_MAX_DISCHARGE, CONF_BATTERY_CHARGE): _number(0.0, 100.0, 0.1, UnitOfPower.KILO_WATT),
+        probatio.Optional(CONF_SOLAR_POWER): _entity("sensor", "power"),
+        probatio.Optional(CONF_HOUSE_LOAD): _entity("sensor", "power"),
+        _shown_if(CONF_RESERVE_MARGIN, CONF_BATTERY_CHARGE): _number(0.0, 1000.0, 0.1, UnitOfEnergy.KILO_WATT_HOUR),
+        probatio.Optional(CONF_GRID_POWER): _entity("sensor", "power"),
     }
-)
-
-
-def _metres_selector() -> selector.NumberSelector:
-    """A metres box, for the overhang measurements."""
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=10, step=0.05, unit_of_measurement="m",
-            mode=selector.NumberSelectorMode.BOX,
+    if solar_options:
+        # the solar forecast is read only with a solar power sensor (coordinator.async_read_solar)
+        fields[_shown_if(CONF_SOLAR_FORECAST_SOURCES, CONF_SOLAR_POWER)] = SelectSelector(
+            SelectSelectorConfig(options=solar_options, multiple=True, mode=SelectSelectorMode.LIST)
         )
-    )
+    return probatio.Schema(fields)
 
 
-def _reading_w(hass: Any, entity_id: str | None) -> float | None:
-    """A live numeric reading, for the sign-convention guess. Best-effort:
-
-    the setup step is a convenience, not a source of truth — an unreadable
-    value here just means no default is offered, never a wrong one.
-    """
-    if entity_id is None:
-        return None
-    state = hass.states.get(entity_id)
-    if state is None:
-        return None
-    try:
-        return float(state.state)
-    except ValueError:
-        return None
+GRID_SCHEMA = probatio.Schema({
+    probatio.Required(CONF_GRID_POSITIVE_IS_IMPORT): SelectSelector(SelectSelectorConfig(
+        options=[GRID_IMPORT, GRID_EXPORT], mode=SelectSelectorMode.LIST, translation_key="grid_direction")),
+})
 
 
-async def _solar_forecast_options(hass: Any) -> list[selector.SelectOptionDict]:
-    """Every config entry that publishes a solar forecast to the Energy dashboard.
+class _HouseScreens:
+    """The House screens: Tariff, Outdoor, Forecast, Power, (Grid
+    direction), Announcements [Set]. The answers gather in self.house."""
 
-    0.9.3, DR-061. Found the way the Energy dashboard finds them: the
-    integrations whose energy platform offers `async_get_solar_forecast`.
-    That helper is not a documented API; if it cannot be read, nothing is
-    offered rather than the step failing.
-    """
-    try:
-        from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
-            async_get_energy_platforms,
-        )
+    hass: HomeAssistant
+    house: dict[str, Any]
+    house_before: Mapping[str, Any]
 
-        platforms = await async_get_energy_platforms(hass)
-    except Exception as err:  # noqa: BLE001 - an options step must not fail on this
-        LOGGER.debug("Solar forecast platforms could not be read: %s", err)
-        return []
-    return [
-        selector.SelectOptionDict(
-            value=entry.entry_id, label=f"{entry.title} ({entry.domain})"
-        )
-        for domain in sorted(platforms)
-        for entry in hass.config_entries.async_entries(domain)
-    ]
+    if TYPE_CHECKING:  # provided by the flow that uses these screens
 
+        def async_show_form(self, **kwargs: Any) -> ConfigFlowResult: ...
 
-async def _energy_dashboard_forecasts(hass: Any) -> list[str]:
-    """The solar forecasts the Energy dashboard is set up with, or none."""
-    try:
-        from homeassistant.components.energy.data import (  # noqa: PLC0415
-            async_get_manager,
-        )
+        def add_suggested_values_to_schema(
+            self, data_schema: probatio.Schema, suggested_values: Mapping[str, Any] | None
+        ) -> probatio.Schema: ...
 
-        manager = await async_get_manager(hass)
-    except Exception as err:  # noqa: BLE001 - an options step must not fail on this
-        LOGGER.debug("Energy dashboard settings could not be read: %s", err)
-        return []
-    return energy_dashboard_solar_forecasts(manager.data)
+        async def async_house_done(self) -> ConfigFlowResult: ...
 
+        def grid_suggestion(self, grid_entity: str) -> bool | None: ...
 
-def _minutes_selector() -> selector.NumberSelector:
-    """A minutes box for the grace timings."""
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=120, step=1, unit_of_measurement="min",
-            mode=selector.NumberSelectorMode.BOX,
-        )
-    )
+    def _form(self, step_id: str, schema: probatio.Schema, errors: dict[str, str] | None = None,
+              placeholders: Mapping[str, str] | None = None) -> ConfigFlowResult:
+        return self.async_show_form(step_id=step_id,
+                                    data_schema=self.add_suggested_values_to_schema(schema, self.house),
+                                    errors=errors or {}, description_placeholders=dict(placeholders or {}))
 
-
-def _kwh_selector() -> selector.NumberSelector:
-    """A kWh box, for the battery capacity and reserve margin."""
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=100, step=0.1, unit_of_measurement="kWh",
-            mode=selector.NumberSelectorMode.BOX,
-        )
-    )
-
-
-def _kw_selector() -> selector.NumberSelector:
-    """A kW box, for the battery's rated maximum discharge power."""
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=50, step=0.1, unit_of_measurement="kW",
-            mode=selector.NumberSelectorMode.BOX,
-        )
-    )
-
-
-def outdoor_schema(heads: list[str], known_groups: list[str]) -> vol.Schema:
-    """One dropdown per head: which outdoor unit is it on.
-
-    Per head rather than per room, because a room with two heads can have them
-    on two separate outdoor units and so has two different answers to give.
-    For every room with one head this is a single dropdown, which reads the
-    same as asking once per room.
-
-    The same control the lockout reason field uses: the first option means no
-    shared unit, picking a name declares one, and typing a new name creates
-    it. Groups named by earlier rooms are already in the list.
-
-    The step is shown even for a single head. Hiding it there would mean a
-    room with one head sharing an outdoor unit with another room is never
-    asked, and that is the case the whole thing exists for.
-    """
-    options = [OWN_OUTDOOR_UNIT, *known_groups]
-    return vol.Schema(
-        {
-            vol.Optional(entity_id, default=OWN_OUTDOOR_UNIT): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=options,
-                    custom_value=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            )
-            for entity_id in heads
-        }
-    )
-
-
-def room_schema(lockout_reasons: list[str]) -> vol.Schema:
-    """The room form, with the lockout dropdown built from known reasons.
-
-    Lockout is one field, not a tick box and a second screen. The first option
-    means the room is not locked out, so choosing a reason is the same action
-    as switching lockout on, and the reason can never be set by accident
-    because it is never a free text box.
-    """
-    return ROOM_SCHEMA.extend(
-        {
-            vol.Optional(CONF_OCCUPIED_AFTER): _minutes_selector(),
-            vol.Optional(CONF_VACANT_AFTER): _minutes_selector(),
-            vol.Optional(CONF_WARNING_GRACE): _minutes_selector(),
-            vol.Optional(CONF_ANNOUNCE, default=False): selector.BooleanSelector(),
-            vol.Optional(CONF_OPENING_GRACE): _minutes_selector(),
-            vol.Optional(CONF_ANNOUNCE_TARGETS): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="media_player", multiple=True)
-            ),
-            vol.Optional(CONF_OVERHANG_PROJECTION): _metres_selector(),
-            vol.Optional(CONF_OVERHANG_HEIGHT): _metres_selector(),
-            vol.Optional(CONF_WINDOW_DIRECTION): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=list(WINDOW_DIRECTIONS),
-                    translation_key="window_direction",
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Optional(
-                CONF_LOCKOUT_REASON, default=NOT_LOCKED_OUT
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=lockout_reasons,
-                    custom_value=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-        }
-    )
-
-
-BANDS_SCHEMA = vol.Schema(
-    {
-        **{
-            vol.Optional(f"{mode}_{bound}"): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0, max=50, step=0.5, mode=selector.NumberSelectorMode.BOX
-                )
-            )
-            for mode in BAND_MODES
-            for bound in (CONF_BAND_LOW, CONF_BAND_HIGH)
-        },
-        #: 0.8.10, finding 15; extended to three states in 0.8.12. Never a
-        #: magnitude — the limit itself is whatever the power budget
-        #: computes, not a number the user would be guessing at.
-        vol.Optional(
-            CONF_ALLOW_COMFORT_REDUCTION, default=POWER_MANAGEMENT_OFF
-        ): selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=[
-                    POWER_MANAGEMENT_OFF,
-                    POWER_MANAGEMENT_GUIDANCE,
-                    POWER_MANAGEMENT_ENFORCED,
-                ],
-                translation_key="power_management",
-                mode=selector.SelectSelectorMode.DROPDOWN,
-            )
-        ),
-    }
-)
-
-
-TARIFF_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_TARIFF_ENTRY_ID): selector.ConfigEntrySelector(
-            selector.ConfigEntrySelectorConfig(integration=TARIFF_DOMAIN)
-        )
-    }
-)
-
-
-class _RoomSteps:
-    """The room, lockout and bands steps, shared by both flows.
-
-    Both flows collect a room the same way. The only difference is what happens
-    to it afterwards, which is what _save_room does.
-    """
-
-    _room: dict[str, Any]
-
-    def _stored_lockout_reasons(self) -> list[str]:
-        """Reasons the user has typed before. Empty for a fresh install."""
-        return []
-
-    def _suggested_room(self) -> dict[str, Any]:
-        """Values to prefill the room form with.
-
-        A new room arrives with the default grace timings already in it, so it
-        behaves sensibly without anyone reasoning about compressor cycling.
-        """
-        return dict(default_grace_suggestions())
-
-    def _suggested_bands(self) -> dict[str, float]:
-        """Values to prefill the bands form with.
-
-        A new room gets the seeded defaults, so the form arrives with sensible
-        numbers rather than six empty boxes.
-        """
-        return default_band_suggestions()
-
-    async def async_step_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the room and the entities that describe it."""
-        if user_input is None:
-            schema = room_schema(known_lockout_reasons(self._stored_lockout_reasons()))
-            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
-                step_id="room",
-                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
-                    schema, self._suggested_room()
-                ),
-            )
-
-        room = room_from_input(user_input)
-        if self._climate_entity_taken(room):
-            # Refused here rather than accepted and diagnosed later. Two rooms
-            # on one entity each command their own setpoint every cycle and
-            # neither errors, so the fault is invisible once it is saved.
-            schema = room_schema(known_lockout_reasons(self._stored_lockout_reasons()))
-            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
-                step_id="room",
-                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
-                    schema, user_input
-                ),
-                errors={CONF_CLIMATE_ENTITIES: "climate_entity_in_use"},
-            )
-
-        # What the room's units can do is read here, once, and stored with the
-        # room (DR-048). A room cannot be set up for an air conditioner that is
-        # not reporting: there would be nothing to build its commands or its
-        # controls from, and a room saved with an empty profile would offer
-        # nothing and send nothing.
-        profile, note = profile_from_states(
-            [self.hass.states.get(entity_id) for entity_id in room[CONF_CLIMATE_ENTITIES]]  # type: ignore[attr-defined]
-        )
-        if profile is None:
-            schema = room_schema(known_lockout_reasons(self._stored_lockout_reasons()))
-            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
-                step_id="room",
-                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
-                    schema, user_input
-                ),
-                errors={CONF_CLIMATE_ENTITIES: "climate_not_reporting"},
-            )
-        if note is not None:
-            LOGGER.warning("%s: %s", room["name"], note)
-        room[CONF_CAPABILITIES] = profile.to_dict()
-
-        self._room = room
-        return await self.async_step_room_outdoor()
-
-    async def async_step_room_outdoor(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Which outdoor unit each of this room's heads is on.
-
-        After the room form, not before it: the heads have to be chosen before
-        they can be listed.
-        """
-        heads = list(self._room.get(CONF_CLIMATE_ENTITIES, []))
-        if user_input is None:
-            schema = outdoor_schema(heads, known_head_groups(self._stored_head_groups()))
-            return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
-                step_id="room_outdoor",
-                data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
-                    schema, self._room.get(CONF_HEAD_GROUPS) or {}
-                ),
-                description_placeholders={"room": self._room.get("name", "")},
-            )
-
-        self._room[CONF_HEAD_GROUPS] = head_groups_from_input(user_input)
-        return await self.async_step_bands()
-
-    def _stored_head_groups(self) -> list[str]:
-        """Outdoor unit names already in use. Empty during initial setup."""
-        return []
-
-    def _climate_entity_taken(self, room: dict[str, Any]) -> bool:
-        """Whether another configured room already drives this entity.
-
-        Always False during initial setup: there is no other room yet. The
-        options flow overrides it.
-        """
-        return False
-
-    async def async_step_bands(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the comfort bands for this room."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            bands = bands_from_input(user_input)
-            if not bands_are_valid(bands):
-                errors["base"] = "band_inverted"
+    def _take(self, user_input: Mapping[str, Any], schema: probatio.Schema) -> None:
+        """This screen's answers; a field emptied is removed."""
+        for key in schema.schema:
+            name = str(key)
+            if name in user_input and user_input[name] not in (None, "", []):
+                self.house[name] = user_input[name]
             else:
-                self._room[CONF_BANDS] = bands
-                self._room[CONF_ALLOW_COMFORT_REDUCTION] = power_management_from_raw(
-                    user_input.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
-                )
-                return self._save_room()
+                self.house.pop(name, None)
 
-        suggested = self._suggested_bands()
-        return self.async_show_form(  # type: ignore[attr-defined,no-any-return]
-            step_id="bands",
-            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
-                BANDS_SCHEMA, suggested
-            ),
-            errors=errors,
-        )
+    async def async_step_tariff(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._take(user_input, TARIFF_SCHEMA)
+            return await self.async_step_outdoor()
+        return self._form("tariff", TARIFF_SCHEMA)
 
-    def _save_room(self) -> ConfigFlowResult:
-        """Store the collected room. Implemented by each flow."""
-        raise NotImplementedError
+    async def async_step_outdoor(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._take(user_input, OUTDOOR_SCHEMA)
+            return await self.async_step_forecast()
+        return self._form("outdoor", OUTDOOR_SCHEMA)
+
+    async def async_step_forecast(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._take(user_input, FORECAST_SCHEMA)
+            return await self.async_step_power()
+        return self._form("forecast", FORECAST_SCHEMA)
+
+    async def async_step_power(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        schema = _power_schema(await _solar_forecast_options(self.hass))
+        if user_input is not None:
+            self._take(user_input, schema)
+            if grid_sensor_changed(self.house_before, self.house):
+                self.house.pop(CONF_GRID_POSITIVE_IS_IMPORT, None)
+                return await self.async_step_grid_direction()
+            if CONF_GRID_POWER not in self.house:
+                self.house.pop(CONF_GRID_POSITIVE_IS_IMPORT, None)
+            return await self.async_step_announcements()
+        return self._form("power", schema)
+
+    async def async_step_grid_direction(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Which way a positive grid reading points; stored, and never
+        changed at run time [D038]."""
+        if user_input is not None:
+            self.house[CONF_GRID_POSITIVE_IS_IMPORT] = user_input[CONF_GRID_POSITIVE_IS_IMPORT] == GRID_IMPORT
+            return await self.async_step_announcements()
+        suggested = self.grid_suggestion(str(self.house[CONF_GRID_POWER]))
+        values = {} if suggested is None else {CONF_GRID_POSITIVE_IS_IMPORT: GRID_IMPORT if suggested else GRID_EXPORT}
+        return self.async_show_form(step_id="grid_direction",
+                                    data_schema=self.add_suggested_values_to_schema(GRID_SCHEMA, values),
+                                    description_placeholders={"sensor": str(self.house[CONF_GRID_POWER])})
+
+    async def async_step_announcements(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._take(user_input, ANNOUNCE_SCHEMA)
+            return await self.async_house_done()
+        return self._form("announcements", ANNOUNCE_SCHEMA)
 
 
-class HvacCoordinatorConfigFlow(_RoomSteps, ConfigFlow, domain=DOMAIN):
-    """Initial setup. Collects the first room, so setup produces something."""
+# --------------------------------------------------------------------------
+# The Room screens, shared by first setup and the options
+# --------------------------------------------------------------------------
 
-    VERSION = 2
+
+class _RoomScreens:
+    """Room screens 1-3. The room being added or edited gathers in
+    self.room; self.options are the options it will be saved into."""
+
+    hass: HomeAssistant
+    options: dict[str, Any]
+    room: dict[str, Any]
+    room_id: str | None
+    heads: list[dict[str, Any]]
+    head_index: int
+    profile: CapabilityProfile | None
+
+    if TYPE_CHECKING:  # provided by the flow that uses these screens
+
+        def async_show_form(self, **kwargs: Any) -> ConfigFlowResult: ...
+
+        def add_suggested_values_to_schema(
+            self, data_schema: probatio.Schema, suggested_values: Mapping[str, Any] | None
+        ) -> probatio.Schema: ...
+
+        async def async_room_done(self, stored: dict[str, Any]) -> ConfigFlowResult: ...
+
+    def _room_1_schema(self) -> probatio.Schema:
+        # option values are lower case, as Home Assistant's translation keys must be
+        facings = [k.lower() for k in WINDOW_FACINGS]
+        return probatio.Schema({
+            probatio.Required(CONF_NAME): TextSelector(),
+            probatio.Required(CONF_CLIMATE): _entity("climate", multiple=True),
+            probatio.Required(CONF_TEMPERATURE_SENSOR): _entity("sensor", "temperature"),
+            probatio.Required(CONF_HUMIDITY_SENSOR): _entity("sensor", "humidity"),
+            probatio.Optional(CONF_PRESENCE_SENSOR): _entity("binary_sensor"),
+            probatio.Optional(CONF_SLEEP_SCHEDULE): _entity(["schedule", "input_boolean", "binary_sensor"]),
+            probatio.Optional(CONF_SUN_SENSOR): _entity("binary_sensor"),
+            probatio.Optional(CONF_OPENINGS): _entity("binary_sensor", multiple=True),
+            probatio.Optional(CONF_BLINDS): _entity("cover", multiple=True),
+            probatio.Optional(CONF_ALLOW_BLIND_CONTROL): BooleanSelector(),
+            probatio.Optional(CONF_WINDOW_FACING): SelectSelector(SelectSelectorConfig(
+                options=facings, mode=SelectSelectorMode.DROPDOWN, translation_key="window_facing")),
+            # an overhang shades the glass only by the way the window faces (sun.py)
+            _shown_if(CONF_OVERHANG_PROJECTION, CONF_WINDOW_FACING): _number(
+                0.0, OVERHANG_FIELD_MAX_M, OVERHANG_FIELD_STEP_M, UnitOfLength.METERS),
+            _shown_if(CONF_OVERHANG_HEIGHT, CONF_WINDOW_FACING): _number(
+                0.0, OVERHANG_FIELD_MAX_M, OVERHANG_FIELD_STEP_M, UnitOfLength.METERS),
+            probatio.Optional(CONF_OCCUPIED_AFTER): _minutes(),
+            probatio.Optional(CONF_EMPTY_AFTER): _minutes(),
+            probatio.Optional(CONF_WARNING_GRACE): _minutes(),
+            probatio.Optional(CONF_ANNOUNCE): BooleanSelector(),
+            _shown_if(CONF_ANNOUNCE_THROUGH, CONF_ANNOUNCE, True): _entity("media_player", multiple=True),
+            probatio.Optional(CONF_OPENING_GRACE): _minutes(),
+            probatio.Optional(CONF_LOCKOUT_REASON): SelectSelector(SelectSelectorConfig(
+                options=lockout_choices(self.options), custom_value=True, mode=SelectSelectorMode.DROPDOWN)),
+        })
+
+    def _read_profile(self, climates: list[str]) -> tuple[CapabilityProfile | None, str | None, str | None]:
+        """Each air conditioner's live state, read now [D048]: the combined
+        profile, or the error and the entity it is about."""
+        unit = self.hass.config.units.temperature_unit
+        profiles: list[CapabilityProfile] = []
+        for c in climates:
+            st = self.hass.states.get(c)
+            p = capabilities.read_profile(st.state if st else None, st.attributes if st else {}, unit,
+                                          native_temperature_unit(self.hass, c), native_limits(self.hass, c))
+            if p is None:
+                return None, "not_reporting", c
+            profiles.append(p)
+        combined = capabilities.combine(profiles)  # two heads: only what both can do [D020]
+        if not capabilities.heads_agree_on_setpoints(combined):
+            return None, "heads_take_different_setpoints", None
+        if capabilities.setup_problem(combined) is not None:
+            return None, "ranges_do_not_overlap", None
+        return combined, None, None
+
+    async def async_step_room_1(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Room screen 1, the room."""
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        schema = self._room_1_schema()
+        if user_input is not None:
+            climates = list(user_input.get(CONF_CLIMATE) or [])
+            used = climate_used_elsewhere(self.options.get(CONF_ROOMS, []), climates, self.room_id)
+            profile: CapabilityProfile | None = None
+            if not climates:
+                errors[CONF_CLIMATE] = "no_climate"
+            elif used is not None:
+                errors[CONF_CLIMATE] = "climate_in_use"
+                placeholders = {"entity": used[0], "room": used[1]}
+            else:
+                profile, error, entity = self._read_profile(climates)
+                if error is not None:
+                    errors[CONF_CLIMATE] = error
+                    placeholders = {"entity": entity or ""}
+            if not str(user_input.get(CONF_NAME, "")).strip():
+                errors[CONF_NAME] = "no_name"
+            kept = {k: v for k, v in self.room.items() if k not in schema.schema}
+            self.room = {**kept, **user_input}
+            for key in schema.schema:  # a field emptied on Edit is removed
+                if str(key) not in user_input:
+                    self.room.pop(str(key), None)
+            if not errors:
+                self.profile = profile
+                before = {h.get(CONF_CLIMATE): h for h in self.heads}
+                self.heads = [dict(before.get(c, {CONF_CLIMATE: c})) for c in climates]
+                self.head_index = 0
+                return await self.async_step_room_2()
+        values = {**ROOM_DEFAULTS, **self.room}
+        return self.async_show_form(step_id="room_1", data_schema=self.add_suggested_values_to_schema(schema, values),
+                                    errors=errors, description_placeholders=placeholders)
+
+    async def async_step_room_2(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Room screen 2, once for each air conditioner: its outdoor unit and
+        compressor frequency sensor [D020][Prop]."""
+        head = self.heads[self.head_index]
+        schema = probatio.Schema({
+            probatio.Optional(CONF_OUTDOOR_UNIT): SelectSelector(SelectSelectorConfig(
+                options=outdoor_unit_choices(self.options), custom_value=True, mode=SelectSelectorMode.DROPDOWN)),
+            probatio.Optional(CONF_FREQUENCY_SENSOR): _entity("sensor", "frequency"),
+        })
+        if user_input is not None:
+            head.pop(CONF_OUTDOOR_UNIT, None)
+            head.pop(CONF_FREQUENCY_SENSOR, None)
+            head.update({k: v for k, v in user_input.items() if v not in (None, "")})
+            self.head_index += 1
+            if self.head_index < len(self.heads):
+                return await self.async_step_room_2()
+            return await self.async_step_room_3()
+        return self.async_show_form(step_id="room_2", data_schema=self.add_suggested_values_to_schema(schema, head),
+                                    description_placeholders={"climate": str(head[CONF_CLIMATE]),
+                                                              "count": f"{self.head_index + 1} of {len(self.heads)}"})
+
+    async def async_step_room_3(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Room screen 3, comfort: the bands and power management [Set][D041]."""
+        fields: dict[Any, Any] = {probatio.Optional(k): _band() for pair in BAND_KEYS for k in pair}
+        fields[probatio.Optional(CONF_POWER_MANAGEMENT)] = SelectSelector(SelectSelectorConfig(
+            options=[m.value for m in PowerManagement], mode=SelectSelectorMode.LIST,
+            translation_key="power_management"))
+        schema = probatio.Schema(fields)
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        if user_input is not None:
+            self.room.update(user_input)
+            for key in schema.schema:  # a field emptied on Edit takes its default again
+                if str(key) not in user_input:
+                    self.room.pop(str(key), None)
+            inverted = band_inverted(self.room)
+            if inverted is not None:
+                errors["base"] = "band_inverted"
+                placeholders = {"band": inverted}
+            else:
+                assert self.profile is not None
+                room_id = self.room_id or uuid.uuid4().hex  # a UUID made once, never changed [R18]
+                stored = build_room(room_id, self.room, self.heads, self.room, self.profile)
+                return await self.async_room_done(stored)
+        values = {**ROOM_DEFAULTS, **self.room}
+        return self.async_show_form(step_id="room_3", data_schema=self.add_suggested_values_to_schema(schema, values),
+                                    errors=errors, description_placeholders=placeholders)
+
+
+# --------------------------------------------------------------------------
+# First setup and Reconfigure
+# --------------------------------------------------------------------------
+
+
+class AbodeHvacConfigFlow(_HouseScreens, _RoomScreens, ConfigFlow, domain=DOMAIN):
+    """First setup: the house, then the first room. A second setup is
+    refused by single_config_entry in the manifest [R18]."""
+
+    VERSION = ENTRY_VERSION
+    MINOR_VERSION = ENTRY_MINOR_VERSION
 
     def __init__(self) -> None:
-        """Initialize the flow."""
-        self._room = {}
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Start by describing the first room."""
-        return await self.async_step_room(user_input)
-
-    def _save_room(self) -> ConfigFlowResult:
-        """Create the entry with the first room in it."""
-        return self.async_create_entry(
-            title="Abode HVAC Coordinator",
-            data={
-                CONF_ROOMS: [self._room],
-                CONF_LOCKOUT_REASONS: extend_lockout_reasons([], self._room),
-                CONF_KNOWN_HEAD_GROUPS: extend_head_groups([], self._room),
-            },
-        )
+        self.house = {}
+        self.house_before = {}
+        self.options = {}
+        self.room = {}
+        self.room_id = None
+        self.heads = []
+        self.head_index = 0
+        self.profile = None
+        self._reconfigure = False
 
     @staticmethod
-    def async_get_options_flow(config_entry: Any) -> HvacCoordinatorOptionsFlow:
-        """Return the options flow."""
-        return HvacCoordinatorOptionsFlow()
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> AbodeHvacOptionsFlow:
+        return AbodeHvacOptionsFlow()
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return await self.async_step_tariff()
+
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """The House screens, pre-filled [R18]."""
+        entry = self._get_reconfigure_entry()
+        self._reconfigure = True
+        self.house = dict(entry.data)
+        self.house_before = dict(entry.data)
+        return await self.async_step_tariff()
+
+    def grid_suggestion(self, grid_entity: str) -> bool | None:
+        if not self._reconfigure:
+            return None
+        entry: AbodeHvacConfigEntry = self._get_reconfigure_entry()
+        runtime = getattr(entry, "runtime_data", None)
+        st = self.hass.states.get(grid_entity)
+        if runtime is None or st is None:
+            return None
+        suggestion: bool | None = runtime.coordinator.grid_sign_suggestion(
+            power_kw(st.state, st.attributes.get("unit_of_measurement"))
+        )
+        return suggestion
+
+    async def async_house_done(self) -> ConfigFlowResult:
+        house = clean_house(self.house)
+        if self._reconfigure:
+            # the entry's update listener reloads it when the house's data changes
+            return self.async_update_and_abort(self._get_reconfigure_entry(), data=house)
+        self.house = house
+        return await self.async_step_room_1()
+
+    async def async_room_done(self, stored: dict[str, Any]) -> ConfigFlowResult:
+        options = replace_room({}, stored)
+        return self.async_create_entry(title=TITLE, data=self.house, options=options)
 
 
-class HvacCoordinatorOptionsFlow(_RoomSteps, OptionsFlow):
-    """Add, edit and remove rooms."""
+# --------------------------------------------------------------------------
+# The options: Rooms and Learning
+# --------------------------------------------------------------------------
+
+
+class AbodeHvacOptionsFlow(_RoomScreens, OptionsFlow):
+    """Rooms: add, edit, remove, saved without a reload. Learning: seed a
+    room from history, or reset it [Set][Prop]."""
 
     def __init__(self) -> None:
-        """Initialize the flow."""
-        self._room = {}
-        self._editing: str | None = None
-        #: 0.8.10. Holds the power step's answers across the extra sign-
-        #: convention step, so nothing is written to the entry until the
-        #: whole group is settled together.
-        self._pending_power_options: dict[str, Any] = {}
+        self.options = {}
+        self.room = {}
+        self.room_id = None
+        self.heads = []
+        self.head_index = 0
+        self.profile = None
+        self._learning: str | None = None
 
-    @property
-    def _rooms(self) -> list[dict[str, Any]]:
-        """Rooms as currently configured."""
-        return list(
-            self.config_entry.options.get(
-                CONF_ROOMS, self.config_entry.data.get(CONF_ROOMS, [])
-            )
-        )
+    def _rooms(self) -> list[SelectOptionDict]:
+        return [SelectOptionDict(value=r.room_id, label=r.name) for r in rooms_from_options(self.options)]
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Offer what can be done, rather than assuming a room is being added."""
-        if not self._rooms:
-            return await self.async_step_room()
-        return self.async_show_menu(
-            step_id="init",
-            description_placeholders={"configuration": self._summary()},
-            menu_options=["rooms", "global"],
-        )
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        self.options = dict(self.config_entry.options)
+        text = summary(house_from_data(self.config_entry.data), rooms_from_options(self.options))
+        return self.async_show_menu(step_id="init", menu_options=["rooms", "learning"],
+                                    description_placeholders={"summary": text})
 
-    async def async_step_rooms(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Room configuration."""
-        return self.async_show_menu(
-            step_id="rooms",
-            description_placeholders={"configuration": self._rooms_summary()},
-            menu_options=["room", "edit_room", "remove_room"],
-        )
+    async def async_step_rooms(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        menu = ["add_room", "edit_room", "remove_room"] if self._rooms() else ["add_room"]
+        return self.async_show_menu(step_id="rooms", menu_options=menu)
 
-    async def async_step_global(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Everything that applies to the whole house rather than one room."""
-        return self.async_show_menu(
-            step_id="global",
-            description_placeholders={"configuration": self._global_summary()},
-            menu_options=["tariff", "outdoor", "forecast", "power", "announcements"],
-        )
+    async def async_step_add_room(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        self.room, self.room_id, self.heads = {}, None, []
+        return await self.async_step_room_1()
 
-    def _rooms_summary(self) -> str:
-        """Every room and its settings."""
-        return describe_rooms(self._rooms)
+    def _pick_schema(self) -> probatio.Schema:
+        return probatio.Schema({probatio.Required(CONF_ROOM_ID): SelectSelector(
+            SelectSelectorConfig(options=self._rooms(), mode=SelectSelectorMode.LIST))})
 
-    def _global_summary(self) -> str:
-        """The house-wide settings."""
-        return describe_global(
-            self._tariff_title(),
-            self._outdoor_entity_id(),
-            self._outdoor_humidity_entity_id(),
-            self._outdoor_wind_entity_id(),
-            self._weather_entity_id(),
-            self._tts_engine_entity_id(),
-        )
+    def _stored(self, room_id: str) -> dict[str, Any]:
+        return next(dict(r) for r in self.options.get(CONF_ROOMS, []) if r.get(CONF_ROOM_ID) == room_id)
 
-    def _summary(self) -> str:
-        """Everything currently configured, shown on the menu itself."""
-        return describe_configuration(
-            self._rooms, self._tariff_title(), self._outdoor_entity_id()
-        )
-
-    def _stored(self, key: str) -> str | None:
-        """One configured value, options first then data, as a string or None.
-
-        Options and data are untyped mappings, so the narrowing has to happen
-        somewhere. Doing it once here is the difference between one cast and
-        one per caller.
-        """
-        value = self.config_entry.options.get(
-            key, self.config_entry.data.get(key)
-        )
-        return None if value is None else str(value)
-
-    def _outdoor_entity_id(self) -> str | None:
-        return self._stored(CONF_OUTDOOR_TEMPERATURE_ENTITY)
-
-    def _outdoor_humidity_entity_id(self) -> str | None:
-        return self._stored(CONF_OUTDOOR_HUMIDITY_ENTITY)
-
-    def _outdoor_wind_entity_id(self) -> str | None:
-        return self._stored(CONF_OUTDOOR_WIND_ENTITY)
-
-    def _weather_entity_id(self) -> str | None:
-        return self._stored(CONF_WEATHER_ENTITY)
-
-    def _tts_engine_entity_id(self) -> str | None:
-        return self._stored(CONF_TTS_ENGINE)
-
-    def _battery_soc_entity_id(self) -> str | None:
-        return self._stored(CONF_BATTERY_SOC_ENTITY)
-
-    def _battery_capacity_kwh(self) -> str | None:
-        return self._stored(CONF_BATTERY_CAPACITY_KWH)
-
-    def _solar_entity_id(self) -> str | None:
-        return self._stored(CONF_SOLAR_POWER_ENTITY)
-
-    def _house_load_entity_id(self) -> str | None:
-        return self._stored(CONF_HOUSE_LOAD_ENTITY)
-
-    def _reserve_margin_kwh(self) -> str | None:
-        return self._stored(CONF_RESERVE_MARGIN_KWH)
-
-    def _battery_max_discharge_kw(self) -> str | None:
-        return self._stored(CONF_BATTERY_MAX_DISCHARGE_KW)
-
-    def _grid_entity_id(self) -> str | None:
-        return self._stored(CONF_GRID_ENTITY)
-
-    def _grid_sign(self) -> str | None:
-        return self._stored(CONF_GRID_SIGN)
-
-    def _tariff_entry_id(self) -> str | None:
-        return self._stored(CONF_TARIFF_ENTRY_ID)
-
-    def _tariff_title(self) -> str | None:
-        """The selected tariff entry\'s title, so the menu names it.
-
-        The id is shown if the entry has gone: an id the user cannot match to
-        anything is still better than a blank that reads as "none selected"
-        when something is in fact selected and broken.
-        """
-        entry_id = self._tariff_entry_id()
-        if not entry_id:
-            return None
-        entry = self.hass.config_entries.async_get_entry(entry_id)
-        return entry.title if entry is not None else f"{entry_id} (missing)"
-
-    async def async_step_edit_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose a room to edit, then reuse the room steps with it prefilled."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="edit_room",
-                data_schema=self._room_choice_schema(),
-                description_placeholders={"configuration": self._summary()},
-            )
-        self._editing = user_input[CONF_ROOM_ID]
-        return await self.async_step_room()
-
-    async def async_step_remove_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Remove a room. Its device and entities go with it."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="remove_room",
-                data_schema=self._room_choice_schema(),
-                description_placeholders={"configuration": self._summary()},
-            )
-        remaining = [
-            room
-            for room in self._rooms
-            if room[CONF_ROOM_ID] != user_input[CONF_ROOM_ID]
-        ]
-        options = dict(self.config_entry.options)
-        options[CONF_ROOMS] = remaining
-        return self.async_create_entry(title="", data=options)
-
-    # ---- tariff -------------------------------------------------------
-
-    async def async_step_tariff(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose which Abode Power Tariffs entry supplies the plan.
-
-        Only the entry is collected. Periods, prices, feed-in and the supply
-        charge are entered once, in that integration, and read from here.
-        Leaving it empty is a supported configuration: the controller then
-        holds comfort and nothing window-driven.
-        """
-        if user_input is None:
-            current = self._tariff_entry_id()
-            return self.async_show_form(
-                step_id="tariff",
-                data_schema=self.add_suggested_values_to_schema(
-                    TARIFF_SCHEMA, {CONF_TARIFF_ENTRY_ID: current}
-                )
-                if current
-                else TARIFF_SCHEMA,
-                description_placeholders={"tariff": self._global_summary()},
-            )
-
-        options = dict(self.config_entry.options)
-        options[CONF_TARIFF_ENTRY_ID] = user_input.get(CONF_TARIFF_ENTRY_ID)
-        options.setdefault(CONF_ROOMS, self._rooms)
-        return self.async_create_entry(title="", data=options)
-
-    async def async_step_forecast(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """The weather entity supplying the hourly forecast.
-
-        Precool is the decision that turns on this. Without it the controller
-        compares current conditions, which at 11:00 on the day of a 38 C
-        afternoon says there is no load coming.
-        """
-        if user_input is None:
-            current = self._weather_entity_id()
-            schema = vol.Schema(
-                {
-                    vol.Optional(CONF_WEATHER_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="weather")
-                    )
-                }
-            )
-            return self.async_show_form(
-                step_id="forecast",
-                data_schema=self.add_suggested_values_to_schema(
-                    schema, {CONF_WEATHER_ENTITY: current}
-                )
-                if current
-                else schema,
-            )
-
-        options = dict(self.config_entry.options)
-        options[CONF_WEATHER_ENTITY] = user_input.get(CONF_WEATHER_ENTITY)
-        options.setdefault(CONF_ROOMS, self._rooms)
-        return self.async_create_entry(title="", data=options)
-
-    async def async_step_announcements(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """The text-to-speech engine spoken warnings are given through.
-
-        0.9.5, DR-069. One engine for the house; each room chooses its own
-        speakers. Left empty, the only engine Home Assistant has is used.
-        """
-        if user_input is None:
-            current = self._tts_engine_entity_id()
-            schema = vol.Schema(
-                {
-                    vol.Optional(CONF_TTS_ENGINE): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="tts")
-                    )
-                }
-            )
-            return self.async_show_form(
-                step_id="announcements",
-                data_schema=self.add_suggested_values_to_schema(
-                    schema, {CONF_TTS_ENGINE: current}
-                )
-                if current
-                else schema,
-            )
-
-        options = dict(self.config_entry.options)
-        options[CONF_TTS_ENGINE] = user_input.get(CONF_TTS_ENGINE)
-        options.setdefault(CONF_ROOMS, self._rooms)
-        return self.async_create_entry(title="", data=options)
-
-    async def async_step_outdoor(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """The outdoor temperature feed, used by the thermal model."""
-        if user_input is None:
-            suggested = {
-                key: value
-                for key in (
-                    CONF_OUTDOOR_TEMPERATURE_ENTITY,
-                    CONF_OUTDOOR_HUMIDITY_ENTITY,
-                    CONF_OUTDOOR_WIND_ENTITY,
-                )
-                if (
-                    value := self.config_entry.options.get(
-                        key, self.config_entry.data.get(key)
-                    )
-                )
-            }
-            schema = vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_OUTDOOR_TEMPERATURE_ENTITY
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="temperature"
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_OUTDOOR_HUMIDITY_ENTITY
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="humidity"
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_OUTDOOR_WIND_ENTITY
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="wind_speed"
-                        )
-                    ),
-                }
-            )
-            return self.async_show_form(
-                step_id="outdoor",
-                data_schema=self.add_suggested_values_to_schema(schema, suggested)
-                if suggested
-                else schema,
-            )
-
-        options = dict(self.config_entry.options)
-        options[CONF_OUTDOOR_TEMPERATURE_ENTITY] = user_input.get(
-            CONF_OUTDOOR_TEMPERATURE_ENTITY
-        )
-        options[CONF_OUTDOOR_HUMIDITY_ENTITY] = user_input.get(
-            CONF_OUTDOOR_HUMIDITY_ENTITY
-        )
-        options[CONF_OUTDOOR_WIND_ENTITY] = user_input.get(
-            CONF_OUTDOOR_WIND_ENTITY
-        )
-        options.setdefault(CONF_ROOMS, self._rooms)
-        return self.async_create_entry(title="", data=options)
-
-    async def async_step_power(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Battery, solar and grid readings for the power budget.
-
-        The first five are optional and nothing engages unless every one of
-        them is set. The grid sensor (0.8.10, finding 11) joins them in
-        spirit but is asked for here as its own field, since choosing it is
-        what triggers the sign-convention step next — a step that cannot
-        run without knowing which entity to read.
-        """
-        if user_input is None:
-            suggested = {
-                key: value
-                for key in (
-                    CONF_BATTERY_SOC_ENTITY,
-                    CONF_BATTERY_CAPACITY_KWH,
-                    CONF_BATTERY_MAX_DISCHARGE_KW,
-                    CONF_SOLAR_POWER_ENTITY,
-                    CONF_HOUSE_LOAD_ENTITY,
-                    CONF_RESERVE_MARGIN_KWH,
-                    CONF_GRID_ENTITY,
-                )
-                if (
-                    value := self.config_entry.options.get(
-                        key, self.config_entry.data.get(key)
-                    )
-                )
-            }
-            # 0.9.3, DR-061. Absent means the Energy dashboard's choice, so
-            # that is what the form shows until something is saved here.
-            stored_forecasts = self.config_entry.options.get(
-                CONF_SOLAR_FORECAST_ENTRIES,
-                self.config_entry.data.get(CONF_SOLAR_FORECAST_ENTRIES),
-            )
-            forecast_options = await _solar_forecast_options(self.hass)
-            offered = {option["value"] for option in forecast_options}
-            suggested[CONF_SOLAR_FORECAST_ENTRIES] = [
-                entry_id
-                for entry_id in (
-                    stored_forecasts
-                    if stored_forecasts is not None
-                    else await _energy_dashboard_forecasts(self.hass)
-                )
-                if entry_id in offered
-            ]
-            schema = vol.Schema(
-                {
-                    vol.Optional(CONF_BATTERY_SOC_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="battery"
-                        )
-                    ),
-                    vol.Optional(CONF_BATTERY_CAPACITY_KWH): _kwh_selector(),
-                    vol.Optional(CONF_BATTERY_MAX_DISCHARGE_KW): _kw_selector(),
-                    vol.Optional(CONF_SOLAR_POWER_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="power"
-                        )
-                    ),
-                    vol.Optional(CONF_HOUSE_LOAD_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="power"
-                        )
-                    ),
-                    vol.Optional(CONF_RESERVE_MARGIN_KWH): _kwh_selector(),
-                    vol.Optional(CONF_GRID_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="power"
-                        )
-                    ),
-                    vol.Optional(CONF_SOLAR_FORECAST_ENTRIES): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=forecast_options,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.LIST,
-                        )
-                    ),
-                }
-            )
-            return self.async_show_form(
-                step_id="power",
-                data_schema=self.add_suggested_values_to_schema(schema, suggested)
-                if suggested
-                else schema,
-                description_placeholders={
-                    "power": describe_power(
-                        self._battery_soc_entity_id(),
-                        self._battery_capacity_kwh(),
-                        self._solar_entity_id(),
-                        self._house_load_entity_id(),
-                        self._reserve_margin_kwh(),
-                        self._grid_entity_id(),
-                        self._battery_max_discharge_kw(),
-                        [
-                            str(option["label"])
-                            for option in forecast_options
-                            if option["value"]
-                            in suggested[CONF_SOLAR_FORECAST_ENTRIES]
-                        ],
-                    )
-                },
-            )
-
-        self._pending_power_options = {
-            CONF_BATTERY_SOC_ENTITY: user_input.get(CONF_BATTERY_SOC_ENTITY),
-            CONF_BATTERY_CAPACITY_KWH: user_input.get(CONF_BATTERY_CAPACITY_KWH),
-            CONF_BATTERY_MAX_DISCHARGE_KW: user_input.get(
-                CONF_BATTERY_MAX_DISCHARGE_KW
-            ),
-            CONF_SOLAR_POWER_ENTITY: user_input.get(CONF_SOLAR_POWER_ENTITY),
-            CONF_HOUSE_LOAD_ENTITY: user_input.get(CONF_HOUSE_LOAD_ENTITY),
-            CONF_RESERVE_MARGIN_KWH: user_input.get(CONF_RESERVE_MARGIN_KWH),
-            CONF_GRID_ENTITY: user_input.get(CONF_GRID_ENTITY),
-            CONF_SOLAR_FORECAST_ENTRIES: list(
-                user_input.get(CONF_SOLAR_FORECAST_ENTRIES) or []
-            ),
-        }
-        new_grid_entity = user_input.get(CONF_GRID_ENTITY)
-        if new_grid_entity is not None and new_grid_entity != self._grid_entity_id():
-            # A new or changed grid entity means any stored sign convention
-            # no longer has anything to say about it. Resolved fresh, from
-            # live evidence, never carried over.
-            return await self.async_step_power_grid_sign()
-        if new_grid_entity is None:
-            self._pending_power_options[CONF_GRID_SIGN] = None
-        else:
-            self._pending_power_options[CONF_GRID_SIGN] = self._grid_sign()
-        return self._save_power_options()
-
-    async def async_step_power_grid_sign(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Which direction a positive grid reading means.
-
-        0.8.10, finding 11. Settled here, from live evidence, and stored —
-        never inferred at runtime and never auto-corrected afterward. Getting
-        it wrong moves the derived battery figure by twice the grid flow, and
-        can report a breach that never happened, so this is worth a step
-        rather than a guess carried silently.
-        """
-        grid_entity_id = self._pending_power_options.get(CONF_GRID_ENTITY)
-        house_load_w = _reading_w(self.hass, self._pending_power_options.get(
-            CONF_HOUSE_LOAD_ENTITY
-        ))
-        solar_w = _reading_w(self.hass, self._pending_power_options.get(
-            CONF_SOLAR_POWER_ENTITY
-        ))
-        grid_w = _reading_w(self.hass, grid_entity_id)
-
+    async def async_step_edit_room(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
-            self._pending_power_options[CONF_GRID_SIGN] = user_input[CONF_GRID_SIGN]
-            return self._save_power_options()
+            stored = self._stored(user_input[CONF_ROOM_ID])
+            self.room_id = user_input[CONF_ROOM_ID]
+            self.room = room_answers(stored)
+            self.heads = [dict(h) for h in stored.get("heads", [])]
+            return await self.async_step_room_1()
+        return self.async_show_form(step_id="edit_room", data_schema=self._pick_schema())
 
-        guess = None
-        if grid_w is not None and house_load_w is not None and solar_w is not None:
-            guess = implied_sign(house_load_w, solar_w, grid_w)
+    async def async_step_remove_room(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=remove_room(self.options, user_input[CONF_ROOM_ID]))
+        return self.async_show_form(step_id="remove_room", data_schema=self._pick_schema())
 
-        options_list = [GRID_SIGN_EXPORTING, GRID_SIGN_IMPORTING]
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_GRID_SIGN,
-                    **({"default": guess} if guess else {}),
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=options_list,
-                        translation_key=CONF_GRID_SIGN,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                )
-            }
-        )
-        return self.async_show_form(
-            step_id="power_grid_sign",
-            data_schema=schema,
-            description_placeholders={
-                "grid_entity_id": grid_entity_id or "",
-                "grid_reading": "unknown" if grid_w is None else f"{grid_w:.0f} W",
-                "house_load": (
-                    "unknown" if house_load_w is None else f"{house_load_w:.0f} W"
-                ),
-                "solar": "unknown" if solar_w is None else f"{solar_w:.0f} W",
-                "evidence": (
-                    "Ambiguous on this evidence — solar could be covering the "
-                    "load, the battery could be carrying it, or the grid "
-                    "could genuinely be near zero."
-                    if guess is None
-                    else (
-                        f"The house must be drawing from somewhere, and your "
-                        f"grid sensor reads "
-                        f"{'positive' if grid_w and grid_w > 0 else 'negative'}."
-                    )
-                ),
-            },
-        )
+    async def async_room_done(self, stored: dict[str, Any]) -> ConfigFlowResult:
+        return self.async_create_entry(data=replace_room(self.options, stored))
 
-    def _save_power_options(self) -> ConfigFlowResult:
-        options = dict(self.config_entry.options)
-        options.update(self._pending_power_options)
-        options.setdefault(CONF_ROOMS, self._rooms)
-        return self.async_create_entry(title="", data=options)
+    async def async_step_learning(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        menu = ["seed", "reset"] if self._rooms() else []
+        if not menu:
+            return self.async_abort(reason="no_rooms")
+        return self.async_show_menu(step_id="learning", menu_options=menu)
 
-    # ---- rooms --------------------------------------------------------
+    async def async_step_seed(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self.room_id, self._learning = user_input[CONF_ROOM_ID], "seed"
+            return await self.async_step_confirm()
+        return self.async_show_form(step_id="seed", data_schema=self._pick_schema())
 
-    def _room_choice_schema(self) -> vol.Schema:
-        """A picker over the configured rooms."""
-        return vol.Schema(
-            {
-                vol.Required(CONF_ROOM_ID): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(
-                                value=room[CONF_ROOM_ID], label=room["name"]
-                            )
-                            for room in self._rooms
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                )
-            }
-        )
+    async def async_step_reset(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self.room_id, self._learning = user_input[CONF_ROOM_ID], "reset"
+            return await self.async_step_confirm()
+        return self.async_show_form(step_id="reset", data_schema=self._pick_schema())
 
-    def _existing(self) -> dict[str, Any]:
-        """The room being edited, or an empty dict when adding."""
-        if self._editing is None:
-            return {}
-        return next(
-            (room for room in self._rooms if room[CONF_ROOM_ID] == self._editing), {}
-        )
-
-    def _stored_lockout_reasons(self) -> list[str]:
-        return list(
-            self.config_entry.options.get(
-                CONF_LOCKOUT_REASONS,
-                self.config_entry.data.get(CONF_LOCKOUT_REASONS, []),
+    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Confirm, then start: seeding runs in the background [Prop]."""
+        assert self.room_id is not None and self._learning is not None
+        name = next((r["label"] for r in self._rooms() if r["value"] == self.room_id), self.room_id)
+        if user_input is not None:
+            entry: AbodeHvacConfigEntry = self.config_entry
+            runtime = getattr(entry, "runtime_data", None)
+            if runtime is None:
+                return self.async_abort(reason="not_loaded")
+            run = runtime.coordinator.rooms.get(self.room_id)
+            if run is not None and run.seeding:
+                # one seeding at a time: a second would be dropped, so say so
+                return self.async_abort(reason="seeding_in_progress", description_placeholders={"room": name})
+            entry.async_create_background_task(
+                self.hass, runtime.coordinator.async_seed(self.room_id, reset=self._learning == "reset"),
+                f"{DOMAIN} {self._learning} {self.room_id}",
             )
-        )
+            return self.async_abort(reason=f"{self._learning}_started", description_placeholders={"room": name})
+        return self.async_show_form(step_id=f"confirm_{self._learning}", data_schema=probatio.Schema({}),
+                                    description_placeholders={"room": name})
 
-    def _suggested_room(self) -> dict[str, Any]:
-        existing = self._existing()
-        if not existing:
-            return {}
-        return {
-            **default_grace_suggestions(),
-            **{k: v for k, v in existing.items() if v is not None},
-            CONF_LOCKOUT_REASON: existing.get(CONF_LOCKOUT_REASON) or NOT_LOCKED_OUT,
-        }
+    async def async_step_confirm_seed(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return await self.async_step_confirm(user_input)
 
-    def _climate_entity_taken(self, room: dict[str, Any]) -> bool:
-        """Whether another room already drives this room's climate entity.
-
-        The room being edited does not count against itself, and neither does
-        a room whose id this one is about to replace — renaming a room keeps
-        its entity, and `_save_room` replaces by id.
-        """
-        replacing = {room[CONF_ROOM_ID], self._editing}
-        heads = set(room.get(CONF_CLIMATE_ENTITIES) or [])
-        return any(
-            other[CONF_ROOM_ID] not in replacing
-            and heads & set(other.get(CONF_CLIMATE_ENTITIES) or [])
-            for other in self._rooms
-        )
-
-    def _stored_head_groups(self) -> list[str]:
-        """Outdoor unit names any room has named, from the entry."""
-        entry = self.config_entry
-        return list(
-            entry.options.get(CONF_KNOWN_HEAD_GROUPS)
-            or entry.data.get(CONF_KNOWN_HEAD_GROUPS)
-            or []
-        )
-
-    def _suggested_bands(self) -> dict[str, Any]:
-        """A room being edited shows its own bands; a new one shows defaults."""
-        existing = self._existing()
-        bands = existing.get(CONF_BANDS, {})
-        suggested: dict[str, Any] = (
-            bands_as_suggestions(bands) if bands else default_band_suggestions()
-        )
-        suggested[CONF_ALLOW_COMFORT_REDUCTION] = power_management_from_raw(
-            existing.get(CONF_ALLOW_COMFORT_REDUCTION, POWER_MANAGEMENT_OFF)
-        )
-        return suggested
-
-    def _save_room(self) -> ConfigFlowResult:
-        """Add or replace the room in the entry options."""
-        options = dict(self.config_entry.options)
-        # Replace the room being edited, and any room whose name produces the
-        # same id, so editing a name does not leave the old room behind.
-        replaced = {self._room[CONF_ROOM_ID], self._editing}
-        rooms = [room for room in self._rooms if room[CONF_ROOM_ID] not in replaced]
-        rooms.append(self._room)
-        options[CONF_ROOMS] = rooms
-        options[CONF_LOCKOUT_REASONS] = extend_lockout_reasons(
-            self._stored_lockout_reasons(), self._room
-        )
-        options[CONF_KNOWN_HEAD_GROUPS] = extend_head_groups(
-            self._stored_head_groups(), self._room
-        )
-        return self.async_create_entry(title="", data=options)
+    async def async_step_confirm_reset(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return await self.async_step_confirm(user_input)

@@ -54,3 +54,26 @@ still-air comfort zone, converted onto the apparent temperature scale.
 
 Neither is code and neither is copied; both are cited so the numbers can be
 checked against their source.
+
+## 0.10.0 rewrite, recorded as each file is written
+
+**Home Assistant core 2026.10.3** (commit 1f214b8) — Apache 2.0. Read
+`homeassistant/components/climate/const.py` and `climate/__init__.py` for the
+climate attribute names and `ClimateEntityFeature` values written out in
+`capabilities.py`. No source copied.
+
+**NOAA solar calculator** — the solar position equations in `sun.py` (after
+Meeus, *Astronomical Algorithms*), with NOAA's refraction approximation.
+Public-domain equations, written from their published form.
+
+**NREL solar position algorithm**, through pvlib 0.16.1 (BSD-3-Clause) — used
+only to compute the reference sun positions in `tests/pure/test_sun.py`. pvlib
+is not a dependency of the component or of its tests.
+
+**Bureau of Meteorology apparent temperature** and **WMO-No. 8 Magnus form** —
+the formulas in `hci.py` and `psychro.py` (specification references R2, R5).
+
+**Abode Power Tariffs** (meremortals70/abode-power-tariffs, commit 34d71d5) —
+read `__init__.py` (the `get_intervals` action), `intervals.py`
+(`Interval.as_dict`, the response shape) and `const.py` (`KNOWN_CONSTRAINTS`)
+for what `economics.py` reads. No source copied.

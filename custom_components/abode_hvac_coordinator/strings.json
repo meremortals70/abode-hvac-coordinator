@@ -1,252 +1,474 @@
 {
+  "title": "Abode HVAC Coordinator",
   "config": {
     "step": {
-      "room": {
-        "title": "Add your first room",
-        "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
+      "tariff": {
+        "title": "Tariff",
+        "description": "Prices come from an Abode Power Tariffs entry. Leave empty and every hour is priced the same.",
         "data": {
-          "name": "Room name",
-          "temperature_entity_id": "Temperature sensor",
-          "humidity_entity_id": "Humidity sensor",
-          "presence_entity_id": "Presence sensor (optional — leave empty for none)",
-          "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
-          "window_direction": "Which way the windows face (optional — leave empty for none)",
-          "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
-          "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
-          "cover_entity_ids": "Blinds (optional — leave empty for none)",
-          "lockout_reason": "Lockout",
-          "occupied_after_minutes": "Wait this long before starting (minutes)",
-          "vacant_after_minutes": "Wait this long after they leave before stopping (minutes)",
-          "warning_grace_minutes": "Warn this long before shutting down (minutes)",
-          "announce_before_shutdown": "Announce before shutting the room down",
-          "announce_target_entity_ids": "Announce through (optional — leave empty for none)",
-          "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
-          "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
-          "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
-          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
-          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
-          "climate_entity_ids": "Air conditioners in this room",
-          "opening_grace_minutes": "Wait this long with a window or door open before stopping (minutes)"
+          "tariff_entry": "Abode Power Tariffs entry"
         },
         "data_description": {
-          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units.",
-          "opening_grace_minutes": "Five by default. The air conditioning is left alone for this long after a window or door opens, in case it closes again. With announcements on, a warning is spoken three minutes before it stops."
+          "tariff_entry": "The tariff that prices the house's electricity."
         }
       },
-      "bands": {
-        "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nPower management is off by default. Guidance computes what the power budget would do during a no-import window and reports it, without ever changing what the room is commanded to. Enforced actually holds the room to that ceiling — as comfortable as the remaining energy allows rather than full output — and, either way, it never stops the room.",
+      "outdoor": {
+        "title": "Outdoor",
+        "description": "Outdoor readings the rooms' models learn from.",
         "data": {
-          "occupied_low": "Occupied — lower bound",
-          "occupied_high": "Occupied — upper bound",
-          "sleep_low": "Sleep — lower bound (optional)",
-          "sleep_high": "Sleep — upper bound (optional)",
-          "precool_low": "Precool — lower bound (optional)",
-          "precool_high": "Precool — upper bound (optional)",
-          "allow_comfort_reduction": "Power management"
+          "outdoor_temperature": "Outdoor temperature sensor",
+          "outdoor_humidity": "Outdoor humidity sensor",
+          "outdoor_wind": "Wind speed sensor"
+        },
+        "data_description": {
+          "outdoor_temperature": "Used by every room's model. Without it, the forecast's temperature is used.",
+          "outdoor_humidity": "For the outdoor dew point and free-cooling advice.",
+          "outdoor_wind": "For the outdoor apparent temperature."
         }
       },
-      "room_outdoor": {
-        "title": "Outdoor units",
-        "description": "Only answer this where two air conditioners share the compressor outside. If each has its own, leave them as they are.\n\nTwo air conditioners in one room is not this — select both in the room's air conditioner field instead. This is for air conditioners whose heads run off the same outdoor unit, whether they are in one room or two.\n\nType a name to create a new outdoor unit. Names already in use appear in the list."
+      "forecast": {
+        "title": "Forecast",
+        "description": "The hourly weather forecast the plan looks ahead with.",
+        "data": {
+          "weather": "Weather entity"
+        },
+        "data_description": {
+          "weather": "A weather entity that gives an hourly forecast."
+        }
+      },
+      "power": {
+        "title": "Power",
+        "description": "The house's battery, solar and load. All are needed for the power budget during a no-grid-import window.",
+        "data": {
+          "battery_charge": "Battery charge sensor",
+          "battery_size": "Battery size",
+          "battery_max_discharge": "Rated maximum discharge",
+          "solar_power": "Solar power sensor",
+          "house_load": "House load sensor",
+          "reserve_margin": "Reserve margin",
+          "grid_power": "Grid power sensor",
+          "solar_forecast_sources": "Solar forecast sources"
+        },
+        "data_description": {
+          "battery_charge": "The battery's state of charge, in %.",
+          "battery_size": "The battery's usable capacity, in kWh.",
+          "battery_max_discharge": "The most the battery can supply, in kW. Leave empty for no limit.",
+          "solar_power": "The solar system's output now.",
+          "house_load": "The whole house's power use. The air conditioners' draw is learned from it.",
+          "reserve_margin": "Energy to keep in the battery, in kWh.",
+          "grid_power": "Power to or from the grid. Used to check that no-grid-import windows are kept.",
+          "solar_forecast_sources": "Leave empty to use the Energy dashboard's solar forecast."
+        }
+      },
+      "grid_direction": {
+        "title": "Grid direction",
+        "description": "Which way does a positive reading of {sensor} point? Pre-filled from the live readings where they decide it.",
+        "data": {
+          "grid_positive_is_import": "A positive reading means"
+        },
+        "data_description": {
+          "grid_positive_is_import": "Importing from the grid, or exporting to it. Stored, and never changed while running."
+        }
+      },
+      "announcements": {
+        "title": "Announcements",
+        "description": "The speech engine for spoken warnings.",
+        "data": {
+          "tts_engine": "Speech engine"
+        },
+        "data_description": {
+          "tts_engine": "Leave empty to use the only one Home Assistant has."
+        }
+      },
+      "room_1": {
+        "title": "The room",
+        "description": "The room's air conditioners and sensors.",
+        "data": {
+          "name": "Name",
+          "climate": "Air conditioners",
+          "temperature_sensor": "Temperature sensor",
+          "humidity_sensor": "Humidity sensor",
+          "presence_sensor": "Presence sensor",
+          "sleep_schedule": "Sleep schedule",
+          "sun_sensor": "Sun on window sensor",
+          "openings": "Doors and windows",
+          "blinds": "Blinds",
+          "allow_blind_control": "Allow blind control",
+          "window_facing": "Windows face",
+          "overhang_projection": "Overhang projection",
+          "overhang_height": "Overhang height",
+          "occupied_after": "Wait before counting occupied",
+          "empty_after": "Wait before counting empty",
+          "warning_grace": "Warning before switching off",
+          "announce": "Announce before switching off",
+          "announce_through": "Announce through",
+          "opening_grace": "Stop for an open door or window after",
+          "lockout_reason": "Lockout reason"
+        },
+        "data_description": {
+          "name": "The room's name, shown on its device and in spoken warnings.",
+          "climate": "Every air conditioner head in this room. A head can belong to only one room. Each one's live state is read when you save, so it must be reporting.",
+          "temperature_sensor": "The room's own temperature sensor. The room's model is learned from it.",
+          "humidity_sensor": "The room's own humidity sensor. The comfort index uses it.",
+          "presence_sensor": "Leave empty and the room always counts as occupied. Needed for Precool.",
+          "sleep_schedule": "A schedule, input boolean or binary sensor that is on while the room's occupants sleep. The sleep band applies then.",
+          "sun_sensor": "Leave empty and the sun's position and the window direction decide whether the sun is on the glass.",
+          "openings": "Door and window sensors. With one open, the unit is stopped after the wait below.",
+          "blinds": "Covers on this room's windows.",
+          "allow_blind_control": "Lets the plan close the blinds when the sun is on the glass.",
+          "window_facing": "The direction the windows face, for working out when the sun is on the glass.",
+          "overhang_projection": "How far an eave or awning sticks out from the wall, in metres.",
+          "overhang_height": "How far the overhang is above the bottom of the window, in metres.",
+          "occupied_after": "How long presence must be seen before the room counts as occupied, in minutes.",
+          "empty_after": "How long without presence before the room counts as empty, in minutes.",
+          "warning_grace": "How long between the spoken warning and the unit stopping, in minutes.",
+          "announce": "Speak a warning before the unit is stopped for an empty room or an open door or window.",
+          "announce_through": "The speakers the warnings are spoken through.",
+          "opening_grace": "How long a door or window may stay open before the unit is stopped, in minutes.",
+          "lockout_reason": "Choose a reason, or type a new one, to keep the unit off. 'Not locked out' runs the room."
+        }
+      },
+      "room_2": {
+        "title": "Air conditioner {count}",
+        "description": "{climate}. Heads given the same outdoor-unit name share one compressor, in this room or another.",
+        "data": {
+          "outdoor_unit": "Outdoor unit",
+          "frequency_sensor": "Compressor frequency sensor"
+        },
+        "data_description": {
+          "outdoor_unit": "Choose a name already used or type a new one. Leave empty if this head has its own outdoor unit.",
+          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs."
+        }
+      },
+      "room_3": {
+        "title": "Comfort",
+        "description": "The comfort index is the temperature plus a part for humidity: index = temperature + 0.33 × vapour pressure (hPa) − 4. At 60 % humidity, an index of 23 is about 22 °C. The room is kept near the centre of the band in force.",
+        "data": {
+          "occupied_low": "Occupied low",
+          "occupied_high": "Occupied high",
+          "sleep_low": "Sleep low",
+          "sleep_high": "Sleep high",
+          "precool_low": "Precool low",
+          "precool_high": "Precool high",
+          "power_management": "Power management"
+        },
+        "data_description": {
+          "occupied_low": "The comfort index the room may fall to while occupied. 23 is about 22 °C at 60 % humidity.",
+          "occupied_high": "The comfort index the room may rise to while occupied. 26 is about 24 °C at 60 % humidity.",
+          "sleep_low": "The lowest comfort index while asleep.",
+          "sleep_high": "The highest comfort index while asleep.",
+          "precool_low": "The lowest comfort index during Precool.",
+          "precool_high": "The highest comfort index during Precool.",
+          "power_management": "Off: power is not limited. Guidance: the limit is shown, never applied. Enforced: the room is held within the house's power budget during a no-grid-import window."
+        }
       }
     },
-    "abort": {
-      "single_instance_allowed": "HVAC Coordinator is already set up."
-    },
     "error": {
-      "band_inverted": "A band's lower bound must be below its upper bound.",
-      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room.",
-      "climate_not_reporting": "One of those air conditioners is not reporting what it can do (it is unavailable or missing). A room can only be set up once every air conditioner in it is working."
+      "no_climate": "Choose at least one air conditioner.",
+      "climate_in_use": "{entity} is already used by {room}.",
+      "not_reporting": "{entity} is not reporting. Check it is on and connected, then save again.",
+      "ranges_do_not_overlap": "These air conditioners' setpoint ranges do not overlap, so one setpoint cannot suit them all.",
+      "heads_take_different_setpoints": "One of these air conditioners takes only a low and high setpoint, and another cannot take them, so nothing sent could suit them all.",
+      "no_name": "Give the room a name.",
+      "band_inverted": "The {band} band's low must be below its high."
+    },
+    "abort": {
+      "single_instance_allowed": "The Abode HVAC Coordinator is already set up. Add rooms from its options.",
+      "reconfigure_successful": "The house's settings are saved."
     }
   },
   "options": {
     "step": {
-      "room": {
-        "title": "Room",
-        "description": "Only the room name and the air conditioner are required. **An empty field means none** — that is a valid answer, not an unfinished one.\n\n**Which way the windows face** lets the controller work out when the sun is on the glass. It uses the latitude and longitude already set in Home Assistant, so it needs no sensor.\n\n**Eave or soffit depth** matters more than it looks. A window under an eave is fully shaded whenever the sun is high, which in summer is most of the middle of the day. Measure how far the eave projects from the wall, and how far it sits above the bottom of the glass. Leave both empty if there is no overhang.\n\n**The two waiting times** stop a laptop drop-off starting the compressor, and stop answering the front door shutting it off.\n\n**Lockout** means this room is never actuated. Leave it on 'Not locked out' unless you mean it.",
-        "data": {
-          "name": "Room name",
-          "temperature_entity_id": "Temperature sensor",
-          "humidity_entity_id": "Humidity sensor",
-          "presence_entity_id": "Presence sensor (optional — leave empty for none)",
-          "sleep_schedule_entity_id": "Sleep schedule (optional — leave empty for none, e.g. an office)",
-          "window_direction": "Which way the windows face (optional — leave empty for none)",
-          "direct_sun_entity_id": "Sun-on-window sensor (optional — leave empty and it is calculated)",
-          "opening_entity_ids": "Windows and doors (optional — leave empty for none)",
-          "cover_entity_ids": "Blinds (optional — leave empty for none)",
-          "lockout_reason": "Lockout",
-          "occupied_after_minutes": "Wait this long before starting (minutes)",
-          "vacant_after_minutes": "Wait this long after they leave before stopping (minutes)",
-          "warning_grace_minutes": "Warn this long before shutting down (minutes)",
-          "announce_before_shutdown": "Announce before shutting the room down",
-          "announce_target_entity_ids": "Announce through (optional — leave empty for none)",
-          "heat_load_entity_id": "Heat source in the room (optional — leave empty for none)",
-          "air_movement_entity_id": "Fan or air movement (optional — leave empty for none)",
-          "overhang_projection_m": "Eave or soffit depth (optional — how far it projects from the wall)",
-          "overhang_height_m": "Eave or soffit height above the bottom of the glass (optional)",
-          "allow_cover_control": "Let this integration control the blinds (on by default — turn off for privacy or glare blinds you never want moved)",
-          "climate_entity_ids": "Air conditioners in this room",
-          "opening_grace_minutes": "Wait this long with a window or door open before stopping (minutes)"
-        },
-        "data_description": {
-          "climate_entity_ids": "Most rooms have one. Select both where a single room is served by two indoor units.",
-          "opening_grace_minutes": "Five by default. The air conditioning is left alone for this long after a window or door opens, in case it closes again. With announcements on, a warning is spoken three minutes before it stops."
-        }
-      },
-      "bands": {
-        "title": "Comfort bands",
-        "description": "The comfort band for this room, in HCI — not degrees. This is the only comfort setting there is; you never set a temperature. These values are already filled in and are meant to be changed.\n\nRoughly: below 20 is cold, 20–23.5 cool, 23.5–27.5 comfortable, 27.5–31 warm, above 31 hot.\n\nClear both boxes of a mode you do not want. An office with no sleeping hours should clear the sleep pair.\n\nPower management is off by default. Guidance computes what the power budget would do during a no-import window and reports it, without ever changing what the room is commanded to. Enforced actually holds the room to that ceiling — as comfortable as the remaining energy allows rather than full output — and, either way, it never stops the room.",
-        "data": {
-          "occupied_low": "Occupied — lower bound",
-          "occupied_high": "Occupied — upper bound",
-          "sleep_low": "Sleep — lower bound (optional)",
-          "sleep_high": "Sleep — upper bound (optional)",
-          "precool_low": "Precool — lower bound (optional)",
-          "precool_high": "Precool — upper bound (optional)",
-          "allow_comfort_reduction": "Power management"
-        }
-      },
       "init": {
         "title": "Abode HVAC Coordinator",
-        "description": "{configuration}",
+        "description": "{summary}",
         "menu_options": {
           "rooms": "Rooms",
-          "global": "House configuration (tariff and outdoor feed)"
-        }
-      },
-      "edit_room": {
-        "title": "Edit a room",
-        "description": "Pick the room to change. Its current settings are prefilled.\n\n{configuration}",
-        "data": {
-          "room_id": "Room"
-        }
-      },
-      "remove_room": {
-        "title": "Remove a room",
-        "description": "The room's device and all its entities are removed with it.\n\n{configuration}",
-        "data": {
-          "room_id": "Room"
-        }
-      },
-      "outdoor": {
-        "title": "Outdoor temperature",
-        "description": "Temperature feeds the thermal model. Humidity and wind feed the free-cooling advice: whether opening the windows would actually make a room feel better, rather than just letting warmer wetter air in.\n\nWind is converted from whatever unit your sensor reports. With no wind sensor, still air is assumed.",
-        "data": {
-          "outdoor_temperature_entity_id": "Outdoor temperature",
-          "outdoor_humidity_entity_id": "Outdoor humidity (optional — needed for free-cooling advice)",
-          "outdoor_wind_entity_id": "Outdoor wind speed (optional — a breeze makes the same temperature feel cooler)"
+          "learning": "Learning"
         }
       },
       "rooms": {
         "title": "Rooms",
-        "description": "{configuration}",
         "menu_options": {
-          "room": "Add a room",
+          "add_room": "Add a room",
           "edit_room": "Edit a room",
           "remove_room": "Remove a room"
         }
       },
-      "global": {
-        "title": "Global configuration",
-        "description": "These apply to the whole house, not to any one room.\n\n{configuration}",
+      "room_1": {
+        "title": "The room",
+        "description": "The room's air conditioners and sensors.",
+        "data": {
+          "name": "Name",
+          "climate": "Air conditioners",
+          "temperature_sensor": "Temperature sensor",
+          "humidity_sensor": "Humidity sensor",
+          "presence_sensor": "Presence sensor",
+          "sleep_schedule": "Sleep schedule",
+          "sun_sensor": "Sun on window sensor",
+          "openings": "Doors and windows",
+          "blinds": "Blinds",
+          "allow_blind_control": "Allow blind control",
+          "window_facing": "Windows face",
+          "overhang_projection": "Overhang projection",
+          "overhang_height": "Overhang height",
+          "occupied_after": "Wait before counting occupied",
+          "empty_after": "Wait before counting empty",
+          "warning_grace": "Warning before switching off",
+          "announce": "Announce before switching off",
+          "announce_through": "Announce through",
+          "opening_grace": "Stop for an open door or window after",
+          "lockout_reason": "Lockout reason"
+        },
+        "data_description": {
+          "name": "The room's name, shown on its device and in spoken warnings.",
+          "climate": "Every air conditioner head in this room. A head can belong to only one room. Each one's live state is read when you save, so it must be reporting.",
+          "temperature_sensor": "The room's own temperature sensor. The room's model is learned from it.",
+          "humidity_sensor": "The room's own humidity sensor. The comfort index uses it.",
+          "presence_sensor": "Leave empty and the room always counts as occupied. Needed for Precool.",
+          "sleep_schedule": "A schedule, input boolean or binary sensor that is on while the room's occupants sleep. The sleep band applies then.",
+          "sun_sensor": "Leave empty and the sun's position and the window direction decide whether the sun is on the glass.",
+          "openings": "Door and window sensors. With one open, the unit is stopped after the wait below.",
+          "blinds": "Covers on this room's windows.",
+          "allow_blind_control": "Lets the plan close the blinds when the sun is on the glass.",
+          "window_facing": "The direction the windows face, for working out when the sun is on the glass.",
+          "overhang_projection": "How far an eave or awning sticks out from the wall, in metres.",
+          "overhang_height": "How far the overhang is above the bottom of the window, in metres.",
+          "occupied_after": "How long presence must be seen before the room counts as occupied, in minutes.",
+          "empty_after": "How long without presence before the room counts as empty, in minutes.",
+          "warning_grace": "How long between the spoken warning and the unit stopping, in minutes.",
+          "announce": "Speak a warning before the unit is stopped for an empty room or an open door or window.",
+          "announce_through": "The speakers the warnings are spoken through.",
+          "opening_grace": "How long a door or window may stay open before the unit is stopped, in minutes.",
+          "lockout_reason": "Choose a reason, or type a new one, to keep the unit off. 'Not locked out' runs the room."
+        }
+      },
+      "room_2": {
+        "title": "Air conditioner {count}",
+        "description": "{climate}. Heads given the same outdoor-unit name share one compressor, in this room or another.",
+        "data": {
+          "outdoor_unit": "Outdoor unit",
+          "frequency_sensor": "Compressor frequency sensor"
+        },
+        "data_description": {
+          "outdoor_unit": "Choose a name already used or type a new one. Leave empty if this head has its own outdoor unit.",
+          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs."
+        }
+      },
+      "room_3": {
+        "title": "Comfort",
+        "description": "The comfort index is the temperature plus a part for humidity: index = temperature + 0.33 × vapour pressure (hPa) − 4. At 60 % humidity, an index of 23 is about 22 °C. The room is kept near the centre of the band in force.",
+        "data": {
+          "occupied_low": "Occupied low",
+          "occupied_high": "Occupied high",
+          "sleep_low": "Sleep low",
+          "sleep_high": "Sleep high",
+          "precool_low": "Precool low",
+          "precool_high": "Precool high",
+          "power_management": "Power management"
+        },
+        "data_description": {
+          "occupied_low": "The comfort index the room may fall to while occupied. 23 is about 22 °C at 60 % humidity.",
+          "occupied_high": "The comfort index the room may rise to while occupied. 26 is about 24 °C at 60 % humidity.",
+          "sleep_low": "The lowest comfort index while asleep.",
+          "sleep_high": "The highest comfort index while asleep.",
+          "precool_low": "The lowest comfort index during Precool.",
+          "precool_high": "The highest comfort index during Precool.",
+          "power_management": "Off: power is not limited. Guidance: the limit is shown, never applied. Enforced: the room is held within the house's power budget during a no-grid-import window."
+        }
+      },
+      "edit_room": {
+        "title": "Edit a room",
+        "data": {
+          "room_id": "Room"
+        },
+        "data_description": {
+          "room_id": "The room to choose."
+        }
+      },
+      "remove_room": {
+        "title": "Remove a room",
+        "description": "The room's device and entities are removed with it, and what it has learned.",
+        "data": {
+          "room_id": "Room"
+        },
+        "data_description": {
+          "room_id": "The room to choose."
+        }
+      },
+      "learning": {
+        "title": "Learning",
         "menu_options": {
-          "tariff": "Tariff (from Abode Power Tariffs)",
-          "outdoor": "Outdoor temperature, humidity and wind",
-          "forecast": "Weather forecast",
-          "power": "Power-aware operation (optional)",
-          "announcements": "Spoken warnings (text-to-speech engine)"
+          "seed": "Seed a room from history",
+          "reset": "Reset a room's learning"
         }
       },
-      "tariff": {
-        "title": "Tariff",
-        "description": "Your electricity plan is held by the Abode Power Tariffs integration, not here. Choose which of its entries this controller should read.\n\nPeriods, prices, feed-in and the daily supply charge are entered there, once. This controller reads the rate in force, the rules that apply during it, and the hours ahead.\n\nLeave it empty and the controller still holds every room to its comfort band. What it loses is the free-window precool, the no-import rule and the costed forecast.\n\n{tariff}",
+      "seed": {
+        "title": "Seed from history",
+        "description": "Replaces what the room has learned with its model run from the start over the recorder's history.",
         "data": {
-          "tariff_config_entry_id": "Abode Power Tariffs entry"
-        }
-      },
-      "forecast": {
-        "title": "Weather forecast",
-        "description": "Precool banks thermal mass in a free or cheap window against a load arriving later. Deciding whether that load exists needs the forecast, not the current conditions: at 11:00 on the day of a 38 degree afternoon it is often 26 outside, and comparing right now says there is nothing coming.\n\nAny weather entity with an hourly forecast will do. Leave it empty and precool falls back to comparing conditions now, which is what this controller did before it could see ahead.",
-        "data": {
-          "weather_entity_id": "Weather entity"
-        }
-      },
-      "power": {
-        "title": "Power-aware operation",
-        "description": "Optional, and inactive until the five fields above are set. This integration never writes to your battery — see Architecture — it only reads these to decide how gently the compressor should run when the tariff currently forbids grid import and a room's power management is set to guidance or enforced (set per room, on the room's comfort bands step). Guidance reports what the ceiling would be without applying it and never stops the unit. Enforced applies it, and where even holding the room cannot be afforded, turns the unit off until it can.\n\nThe maximum discharge power is the battery's own rated spec, not something this component measures — a Tesla Powerwall 2, for example, is 5 kW. Optional: without it the budget is bounded only by stored energy, not by what the battery can physically deliver.\n\nThe grid sensor is separate again: without it the budget still runs on the energy figure alone, and no breach figure is measured afterward if a window is not fully held.\n\nThe solar forecast is the production forecast your Energy dashboard uses, from any integration that provides one. Choose one per array if you have more than one; they are added together. With one selected, the sun forecast between now and the end of a no-import window counts towards the budget, so the morning's generation is counted at sunrise. With none, only the solar being produced now is counted.\n\n{power}",
-        "data": {
-          "battery_soc_entity_id": "Battery charge sensor (percentage)",
-          "battery_capacity_kwh": "Battery usable capacity (kWh)",
-          "battery_max_discharge_kw": "Battery maximum discharge power (kW)",
-          "solar_power_entity_id": "Solar output sensor",
-          "house_load_entity_id": "House load sensor (total current draw)",
-          "reserve_margin_kwh": "Reserve margin — battery this decision may not touch (kWh)",
-          "grid_power_entity_id": "Grid power sensor (signed, watts)",
-          "solar_forecast_entry_ids": "Solar production forecast"
+          "room_id": "Room"
         },
         "data_description": {
-          "solar_forecast_entry_ids": "The forecasts your Energy dashboard can use. Until you save this step, the ones the Energy dashboard is set up with are used.",
-          "reserve_margin_kwh": "Energy in kWh, not a percentage. 5% of a 13 kWh battery is 0.65 kWh. The budget never counts this much of the battery."
+          "room_id": "The room to choose."
         }
       },
-      "room_outdoor": {
-        "title": "Outdoor units",
-        "description": "Only answer this where two air conditioners share the compressor outside. If each has its own, leave them as they are.\n\nTwo air conditioners in one room is not this — select both in the room's air conditioner field instead. This is for air conditioners whose heads run off the same outdoor unit, whether they are in one room or two.\n\nType a name to create a new outdoor unit. Names already in use appear in the list."
-      },
-      "power_grid_sign": {
-        "title": "Which way does the grid sensor read?",
-        "description": "{grid_entity_id}\n  reading now          {grid_reading}\n  house load           {house_load}\n  solar                {solar}\n\n{evidence}\n\nSettled once, here, from what the component can currently see. Never inferred at runtime and never changed automatically afterward — if live readings later disagree persistently, a repair issue names it rather than the component correcting itself.",
+      "reset": {
+        "title": "Reset learning",
+        "description": "Returns the room's model to its starting figures, then seeds it from history.",
         "data": {
-          "grid_sign": "Which direction does a positive number mean?"
-        }
-      },
-      "announcements": {
-        "title": "Spoken warnings",
-        "description": "A room with spoken warnings turned on says, on its own speakers, when it is about to turn its air conditioning off because it is empty or a window has been left open. The words are spoken through one text-to-speech engine for the whole house.\n\nLeave this empty to use the only engine Home Assistant has. Where there is more than one, choose one here, or no warning is spoken and a repair issue says why.",
-        "data": {
-          "tts_engine_entity_id": "Text-to-speech engine"
+          "room_id": "Room"
         },
         "data_description": {
-          "tts_engine_entity_id": "For example Home Assistant Cloud or Google Translate. Each room's speakers are chosen on the room."
+          "room_id": "The room to choose."
         }
+      },
+      "confirm_seed": {
+        "title": "Seed {room}",
+        "description": "Seed {room} from the recorder's history? What it has learned is replaced by what its history teaches. It runs in the background."
+      },
+      "confirm_reset": {
+        "title": "Reset {room}",
+        "description": "Reset what {room} has learned, then seed it from history? This cannot be undone."
       }
     },
     "error": {
-      "band_inverted": "A band's lower bound must be below its upper bound.",
-      "climate_entity_in_use": "Another room is already configured against that climate entity. One climate entity cannot be driven by more than one room.",
-      "climate_not_reporting": "One of those air conditioners is not reporting what it can do (it is unavailable or missing). A room can only be set up once every air conditioner in it is working."
+      "no_climate": "Choose at least one air conditioner.",
+      "climate_in_use": "{entity} is already used by {room}.",
+      "not_reporting": "{entity} is not reporting. Check it is on and connected, then save again.",
+      "ranges_do_not_overlap": "These air conditioners' setpoint ranges do not overlap, so one setpoint cannot suit them all.",
+      "heads_take_different_setpoints": "One of these air conditioners takes only a low and high setpoint, and another cannot take them, so nothing sent could suit them all.",
+      "no_name": "Give the room a name.",
+      "band_inverted": "The {band} band's low must be below its high."
     },
-    "abort": {}
+    "abort": {
+      "no_rooms": "There are no rooms yet.",
+      "not_loaded": "The integration is not loaded.",
+      "seed_started": "Seeding {room} has started.",
+      "reset_started": "{room} has been reset; seeding has started.",
+      "seeding_in_progress": "{room} is already being seeded from history. Try again when it has finished."
+    }
+  },
+  "selector": {
+    "window_facing": {
+      "options": {
+        "n": "North",
+        "ne": "North-east",
+        "e": "East",
+        "se": "South-east",
+        "s": "South",
+        "sw": "South-west",
+        "w": "West",
+        "nw": "North-west"
+      }
+    },
+    "grid_direction": {
+      "options": {
+        "import": "Importing",
+        "export": "Exporting"
+      }
+    },
+    "power_management": {
+      "options": {
+        "off": "Off",
+        "guidance": "Guidance",
+        "enforced": "Enforced"
+      }
+    }
   },
   "entity": {
     "sensor": {
       "mode": {
-        "name": "Mode",
         "state": {
-          "lockout": "Lockout",
+          "lockout": "Locked out",
+          "automatic_off": "Automatic control off",
+          "left": "Left",
           "unoccupied": "Unoccupied",
-          "occupied": "Occupied",
-          "sleep": "Sleep",
-          "precondition": "Precondition",
           "precool": "Precool",
-          "coast": "Coast"
+          "sleep": "Sleep",
+          "occupied": "Occupied"
         }
       },
       "comfort_index": {
-        "name": "Comfort index"
+        "name": "Comfort index",
+        "state_attributes": {
+          "band_low": {
+            "name": "Band low"
+          },
+          "band_high": {
+            "name": "Band high"
+          },
+          "position": {
+            "name": "Position in the band",
+            "state": {
+              "below": "Below",
+              "in": "In",
+              "above": "Above"
+            }
+          }
+        }
       },
-      "target_dry_bulb": {
-        "name": "Target dry bulb"
+      "target_temperature": {
+        "name": "Target temperature"
+      },
+      "commanded_setpoint": {
+        "name": "Commanded setpoint",
+        "state_attributes": {
+          "wanted": {
+            "name": "Wanted setpoint"
+          }
+        }
+      },
+      "dew_point": {
+        "name": "Dew point",
+        "state_attributes": {
+          "outdoor_dew_point": {
+            "name": "Outdoor dew point"
+          },
+          "outdoor_apparent_temperature": {
+            "name": "Outdoor apparent temperature"
+          },
+          "free_cooling_advised": {
+            "name": "Free cooling advised"
+          },
+          "condensation_risk": {
+            "name": "Condensation risk"
+          }
+        }
+      },
+      "settings": {
+        "name": "Settings"
+      },
+      "controller": {
+        "name": "Controller",
+        "state": {
+          "plan_pid": "Plan and PID",
+          "rl": "Learned controller"
+        }
+      },
+      "learning": {
+        "name": "Learning"
+      },
+      "comfort_in_band": {
+        "name": "Comfort in band"
+      },
+      "near_centre": {
+        "name": "Near the centre"
+      },
+      "starts_per_hour": {
+        "name": "Starts per running hour"
+      },
+      "cost_of_comfort": {
+        "name": "Cost of comfort"
       },
       "demand_forecast": {
         "name": "Demand forecast"
       },
       "tariff_rate": {
-        "name": "Tariff rate"
+        "name": "Tariff rate now"
       },
-      "active_constraints": {
-        "name": "Active constraints"
+      "constraints": {
+        "name": "Constraints in force"
       },
       "projected_cost": {
         "name": "Projected cost"
@@ -254,29 +476,20 @@
       "outdoor_temperature": {
         "name": "Outdoor temperature"
       },
-      "rooms_configured": {
-        "name": "Rooms configured"
-      },
-      "settings": {
-        "name": "Settings"
-      },
-      "commanded_dry_bulb": {
-        "name": "Commanded setpoint"
-      },
-      "dew_point": {
-        "name": "Dew point"
+      "outdoor_apparent_temperature": {
+        "name": "Outdoor apparent temperature"
       },
       "outdoor_dew_point": {
         "name": "Outdoor dew point"
       },
+      "forecast_peak": {
+        "name": "Forecast peak"
+      },
       "stale_feeds": {
         "name": "Stale feeds"
       },
-      "outdoor_apparent_temperature": {
-        "name": "Outdoor apparent temperature"
-      },
-      "forecast_peak": {
-        "name": "Forecast peak"
+      "rooms_configured": {
+        "name": "Rooms configured"
       }
     },
     "switch": {
@@ -297,7 +510,16 @@
         }
       },
       "unit_mode": {
-        "name": "Mode"
+        "name": "Unit mode",
+        "state": {
+          "off": "Off",
+          "heat": "Heat",
+          "cool": "Cool",
+          "heat_cool": "Heat/cool",
+          "auto": "Auto",
+          "dry": "Dry",
+          "fan_only": "Fan only"
+        }
       },
       "fan_speed": {
         "name": "Fan speed"
@@ -317,128 +539,118 @@
     "button": {
       "leave": {
         "name": "Leave"
-      }
-    }
-  },
-  "services": {
-    "heading_home": {
-      "name": "Heading home",
-      "description": "Brings a room to its comfort band ahead of arrival. This is the only thing that overrides an unoccupied room being off.",
-      "fields": {
-        "room_id": {
-          "name": "Room",
-          "description": "The room to bring to comfort."
-        },
-        "deadline": {
-          "name": "Deadline",
-          "description": "Optional. When the room should have reached its comfort band."
-        }
-      }
-    },
-    "clear_override": {
-      "name": "Clear override",
-      "description": "Drops any heading-home request for a room.",
-      "fields": {
-        "room_id": {
-          "name": "Room",
-          "description": "The room to clear."
-        }
+      },
+      "precool": {
+        "name": "Precool"
       }
     }
   },
   "exceptions": {
+    "not_loaded": {
+      "message": "The Abode HVAC Coordinator is not loaded."
+    },
     "unknown_room": {
-      "message": "No room called {room_id} is configured."
+      "message": "No room has the id {room_id}. The room id is shown on the room's mode sensor."
     },
-    "control_not_writable": {
-      "message": "Automatic control is on for {room}, so the coordinator is running its air conditioning. Turn Automatic control off to change this by hand."
+    "precool_needs_presence": {
+      "message": "{room} has no presence sensor, so Precool cannot know when someone comes in."
     },
-    "vane_not_writable": {
-      "message": "Automatic vane control is on for {room}, so the coordinator is positioning its vane. Turn Automatic vane control off to set it by hand."
+    "memory_unreadable": {
+      "message": "The stored learning could not be read: {error}"
     },
-    "control_value_not_offered": {
-      "message": "{value} is not a {control} the air conditioning in {room} offered when the room was set up."
+    "no_room_can_run": {
+      "message": "No room can run this cycle."
     },
-    "control_profile_not_read": {
-      "message": "{room} has not yet read what its air conditioning can do, so its controls cannot be used yet."
+    "automatic_control_on": {
+      "message": "{room} is run by Automatic control. Turn it off to change the unit yourself."
     },
-    "room_bands_invalid": {
-      "message": "The comfort bands for room {room_id} are not valid ({error}). Edit the room's comfort bands under Configure → Rooms."
+    "automatic_vane_control_on": {
+      "message": "{room}'s vanes are set by Automatic vane control. Turn it off to set them yourself."
     },
-    "room_setting_missing": {
-      "message": "Room {room_id} is missing the setting {setting}. Edit the room under Configure → Rooms, or remove it and add it again."
+    "profile_not_read": {
+      "message": "{room}'s air conditioners have not reported what they can do yet."
+    },
+    "not_offered": {
+      "message": "{room}'s air conditioners do not offer {value} for the {control}."
+    },
+    "command_failed": {
+      "message": "{entity} did not accept the command: {error}"
+    },
+    "spoken_empty_room": {
+      "message": "{room} is empty. The air conditioner turns off in {minutes} minutes."
+    },
+    "spoken_opening_first": {
+      "message": "A door or window is open in {room}. The air conditioner turns off in {minutes} minutes."
+    },
+    "spoken_opening_final": {
+      "message": "A door or window is still open in {room}. The air conditioner is turning off."
     }
   },
   "issues": {
-    "unrecognised_constraint": {
-      "title": "Tariff constraints this controller does not act on",
-      "description": "The tariff declares {constraints}, which this controller does not act on itself. They are passed through for whichever system owns that actuator. Nothing is broken; this is a note that something else has to consume them."
+    "unknown_constraint": {
+      "title": "A tariff rule is not known",
+      "description": "The tariff declares {constraints}, which this version does not know. It is shown in each room's trace and never dropped. Update the Abode HVAC Coordinator, or remove the rule from the tariff."
     },
-    "room_without_bands": {
-      "title": "Rooms with no comfort bands",
-      "description": "{rooms} have no comfort bands configured, so they will never be actuated. Add bands from Configure, or set a lockout reason if that is deliberate."
+    "tariff_unreadable": {
+      "title": "The tariff cannot be read",
+      "description": "Abode Power Tariffs did not give its intervals: {error}. Every hour is priced the same until it does. Check the Abode Power Tariffs entry is loaded."
     },
-    "room_missing_comfort_inputs": {
-      "title": "Rooms missing a temperature or humidity sensor",
-      "description": "{rooms}\n\nBoth a temperature and a humidity sensor are required from 0.8.9 on. These rooms were configured before that, or have had a sensor removed since. Without both, comfort cannot be evaluated for the affected input and the room falls back to holding rather than actuating on it. Add the missing sensor from Configure → Rooms."
+    "no_speech_engine": {
+      "title": "No speech engine",
+      "description": "A room announces warnings, but Home Assistant has no speech engine. Add one, or turn announcements off in the room's options."
     },
-    "tariff_unavailable": {
-      "title": "The tariff could not be read",
-      "description": "Abode Power Tariffs did not return a plan: {reason}\n\nEvery room is still held to its comfort band. What is suspended is the free-window precool, the no-import rule and the costed forecast. The last series read is kept and used until a fetch succeeds."
+    "speech_engine_not_chosen": {
+      "title": "Choose a speech engine",
+      "description": "Home Assistant has {count} speech engines and none is chosen. Choose one in Reconfigure, on the Announcements screen."
     },
-    "forecast_unavailable": {
-      "title": "The weather forecast could not be read",
-      "description": "The weather entity did not return an hourly forecast: {reason}\n\nEvery room is still held to its comfort band. Precool falls back to comparing current conditions, which will under-use a free window on a day that heats up later. The last forecast read is kept and used until a fetch succeeds."
-    },
-    "shared_climate_entity": {
-      "title": "Two rooms are configured against the same air conditioner",
-      "description": "{conflicts}\n\nOne climate entity cannot be driven by more than one room. Each room solves its own setpoint and would command that entity every cycle, so the two would overwrite one another with no error reported anywhere.\n\nThe affected rooms are locked out and will not actuate until this is resolved. Give each room its own climate entity, or remove all but one of them, from Configure → Rooms.\n\nA ducted system genuinely does serve several rooms from one indoor unit. This controller cannot drive one yet: it solves a dry-bulb target per room, and a ducted system has a single setpoint with a damper per zone."
-    },
-    "no_grid_import_without_grid_sensor": {
-      "title": "A no-import window is active with no grid sensor configured",
-      "description": "The current tariff plan declares `no_grid_import`, and no grid power sensor is configured. This component can neither honour nor verify that rule without one — comfort is unaffected, but the power budget is running on the energy figure alone and no breach can be measured. Add a grid power sensor from Configure → Power-aware operation."
+    "solar_forecast_unreadable": {
+      "title": "The solar forecast cannot be read",
+      "description": "The solar forecast failed: {error}. Check the forecast integration, or remove it from the Power screen in Reconfigure."
     },
     "grid_sign_contradicted": {
-      "title": "The grid sensor's sign no longer matches what was configured",
-      "description": "Live readings have repeatedly disagreed with the stored sign convention — a firmware update, a swapped entity, or an edited template sensor are the usual causes. Nothing has been changed automatically: revisit Configure → Power-aware operation and re-confirm which direction a positive reading means."
+      "title": "The grid sensor's direction looks wrong",
+      "description": "The grid readings have contradicted the direction set up ten times in a row. Check it in Reconfigure, on the Grid direction screen."
     },
-    "power_shortfall": {
-      "title": "A no-import window imported {kwh} kWh from the grid",
-      "description": "The window closed having measured {kwh} kWh of grid import against it. Rooms with power management set to off or guidance hold their comfort band regardless of the constraint, so any import they cause is expected. Rooms set to enforced run as gently as the battery allows but never stop, so import can still happen when the battery runs short. The figure is measured, not projected: check the reserve margin, the battery size, the tariff rule, and which rooms are set to enforced. This clears when a later no-import window closes without importing."
+    "grid_import": {
+      "title": "Grid import during a no-grid-import window",
+      "description": "The house imported {kwh} kWh during the last no-grid-import window. Check the battery's settings and the rooms' power management."
     },
-    "solar_forecast_unavailable": {
-      "title": "A solar forecast could not be read",
-      "description": "The power budget could not read a solar production forecast: {reason}\n\nWhere no forecast could be read, the budget counts only the solar being produced now, as it did before solar forecasts were used, so a room may be held back at sunrise more than the day's sun justifies. The last forecast read is kept until it no longer reaches the present."
+    "shared_climate": {
+      "title": "An air conditioner is in two rooms",
+      "description": "{entity} is used by {rooms}. Both rooms are locked out until it is removed from one of them in the options."
     },
-    "announcements_unavailable": {
-      "title": "Spoken warnings cannot be given",
-      "description": "{reason}.\n\nRooms are still controlled as normal, and still turned off when empty or when a window is left open; the warning is just not spoken. Choose an engine under Configure → House configuration → Spoken warnings."
+    "room_sensor_missing": {
+      "title": "A room's sensor is missing",
+      "description": "{room} uses {entity}, which Home Assistant has not provided for 15 minutes. Check the integration it comes from, or choose another sensor in the room's options."
+    },
+    "filter_silent": {
+      "title": "A room's model has stopped learning",
+      "description": "{room}'s model has made no correction for 24 hours: {reason}. Check the room's sensors and its air conditioner."
     }
   },
-  "selector": {
-    "window_direction": {
-      "options": {
-        "north": "North",
-        "north_east": "North-east",
-        "east": "East",
-        "south_east": "South-east",
-        "south": "South",
-        "south_west": "South-west",
-        "west": "West",
-        "north_west": "North-west"
+  "services": {
+    "precool": {
+      "name": "Precool",
+      "description": "Starts Precool in an empty room: it runs to the centre of its precool band until the room counts as occupied or it is ended. A room counts as occupied for its empty grace after the last person leaves, so Precool started in that time ends at once.",
+      "fields": {
+        "room_id": {
+          "name": "Room id",
+          "description": "The room's id, shown on its mode sensor."
+        },
+        "ready_by": {
+          "name": "Ready by",
+          "description": "The room is to be in its precool band by then; it starts when the model says it must. Leave empty to start now."
+        }
       }
     },
-    "grid_sign": {
-      "options": {
-        "importing": "Positive means importing",
-        "exporting": "Positive means exporting"
-      }
-    },
-    "power_management": {
-      "options": {
-        "off": "Off — ignore the power budget",
-        "guidance": "Guidance — report what it would do, never apply it",
-        "enforced": "Enforced — hold the room to the ceiling"
+    "cancel_precool": {
+      "name": "Cancel precool",
+      "description": "Ends Precool in a room.",
+      "fields": {
+        "room_id": {
+          "name": "Room id",
+          "description": "The room's id, shown on its mode sensor."
+        }
       }
     }
   }
