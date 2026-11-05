@@ -6,56 +6,108 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
+  RUFF_VERSION: "0.17.3"
+  MYPY_VERSION: "2.4.0"
+
 jobs:
-  lint-and-typecheck:
+  lint-and-types:
+    name: Lint and types (Home Assistant 2026.10.4)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
-
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.14"
-
-      - name: Install lint/type tools
-        run: pip install ruff==0.15.11 mypy==1.20.2
-
-      - name: Install Home Assistant, so mypy can resolve its types
-        run: pip install homeassistant==2026.8.3
-
-      - name: ruff
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff==${RUFF_VERSION}" "mypy==${MYPY_VERSION}" "pytest-homeassistant-custom-component==0.13.375"
+      - name: Ruff
         run: ruff check custom_components tests
+      - name: Mypy (strict)
+        # custom_components is a namespace package; mypy needs it as a package to resolve the relative imports
+        run: |
+          mkdir -p "$RUNNER_TEMP/mypy" && cp -r custom_components mypy.ini "$RUNNER_TEMP/mypy/"
+          touch "$RUNNER_TEMP/mypy/custom_components/__init__.py"
+          cd "$RUNNER_TEMP/mypy" && mypy --strict --config-file mypy.ini custom_components
 
-      - name: mypy --strict
-        run: mypy --strict --ignore-missing-imports custom_components/abode_hvac_coordinator/
-
-  pure-module-tests:
+  pure-tests:
+    name: Pure tests (nothing installed)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
-
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.14"
-
-      - name: Run pure-module tests (no Home Assistant required)
-        run: python3 -m unittest tests.test_core tests.test_pure_edges tests.test_attributes -v
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Python
+        run: python3 --version
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/pure -t .
+      - name: Whole-loop simulation
+        run: python3 -m unittest discover -s tests/sim -t .
 
   home-assistant-tests:
+    name: Home Assistant ${{ matrix.homeassistant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - homeassistant: "2026.9.4"  # the oldest release supported (hacs.json)
+            install: '"pytest-homeassistant-custom-component==0.13.367"'
+          - homeassistant: "2026.10.4"
+            install: '"pytest-homeassistant-custom-component==0.13.375"'
+          # From 2026.11 the test helpers are Home Assistant's own pytest-homeassistant
+          # (packages/pytest-homeassistant in core; renamed from pytest-home-assistant
+          # before 2026.11.0). Installed from the same core tag as Home Assistant itself,
+          # because PyPI had only its betas when 2026.11.0 was released.
+          - homeassistant: "2026.11.0"
+            install: >-
+              "homeassistant==2026.11.0"
+              "pytest-homeassistant @ git+https://github.com/home-assistant/core@2026.11.0#subdirectory=packages/pytest-homeassistant"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ${{ matrix.install }} pytest-cov
+      - name: Releases tested against
+        run: |
+          python --version
+          python -c "from homeassistant.const import __version__; print('Home Assistant', __version__)"
+      - name: The whole suite, with coverage
+        run: >-
+          python -m pytest tests/pure tests/ha -q
+          --cov=custom_components/abode_hvac_coordinator --cov-branch --cov-report=term-missing
+          --cov-report=json:coverage.json
+      - name: Every module above 95 % (Section 13.2)
+        run: |
+          python - <<'PY'
+          import json, sys
+          files = json.load(open("coverage.json"))["files"]
+          low = {f: d["summary"]["percent_covered"] for f, d in files.items() if d["summary"]["percent_covered"] <= 95.0}
+          for f, pct in sorted(low.items()):
+              print(f"{f}: {pct:.2f} %")
+          sys.exit(1 if low else 0)
+          PY
+
+  validate:
+    name: Home Assistant and HACS validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
-
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/checkout@v7
+      - name: hassfest (Home Assistant's own checks of the manifest, strings, icons, services and brand)
+        uses: home-assistant/actions/hassfest@master
+      - name: HACS
+        uses: hacs/action@main
         with:
-          python-version: "3.14"
-
-      - name: Install Home Assistant test stack
-        run: |
-          pip install \
-            homeassistant==2026.8.3 \
-            pytest-homeassistant-custom-component==0.13.357 \
-            pytest pytest-asyncio \
-            mutagen==1.48.1 ha-ffmpeg==3.2.2
-
-      - name: Run the full suite
-        run: python3 -m pytest tests/ -v
+          category: integration
+          comment: "false"
