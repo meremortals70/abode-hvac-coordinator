@@ -2,7 +2,7 @@
 
 ## Before you start
 
-- Home Assistant 2026.9.4 or later, with the recorder (it is on by default).
+- Home Assistant 2026.10.4 or later, with the recorder (it is on by default).
 - Each air conditioner shown in Home Assistant as a climate entity, on and reporting.
 - Each room's own temperature and humidity sensors.
 - Optional:

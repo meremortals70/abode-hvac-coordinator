@@ -26,7 +26,7 @@ Entity ids below are for a room named Office; yours follow your room's name.
 | Vertical vane | `select.office_vertical_vane` | Writable while Automatic vane control is off. Only if the unit has vane positions |
 | Horizontal vane | `select.office_horizontal_vane` | Writable while Automatic vane control is off. Only if the unit has horizontal vane positions |
 | Setpoint | `number.office_setpoint` | The unit's setpoint now, in the unit's range and step. Writable only while Automatic control is off |
-| Leave | `button.office_leave` | Turns the room off at once until someone comes back |
+| Leave | `button.office_leave` | Turns the room off at once. With a presence sensor, until someone comes back; without one, until you change Automatic control or Comfort mode, or ask for Precool |
 | Precool | `button.office_precool` | Starts Precool now. Only in rooms with a presence sensor |
 
 The unit controls show the unit's live value as soon as it changes. Changing one while the component runs the room is refused with a message saying so.

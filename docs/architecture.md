@@ -175,7 +175,7 @@ One Kalman filter per room learns everything in the model at once, as it runs. I
 
 [image: One Kalman filter learns the room as it runs; nothing else is stored]
 
-Treating unknown figures as part of a Kalman filter's state is the extended Kalman filter used as a parameter estimator [R6][R16]. The model is the one Bacher and Madsen identified by maximum likelihood with a Kalman filter [R1]; here the same filter carries the figures as well as the temperatures [Prop]. Ljung showed that a filter used this way can give biased figures, or diverge, when its noise model is wrong [R16]. Two things answer this. The filter learns its sensor's noise (below). And nothing depends on a figure being the room's true physical value: in simulation the settled figures differed from the true ones by up to 34% with the sensor's rounding alone, and by up to 85% with a noisy sensor or a disturbed room, while the room stayed inside its band in every run (Section 11.4) [Sim]. The figures are whatever forecasts the room, and only the forecasts are tested (M1) [Prop].
+Treating unknown figures as part of a Kalman filter's state is the extended Kalman filter used as a parameter estimator [R6][R16]. The model is the one Bacher and Madsen identified by maximum likelihood with a Kalman filter [R1]; here the same filter carries the figures as well as the temperatures [Prop]. Ljung showed that a filter used this way can give biased figures, or diverge, when its noise model is wrong [R16]. Three things answer this. The filter learns its sensor's noise (below). A reading far outside what the filter expected is weighted down, and a figure is corrected only where its input acts (below): replaying the house's own history without these, the filter diverged within two days [Sim]. And nothing depends on a figure being the room's true physical value: in simulation the settled figures differed from the true ones by up to 34% with the sensor's rounding alone, and by up to 85% with a noisy sensor or a disturbed room, while the room stayed inside its band in every run (Section 11.4) [Sim]. The figures are whatever forecasts the room, and only the forecasts are tested (M1) [Prop].
 
 **The state** [Prop]:
 
@@ -184,23 +184,31 @@ z = \bigl(T,\; M,\; \ln a,\ln b,\ln c,\ln k,\ln s,\ln m,\; g_0,\alpha_1,\beta_1,
 ```
 
 - 27 numbers. The positive figures are carried as logarithms, so none can go below zero; g₀ and the wave weights may take either sign [Der].
-- **The unit's delay θ and lag τ** are the last two states, τ as its logarithm and never below 1 minute, θ held between 0 and 30 minutes. The delayed rate is taken in proportion between the two recorded minutes either side, so θ is learned as a smooth number. They start at θ = 6 and τ = 15 minutes, with uncertainty 25 min² for θ and 1 for ln τ, and noise per step of 10⁻³ min² and 10⁻⁵ [Prop][NYE]. A separate fit after each start, stop or setpoint change was tried and could not recover them at the sensor's 0.2 °C steps: it found 11 and 1 minutes against a true 6 and 15. The filter found 8–10 and 9–12, their total 19–20 against a true 21 [Sim].
+- **The unit's delay θ and lag τ** are the last two states, τ as its logarithm and held between 1 and 30 minutes, θ held between 0 and 30 minutes, both in the state itself after every correction. A unit's start-up response is measured at 0.3 to 2 minutes [R19]; a lag above 30 minutes is not the unit's, and the PID's derivative time is the lag (4.5). A stored state whose lag is outside the range was learned by a filter that could diverge, and is refused at start-up with its trust; the room is seeded again from history [R19]. The delayed rate is taken in proportion between the two recorded minutes either side, so θ is learned as a smooth number. They start at θ = 6 and τ = 15 minutes, with uncertainty 25 min² for θ and 1 for ln τ, and noise per step of 10⁻³ min² and 10⁻⁵ [Prop][NYE]. A separate fit after each start, stop or setpoint change was tried and could not recover them at the sensor's 0.2 °C steps: it found 11 and 1 minutes against a true 6 and 15. The filter found 8–10 and 9–12, their total 19–20 against a true 21 [Sim].
 - The unit's curve is carried as its six steps in each direction, so it always rises with effort (4.2) [Der].
 
 **Every 5 minutes: predict** [R6][Prop]:
 
-- The model of 4.2 is run forward 5 minutes from z, in 1-minute steps, with the step's average outdoor temperature and sun, and the unit's rate r(x) passed through its delay and lag. That gives the predicted state z⁻.
+- The model of 4.2 is run forward 5 minutes from z, in 1-minute steps, with the step's average outdoor temperature and sun, and the unit's rate r(x) passed through its delay and lag. Each minute the room and mass move by the heat balance's exact solution, Φ = e^{A·1 min} and Γ = A⁻¹(Φ − I)B, the inputs held for the minute. A straight-line minute diverges once a + b or c + k passes 120 per hour, and a figure just corrected can be that large; the exact step stays bounded for any positive figures [Der]. That gives the predicted state z⁻.
 - F is the change in z⁻ for a small change in each element of z, computed numerically.
 - P⁻ = F P Fᵀ + Q.
 
 **Every 5 minutes: correct** [R6]:
 
 ```latex
-\nu = y - T^-, \quad S_\nu = P^-_{11} + R, \quad K = P^- e_1 / S_\nu, \quad z = z^- + K\nu, \quad P = (I - K e_1^\top)\,P^-
+\nu = y - T^-, \quad S_\nu = \max\!\left(P^-_{11} + R,\; \nu^2 / 10.83\right), \quad K_i = \mathbb{1}[i \text{ acts}]\,P^-_{i1} / S_\nu, \quad z = z^- + K\nu
 ```
 
-- **The reading's noise R is learned from the readings** [Prop][R17][Sim]. The room's sensor is outside the component's control, so the component learns how far to trust it. When the filter is right, ν² averages P⁻₁₁ + R [R17]. So R = the running average of ν² − P⁻₁₁, never below q²/12. q is the sensor's step: the smallest non-zero change seen in the room's readings, and q²/12 is the variance of its rounding [Der]. The running average gives each correction a weight of 1/288, about one day. For the first day, R = q²/12 [Prop]. In simulation it learned 0.104–0.108 °C for a sensor whose true error was 0.115 °C, and 0.058–0.061 °C for a sensor with rounding alone, whose q/√12 is 0.058 °C. In a room five times more disturbed than the filter assumes it learned 0.068–0.089 °C: disturbance the filter does not expect is taken as sensor noise [Sim].
-- **No correction** is made from a reading that was stood in or missing [D074], on a step whose compressor state is unknown (4.8) or whose unit ran in a mode that does not say cooling or heating (heat_cool, auto), on a step whose sun had to be assumed (4.2), or before the filter has seen the unit's last 40 minutes since start-up, because until then it does not know the unit's rate through its delay and lag [Prop]. The prediction still runs.
+```latex
+P = (I - K e_1^\top)\,P^-\,(I - K e_1^\top)^\top + K (S_\nu - P^-_{11}) K^\top
+```
+
+- **A surprise is weighted down, not taken as exact** [R20]. 10.83 is the 0.1% point of the chi-square distribution with one degree of freedom, so a reading moves the state at most as a 3.3-sigma surprise would. Without it, in the house's own history a sensor reporting to 0.01 °C was trusted to 0.003 °C, and one 0.4 °C jump moved c from 0.3 to 180 per hour in a single correction [Sim: replay of 25 October to 6 November 2026]. R is still learned from the whole ν [R17].
+- **A figure is corrected only on a step where its input acted** [D026][D060][R16]: the air, the mass, a, b, c, k and the heat pattern always; s and m only with sun on the glass; each direction's curve only when the unit worked that way in the last 40 minutes; θ and τ when it worked either way. A figure with nothing in the reading to learn from otherwise walks on the filter's cross-covariances alone: in a room whose sun was never measured, m went from 0.1 to 87 per hour [Sim: the same replay]. The humidity filter learns the same way.
+- **The Joseph form** keeps P right for a gain that leaves figures out, where P = (I − K e₁ᵀ) P⁻ holds only for the full gain [R6].
+
+- **What the innovations show is split between the reading and the room** [R17][R21][Prop]. The reading's own noise R is what its second differences show, step to step: R = the running average of (y_k − 2y_{k−1} + y_{k−2})² / 6, never below q²/12, since white noise of variance R gives a second difference of variance 6R, while a change the room carries on hardly shows in one over 5-minute steps [Der]. q is the sensor's step: the smallest non-zero change seen in the room's readings, and q²/12 is the variance of its rounding [Der]. The rest of the innovations' variance, past R and the filter's own uncertainty, is the room's own unforecast change, Q_air = max(0, v − ⟨P⁻₁₁ − Q_air⟩ − R), added to the air's noise each step, so a room that has moved is followed and not taken as a noisy sensor. Each running average gives a step a weight of 1/288, about one day. Taking the whole miss as sensor noise, as before, learned 2.17 °C² on a sensor in 0.1 °C steps and left the estimate 1 °C or more from the room for 12 hours; with the split, the house's 12 days of history give 6 and 15 steps more than 1 °C out (office and living room) against 160 and 652, and one-hour forecast errors with the unit resting of 0.21 and 0.48 °C against 0.33 and 0.63 [Sim: replay of 25 October to 6 November 2026].
+- **A reading always says where the room is** [D074][Prop]. Nothing is corrected only when the reading was stood in or missing, or the sensor's step is not yet known. Otherwise the air and mass are always corrected, and the figures learn only from a step whose inputs were all known: not on a step whose compressor state is unknown (4.8), or unknown in any of the unit's last 40 minutes, or whose unit ran in a mode that does not say cooling or heating (heat_cool, auto); not on a step whose sun had to be assumed (4.2); and not until the unit's rate has come through its delay and three lags since start-up, max(40, θ + 3τ) minutes, because the rate is not kept across a restart and starts again at 0 (e⁻³ = 5 % short) [Der]. An input the step could not know widens the air and mass by the variance of its possible effect: a compressor unknown, run at the rate r its mode and effort ask, by (r × 5 min)²/3; assumed sun by (s × 5 min)²/3 on the air and (m × 5 min)²/3 on the mass, a miss spread evenly from 0 to its largest [Der]. Without this the air ran open-loop through every step with the unit running and its compressor unknown: a whole night of cooling in the living room's history [Sim]. The Jacobian's step is taken downward for the lag or delay at the top of its range, where a step up is clamped away and would show no effect. Every figure's logarithm, and each curve step's, is held between ln 10⁻⁶ and ln 10⁴ per hour, the range the matrix exponential carries; a step whose arithmetic still fails is undone and says so [Der].
 - **While the unit runs**, the air's noise is raised by (0.5 °C/h × 5 min)², because the unit's rate is itself learned [Prop][NYE: the 0.5 °C/h is a judgement; replay test M7 checks it].
 
 **It builds on itself** [Der]. Each correction narrows P, so every reading adds to what earlier readings taught. The noise Q on each figure is 10⁻⁶ per step in the logarithm, which lets a figure follow the seasons: over a year it allows a drift of about 38% (√(10⁻⁶ × 105,120) = 0.32 in the logarithm) [Prop][Der][NYE: replay test M4]. The noise on the air and mass is 10⁻³ and 10⁻⁴ °C² per hour [Prop][NYE].
@@ -264,7 +272,7 @@ J = \sum_{i=1}^{72} w\,\Bigl(\frac{HCI_i - HCI^*_i}{h_i}\Bigr)^2\delta \;+\; \su
 | w | What sitting at the band's edge costs, per hour | [I4][Der] |
 | c\_start | What one start costs | [Prop][NYE] |
 
-**Comfort comes first** [D008]. Plans are compared first by the time the forecast index spends outside the band, and only among the plans with the least time outside by J [Der: a strict order, so no saving can buy time outside the band]. The forecast at point i counts as outside when it comes within one standard deviation σ\_i of its own uncertainty of either edge [Prop][Sim]. σ\_i² is the filter's uncertainty in the room carried forward through the model to point i, plus the sensor's learned noise R (4.3), and σ\_i is turned into comfort index by the slope ∂HCI/∂T of 4.1 [Der]. While the model is new σ\_i is wide and the plan keeps well inside the band; as the model learns, σ\_i narrows and the band's full width can be used [Der][I4]. A room is short of its band only when nothing allowed can hold it: the unit at its top rate, an enforced power ceiling [D041][D063], or a limit of Section 3.
+**Comfort comes first** [D008]. Plans are compared first by the time the forecast index spends outside the band, and only among the plans with the least time outside by J [Der: a strict order, so no saving can buy time outside the band]. The forecast at point i counts as outside when it comes within one standard deviation σ\_i of its own uncertainty of either edge [Prop][Sim]. σ\_i² is the filter's uncertainty in the room carried forward through the model to point i, with the room's learned unforecast change Q\_air added each step (4.3); the sensor's noise R is left out, because the comfort is the room's, not the sensor's [Der]. The plan carries the room's moisture as a vapour pressure, so the index moves one for one with the temperature there and σ\_i is its own size in comfort index [Der]. σ\_i is held to half the band's half-width, so a band always has an inside to aim for [Set]. While the model is new σ\_i is wide and the plan keeps well inside the band; as the model learns, σ\_i narrows and the band's full width can be used [Der][I4]. A room is short of its band only when nothing allowed can hold it: the unit at its top rate, an enforced power ceiling [D041][D063], or a limit of Section 3.
 
 **The actions in each step** [Prop]:
 
@@ -314,7 +322,7 @@ The plan says what the room should do over the next half-hour and forecasts the 
 u = u_{plan} + K_p\left[e + \frac{1}{T_i}\int e\,dt + T_d\left(\frac{dT}{dt} - \frac{dT_{path}}{dt}\right)\right], \qquad e = T - T_{path}(t)
 ```
 
-- **T is the filter's estimate of the room air** from its latest correction (4.3), not the raw reading [Prop][Sim]. The sensor is outside the component's control. Acting on the estimate stops the PID chasing the sensor's noise [Der]. In simulation with 0.1 °C of random sensor error, the room stayed inside its band either way; with the centre held tightly (w = 8), acting on the raw reading held it within 0.3 °C of the centre 86–92% of each week, and acting on the estimate 96.7–100% [Sim].
+- **T is the filter's estimate of the room air** from its latest correction (4.3), carried forward on the model's own rate (dT/dt below) for the time since that correction, at most one filter step, not the raw reading [Prop][Sim][Der]. The plan's path moves every cycle; an estimate that stood still between filter steps showed an error of the path's slope times the time since the step, even for a room exactly on its path. The sensor is outside the component's control. Acting on the estimate stops the PID chasing the sensor's noise [Der]. In simulation with 0.1 °C of random sensor error, the room stayed inside its band either way; with the centre held tightly (w = 8), acting on the raw reading held it within 0.3 °C of the centre 86–92% of each week, and acting on the estimate 96.7–100% [Sim].
 - **e** is positive when the room is warmer than the plan's path. Positive u is cooling, negative is heating.
 - **u stays in the plan's direction**, between U\_min and the unit's top rate [Prop][Sim].
 - **dT/dt** is the filter's estimate of the room's rate of change now: the model's drift (forecast.py, DRIFT NOW) less the unit's current rate U, from the latest correction. Like e, it does not act on the raw readings [Der][D086].
@@ -329,7 +337,7 @@ u = u_{plan} + K_p\left[e + \frac{1}{T_i}\int e\,dt + T_d\left(\frac{dT}{dt} - \
 G(s) = -\frac{s + c + k}{(s + a + b)(s + c + k) - bc}
 ```
 
-As s grows, s·G(s) → −1, so over the minutes that matter the room responds as an integrator with initial slope κ′ = 1 [Der]. Its steady-state gain is κ = |G(0)| = (c+k)/(a(c+k)+bk), in hours [Der]. SIMC treats such a process as first-order with time constant τ₁ = κ/κ′ = |G(0)|, with the unit's lag as a second time constant τ₂ = τ [R7][Der]. SIMC's rules for that case, with κ = κ′τ₁ and κ′ = 1, and its recommendation τ\_c = θ for tight control [R7]. Here θ is the unit's learned delay plus half the interval at which the setpoint it holds can actually change: 0.25 minutes for a unit that steps in tenths or finer (the 30-second cycle), 5 minutes for whole-degree alternation (10-minute holds, 4.6). A sampled controller acts on average half an interval late, and K\_c stays finite when the learned delay is 0 [Der]:
+As s grows, s·G(s) → −1, so over the minutes that matter the room responds as an integrator with initial slope κ′ = 1 [Der]. Its steady-state gain is κ = |G(0)| = (c+k)/(a(c+k)+bk), in hours [Der]. SIMC treats such a process as first-order with time constant τ₁ = κ/κ′ = |G(0)|, with the unit's lag as a second time constant τ₂ = τ [R7][Der]. SIMC's rules for that case, with κ = κ′τ₁ and κ′ = 1, and its recommendation τ\_c = θ for tight control [R7]. Here θ is the unit's learned delay plus half the filter's 5-minute step (the estimate the PID acts on learns of the room every 5 minutes) plus half the interval at which the setpoint it holds can actually change: 0.25 minutes for a unit that steps in tenths or finer (the 30-second cycle), 5 minutes for whole-degree alternation (10-minute holds, 4.6). A sampled controller acts on average half an interval late, and K\_c stays finite when the learned delay is 0 [Der]:
 
 ```latex
 K_c = \frac{1}{\tau_c+\theta}, \qquad \tau_I = \min\bigl(\tau_1,\; 4(\tau_c+\theta)\bigr), \qquad \tau_D = \tau, \qquad \tau_c = \theta
@@ -341,7 +349,7 @@ SIMC's controller is in series form, C(s) = K\_c (1 + 1/(τ\_I s))(1 + τ\_D s) 
 K_p = K_c\left(1 + \frac{\tau_D}{\tau_I}\right), \qquad T_i = \tau_I + \tau_D, \qquad T_d = \frac{\tau_I\,\tau_D}{\tau_I + \tau_D}
 ```
 
-**Example, illustration only:** θ = 6 min (delay with half the actuation interval), τ = 15 min, τ₁ = 5.2 h give K\_c = 5.0 per hour, τ\_I = 48 min, and K\_p = 6.56 per hour, T\_i = 63 min, T\_d = 11.4 min [Der]. A room 0.5 °C warmer than its path is then asked for 3.3 °C/h more cooling.
+**Example, illustration only:** θ = 8.5 min (a 6-minute delay with half the filter's step), τ = 15 min, τ₁ = 4.4 h give K\_c = 3.53 per hour, τ\_I = 68 min, and K\_p = 4.31 per hour, T\_i = 83 min, T\_d = 12.3 min [Der]. A room 0.5 °C warmer than its path is then asked for 2.2 °C/h more cooling.
 
 **What was simulated** [Sim]: the P and I terms. The D term was not used in the simulations [NYE].
 
@@ -402,7 +410,7 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 **The ceiling** [D037][D041][D062][D063][D067]:
 
 - **Its measure:** the highest rate whose learned draw fits within the outdoor unit's allowance: U\_ceil = max{U : draw(U) ≤ allowance}, the allowance being set below [D037][Prop]. It is found on the curve of the way the room runs: heating while the plan heats, cooling while it cools or dries, and while it rests the way the room must go to reach its band's centre [D028]. In an enforced room no plan may run above it (4.4), nor the PID ask above it (4.5); a changed ceiling is planned under at once. Turned into the other direction's rate for the same power, it holds a plan that turns the other way to the same allowance [D028].
-- **How it moves:** it drops at once. It rises only after it has stood 10 minutes, and only as far as the allowance clears the higher draw by 0.3 kW [D062].
+- **How it moves:** it drops at once. It rises only after it has stood 10 minutes, and only as far as the allowance clears the higher draw by 0.3 kW [D062]. A cycle with a figure missing sets no limit [D044] but keeps the ceiling's memory, so it still rises only after its 10 minutes when the figures return [D062].
 - **Guidance** shows the ceiling and never applies it [D041]. Enforced applies it [D041].
 - **When even the lowest rate cannot last to t\_end:** the room keeps cooling, with its ceiling at its lowest rate U\_min, so the battery lasts as long as it can [D063][D067][Set].
 - **Turning off:** only when the battery cannot carry on: E\_avail ≤ 0 (down to its reserve), or the lowest rate's draw is above P\_plant, or that draw is not yet known. A running enforced room is then turned off, and runs again when the battery can supply it [D063][D067]. A resting room is left alone [D063].
@@ -691,12 +699,14 @@ HEAT FROM PEOPLE AND APPLIANCES at hour h:
 
 STEP (z, 5 minutes of inputs) -> z after 5 minutes:                       [Der]
   REPEAT 5 times, one minute each:
-      dT = a (outdoor - T) + b (M - T) + s S + g - U
-      dM = c (T - M) + k (outdoor - M) + m S
-      T = T + dT x 1 min;  M = M + dM x 1 min
+      U = U + (r(effort at now - delay) - U) x 1 min / lag
+      (T, M) = Phi_1min (T, M) + Gam_1min (outdoor, S, g, U): the heat
+          balance's exact solution over the minute, the inputs held;
+          bounded for any positive figures, where T + dT x 1 min
+          diverges once a + b or c + k passes 120 per hour       [Der]
   the figures are unchanged by STEP
 
-EXACT 5-MINUTE MATRICES (for plans and forecasts):                         [Der]
+EXACT MATRICES, for a minute (STEP) and 5 minutes (plans and forecasts):                         [Der]
   A   = [[-(a+b), b], [c, -(c+k)]]
   Phi = e^(A x 5 min), from A's eigenvalues and eigenvectors (real and
         distinct, 4.2)
@@ -723,7 +733,8 @@ DESIGN VALUES                                                         [Prop]
   noise per 5 minutes ... T 1e-3 x 5/60, M 1e-4 x 5/60,
                           each figure 1e-6; delay 1e-3 min^2;
                           ln lag 1e-5                          [Sim][NYE]
-  delay held between 0 and 30 minutes; lag at least 1 minute      [Prop]
+  delay held between 0 and 30 minutes; lag between 1 and 30      [R19]
+  gate: nu^2 / S above 10.83 (chi-square, 1 degree, 0.1%)         [R20]
   extra T noise while the compressor runs  (0.5 C/h x 5 min)^2 [Sim][NYE]
   q = the smallest non-zero change seen in the room's readings
   R starts at q^2 / 12; v (the running average of nu^2) starts at R  [Der]
@@ -744,15 +755,25 @@ EVERY 5 MINUTES:
       nu = room reading - z[T]
       IF a day of corrections has been made
           R = the larger of q^2 / 12 and v - P[T,T]        [R17][Prop][Sim]
-      S = P[T,T] + R
+      S = the larger of P[T,T] + R and nu^2 / 10.83: a surprise is
+          weighted as a 3.3-sigma one at most                     [R20]
       v = v + (nu^2 - v) / 288
-      K  = P[:, T] / S;  z = z + K nu;  P = P - K P[T, :]
+      ACTS: T, M, a, b, c, k and the heat pattern always; s and m
+          only with sun on the glass this step; the cooling curve only
+          if the unit cooled in the last 40 minutes, the heating curve
+          only if it heated; delay and lag if it did either  [D026][R16]
+      K[i] = P[i, T] / S where i ACTS, otherwise 0;  z = z + K nu
+      P = (I - K e_T) P (I - K e_T)^T + (S - P[T,T]) K K^T   (Joseph)
       make P symmetric
+      hold ln lag in [ln 1, ln 30] and delay in [0, 30]          [R19]
   IF any figure is not a finite number
       keep the state from before this step; RECORD why
 
-SEED (Memory, for a new room): the same steps, run over the recorder's
-history in time order                                              [Prop]
+SEED (Memory, for a new room, or one whose stored state was refused):
+the same steps, run over the recorder's history in time order [Prop][R19]
+
+RESTORE: a stored state whose lag is outside 1 to 30 minutes is
+refused, with the trust it earned                                  [R19]
 ```
 
 #### model/unit.py
@@ -846,12 +867,15 @@ FORECAST (a plan, a horizon):
   a time with Phi and Gam:
       outdoor and sun from the weather forecast for that step, the
       blinds as the plan sets them
-      the unit's rate as the plan sets it; humidity by humidity.py
+      the unit's rate: from the filter's rate now, toward the rate the
+      plan sets, through one lag of the unit's lag and delay together,
+      averaged over each 5 minutes                                  [Der]
+      humidity by humidity.py
   UNCERTAINTY carried forward with the same steps:                 [Der]
       P2 = the filter's 2 x 2 uncertainty of (T, M) now
       each step: P2 = Phi P2 Phi^T + the T and M noise per 5 minutes
-      sigma = square root of (P2[T,T] + R), in C; in comfort index,
-              sigma x dHCI/dT at that step's temperature and humidity (hci.py)
+      sigma = square root of (P2[T,T] + R), in C, the reading's; in
+              comfort index the same, e being held as a vapour pressure
   GIVE BACK temperature, humidity, comfort index and sigma at each step
 
 SETPOINT FOR A RATE:                                               [Prop]
@@ -895,7 +919,8 @@ OCCUPANCY, every cycle:
   IF Leave was pressed and not yet undone                             [D088]
       EMPTY. Undone when presence reads empty and then occupied again,
       or the user changes Automatic control, Comfort mode or asks for
-      Precool
+      Precool; a room without a presence sensor is undone only by the
+      user (decision of 6 November 2026)
   OTHERWISE IF presence has read occupied for the occupied grace  OCCUPIED
   OTHERWISE IF presence has read empty for the empty grace        EMPTY
   OTHERWISE (unknown, or still inside a grace)   keep the last answer
@@ -1131,8 +1156,12 @@ EVERY 5 MINUTES, per room, unless Comfort said OFF:
           5 minutes at a time (model FORECAST)
           FOR EACH of the step's 6 five-minute points i, counted only
           where Comfort says the band is required:           [I4][D013]
-              sigma = the forecast's sigma at point i, in comfort
-                      index (model FORECAST)                 [Der][Prop]
+              sigma = the room's own forecast sigma at point i: the
+                      filter's uncertainty and Q_air carried forward,
+                      without R, at most half the band's half-width
+                                                         [Der][Prop][Set]
+              the unit's rate from its rate now, through one lag of
+              its lag and delay together                          [Der]
               outside += 5 minutes IF the index at point i is within
                          sigma of either edge of the band, or beyond
                          it                                  [D008][Prop]
@@ -1326,7 +1355,7 @@ Limits decides what may reach the unit. It applies the same way whichever contro
 - **An empty room is off,** with a warning first only where someone can hear it [D012][D071][D082].
 - **An open door or window:** nothing new starts; after the room's grace, with warnings, the unit stops [D050]. One opened on free-cooling advice stops it at once [D073].
 - **A missing reading** leaves the unit alone and names what is missing [D018].
-- **The unit's own limits:** only what it advertised at setup is sent [D024][D048], and the short-cycle guard counts per outdoor unit [D016][D020]. While a unit is left alone, the guard follows its compressor as it is seen to run, both in whether the outdoor unit is wanted and in its state, so a start made by hand counts when control comes back and lets another room on the unit rest; and its heads as they run are the command a held stop keeps them on, so a start made by hand runs its 10 minutes [D016][D020][D089].
+- **The unit's own limits:** only what it advertised at setup is sent [D024][D048], and the short-cycle guard counts per outdoor unit [D016][D020]. An outdoor unit runs one way at a time: a multi-split cannot heat one room and cool another, so where rooms on it want opposite ways the room furthest outside its band has it and the others rest; and a reversal counts as a stop and a start (decision of 6 November 2026). While a unit is left alone, the guard follows its compressor as it is seen to run, both in whether the outdoor unit is wanted and in its state, so a start made by hand counts when control comes back and lets another room on the unit rest; and its heads as they run are the command a held stop keeps them on, so a start made by hand runs its 10 minutes [D016][D020][D089].
 - **Tariff constraints** are held absolutely [D034].
 - **Tells Control** whenever it changed or held the step, so the integral holds [D054].
 
@@ -1403,6 +1432,12 @@ EVERY CYCLE, per room, given the proposed step; the first that applies wins:
                                                     stand
       stops made by the user (Automatic control off, Leave) are not
       held                                                     [D088][D089]
+      ONE WAY: rooms on it wanting opposite ways (cooling or dry against
+      heating): the room furthest outside its band, then furthest from
+      its centre, has it; the rooms wanting the other way rest
+                                    [D020] (decision of 6 November 2026)
+      A REVERSAL is a stop and a start: the run in one way keeps its 10
+      minutes, then the unit rests its 5 before the other way      [D016]
 
   10. TARIFF CONSTRAINTS                                               [D034]
       any constraint declared for now is held absolutely; one this
