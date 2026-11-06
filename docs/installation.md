@@ -70,7 +70,7 @@ When you save, the room is created with its device and entities. Its model is se
 
 1. Open the room's device. The mode sensor (named after the room) should show `Occupied`, `Sleep`, `Unoccupied` or similar, not `Unavailable`.
 2. Open the mode sensor's attributes. `action` is what the unit is being told (`cool`, `rest` and so on) and `control_reason` says why.
-3. After the first 5 minutes, `plan` appears in the attributes. After the first hour, the **Learning** sensor has a value.
+3. After the first 5 minutes, `plan` appears in the attributes. The **Learning** sensor has a value once the first week has closed (it is the last completed week's average one-hour error); before then it shows unknown.
 4. **Settings → System → Repairs** lists anything the component needs you to fix.
 
 ## Remove the integration

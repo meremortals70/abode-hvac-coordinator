@@ -128,7 +128,7 @@ S = [\text{sun on the glass}] \times f_{clear} \times \tau_{blind}
 ```
 
 - **Sun on the glass** comes from the sun's position, the window's compass direction and any overhang [D023]. A configured sun-on-window sensor replaces the geometry [Set].
-- **f\_clear** is the weather forecast's clear-sky fraction for that hour, worked out from the forecast's cloud cover c in %: f\_clear = 0.2 + 0.8 × (1 − c/90) below 90%, and 0.2 at or above it. Without cloud cover it is the UV index ÷ 8, at most 1 [Set]. With neither, f\_clear = 1, and the filter's correction for that step is skipped [Prop].
+- **f\_clear** is the weather forecast's clear-sky fraction for that hour, worked out from the forecast's cloud cover c in %: f\_clear = 0.2 + 0.8 × (1 − c/90) below 90%, and 0.2 at or above it. Without cloud cover it is the UV index ÷ 8, at most 1 [Set]. With neither, f\_clear = 1, the sun is marked assumed, and that step teaches the sun's figures nothing; the air and mass are still corrected, with the assumed sun's possible effect added to their uncertainty (4.3) [Prop][Der].
 - **τ\_blind** is the blinds' transmission: 1 with no blind, or a blind whose position is unknown; 0.15 at or below 5% open; and 0.15 + 0.85 × the open fraction otherwise. With several blinds it is their average [Set].
 
 **The unit.** What the unit removes depends on how hard it is working, its effort x [Prop]:
@@ -208,7 +208,7 @@ P = (I - K e_1^\top)\,P^-\,(I - K e_1^\top)^\top + K (S_\nu - P^-_{11}) K^\top
 - **The Joseph form** keeps P right for a gain that leaves figures out, where P = (I − K e₁ᵀ) P⁻ holds only for the full gain [R6].
 
 - **What the innovations show is split between the reading and the room** [R17][R21][Prop]. The reading's own noise R is what its second differences show, step to step: R = the running average of (y_k − 2y_{k−1} + y_{k−2})² / 6, never below q²/12, since white noise of variance R gives a second difference of variance 6R, while a change the room carries on hardly shows in one over 5-minute steps [Der]. q is the sensor's step: the smallest non-zero change seen in the room's readings, and q²/12 is the variance of its rounding [Der]. The rest of the innovations' variance, past R and the filter's own uncertainty, is the room's own unforecast change, Q_air = max(0, v − ⟨P⁻₁₁ − Q_air⟩ − R), added to the air's noise each step, so a room that has moved is followed and not taken as a noisy sensor. Each running average gives a step a weight of 1/288, about one day. Taking the whole miss as sensor noise, as before, learned 2.17 °C² on a sensor in 0.1 °C steps and left the estimate 1 °C or more from the room for 12 hours; with the split, the house's 12 days of history give 6 and 15 steps more than 1 °C out (office and living room) against 160 and 652, and one-hour forecast errors with the unit resting of 0.21 and 0.48 °C against 0.33 and 0.63 [Sim: replay of 25 October to 6 November 2026].
-- **A reading always says where the room is** [D074][Prop]. Nothing is corrected only when the reading was stood in or missing, or the sensor's step is not yet known. Otherwise the air and mass are always corrected, and the figures learn only from a step whose inputs were all known: not on a step whose compressor state is unknown (4.8), or unknown in any of the unit's last 40 minutes, or whose unit ran in a mode that does not say cooling or heating (heat_cool, auto); not on a step whose sun had to be assumed (4.2); and not until the unit's rate has come through its delay and three lags since start-up, max(40, θ + 3τ) minutes, because the rate is not kept across a restart and starts again at 0 (e⁻³ = 5 % short) [Der]. An input the step could not know widens the air and mass by the variance of its possible effect: a compressor unknown, run at the rate r its mode and effort ask, by (r × 5 min)²/3; assumed sun by (s × 5 min)²/3 on the air and (m × 5 min)²/3 on the mass, a miss spread evenly from 0 to its largest [Der]. Without this the air ran open-loop through every step with the unit running and its compressor unknown: a whole night of cooling in the living room's history [Sim]. The Jacobian's step is taken downward for the lag or delay at the top of its range, where a step up is clamped away and would show no effect. Every figure's logarithm, and each curve step's, is held between ln 10⁻⁶ and ln 10⁴ per hour, the range the matrix exponential carries; a step whose arithmetic still fails is undone and says so [Der].
+- **A reading always says where the room is** [D074][Prop]. Nothing is corrected only when the reading was stood in or missing, or the sensor's step is not yet known. Otherwise the air and mass are always corrected, and the figures learn only from a step whose inputs were all known: not on a step whose compressor state is unknown (4.8), or unknown in any of the unit's last 40 minutes, or whose unit ran in a mode that does not say cooling or heating (heat_cool, auto); not on a step whose sun had to be assumed (4.2); and not until the unit's rate has come through its delay and three lags since start-up, max(40, θ + 3τ) minutes, because the rate is not kept across a restart and starts again at 0 (e⁻³ = 5 % short) [Der]. An input the step could not know widens the air and mass by the variance of its possible effect: a compressor unknown, run at the rate r its mode and effort ask (in heat_cool or auto, the larger curve's top, either way), by (r × 5 min)²/3; assumed sun by (s × 5 min)²/3 on the air and (m × 5 min)²/3 on the mass, a miss spread evenly from 0 to its largest [Der]. Without this the air ran open-loop through every step with the unit running and its compressor unknown: a whole night of cooling in the living room's history [Sim]. The Jacobian's step is taken downward for the lag or delay at the top of its range, where a step up is clamped away and would show no effect. Every figure's logarithm, and each curve step's, is held between ln 10⁻⁶ and ln 10³ per hour, the range the matrix exponential carries; a step whose arithmetic still fails is undone and says so [Der].
 - **While the unit runs**, the air's noise is raised by (0.5 °C/h × 5 min)², because the unit's rate is itself learned [Prop][NYE: the 0.5 °C/h is a judgement; replay test M7 checks it].
 
 **It builds on itself** [Der]. Each correction narrows P, so every reading adds to what earlier readings taught. The noise Q on each figure is 10⁻⁶ per step in the logarithm, which lets a figure follow the seasons: over a year it allows a drift of about 38% (√(10⁻⁶ × 105,120) = 0.32 in the logarithm) [Prop][Der][NYE: replay test M4]. The noise on the air and mass is 10⁻³ and 10⁻⁴ °C² per hour [Prop][NYE].
@@ -234,7 +234,7 @@ The same test is applied to six-hour forecasts over 14 days. Trust is published,
 - **Lowest continuous rate.** U\_min, one for cooling (and dry) and one for heating, each on its own curve, is the rate of a 30-minute run without a stop held at or below the lowest rate offered at the time, with an effort asked in every minute; it replaces the last, up or down. The lowest rate offered is never below the curve's first point, which is used until a run is learned [D100].
 - **Draw.** When exactly one outdoor unit starts or stops and nothing else changes within a minute, the step in house load is its draw at that effort [D028]. Between such efforts it is joined by straight lines; beyond them the nearest known value is used [Prop].
 
-**Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop][NYE: not simulated].
+**Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
 
 **What uses the model.** Every other part asks the model; none keeps its own idea of the room [Prop]:
 
@@ -413,14 +413,15 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 - **How it moves:** it drops at once. It rises only after it has stood 10 minutes, and only as far as the allowance clears the higher draw by 0.3 kW [D062]. A cycle with a figure missing sets no limit [D044] but keeps the ceiling's memory, so it still rises only after its 10 minutes when the figures return [D062].
 - **Guidance** shows the ceiling and never applies it [D041]. Enforced applies it [D041].
 - **When even the lowest rate cannot last to t\_end:** the room keeps cooling, with its ceiling at its lowest rate U\_min, so the battery lasts as long as it can [D063][D067][Set].
-- **Turning off:** only when the battery cannot carry on: E\_avail ≤ 0 (down to its reserve), or the lowest rate's draw is above P\_plant, or that draw is not yet known. A running enforced room is then turned off, and runs again when the battery can supply it [D063][D067]. A resting room is left alone [D063].
+- **Draw not yet learned:** no ceiling. The unit keeps going until the battery is down to its reserve, when a running enforced room is turned off, or the window ends at the tariff change; running is the only way its draw is learned (Jason, 6 November 2026) [D044][D063].
+- **Turning off:** only when the battery cannot carry on: E\_avail ≤ 0 (down to its reserve), or the lowest rate's draw is above P\_plant. A running enforced room is then turned off, and runs again when the battery can supply it [D063][D067]. A resting room is left alone [D063].
 - **Precool is not rationed** [D033][D037][D063].
 - **Any missing figure** means no ceiling at all [D044].
 
 **The whole house shares the allowance** [I10]:
 
 1. **Several enforced rooms at once.** P\* is the house's allowance, not each room's. The house decides once per cycle and informs each room [I10]. Each enforced outdoor unit is allowed P\* less the learned draw of the other enforced outdoor units now running, so the total cannot exceed P\* [Der].
-2. **Rooms on one outdoor unit.** A multi-head unit is one draw on the battery [I10]. Each room's draw now on the unit is its learned draw at the mean effort of its own running heads, and the unit's draw is the sum over its rooms. A room's allowance is P\* less the other enforced outdoor units now running and less the other rooms now running on its own unit, whatever their power management, because the rest of the house is measured while the unit is not running and so does not hold them [D097][Der]. A room is charged on its scorecard for its own share, not the whole unit's [D097].
+2. **Rooms on one outdoor unit.** A multi-head unit is one draw on the battery [I10]. Each room's draw now on the unit is its learned draw at the mean effort of its own running heads, and the unit's draw is the sum over its rooms. A room's allowance is P\* less the other enforced outdoor units now running and less the other rooms now running on its own unit, whatever their power management, because the rest of the house is measured while the room's own unit and every other enforced one are stopped, and so does not hold them [D097][Der]. A room is charged on its scorecard for its own share, not the whole unit's [D097].
 
 **One gap in the budget's mathematics** [Der]:
 
@@ -428,7 +429,7 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 
 **Grid checks** [D038][D043]:
 
-- **The grid sign** is settled at setup and never changed at run time. House load − solar is what the house draws from the grid and the battery together. At a moment when it is above 0.2 kW and the battery charge has not fallen over 5 minutes [Set], the grid must be importing, so the sign of the grid reading then shows which way positive points; the setup screen is pre-filled from such a moment [Der]. Ten readings in a row that contradict it raise a repair. A reading within 5 W of zero is no evidence and resets the count [D038].
+- **The grid sign** is settled at setup and never changed at run time. House load − solar is what the house draws from the grid and the battery together. At a moment when it is above 0.2 kW and the battery charge has not fallen over 5 minutes [Set], the grid must be importing, so the sign of the grid reading then shows which way positive points; on Reconfigure it is pre-filled from such a moment [Der]. Ten readings in a row that contradict it raise a repair. A reading within 5 W of zero is no evidence and resets the count [D038].
 - **Battery power** = house load − solar − grid, published for display. The budget uses the rated discharge, not this reading [D042][Der].
 - **Import in a no-import window** is added up over the window. More than 0.05 kWh raises a repair naming the kWh [D043].
 
@@ -649,7 +650,8 @@ BUILD SNAPSHOT, for one room, from the raw states the coordinator hands over:
                                 0.2 at or above
           otherwise UV known:   UV index / 8, no more than 1
           otherwise             1, and the value is marked ESTIMATED;
-                                the filter does not correct on it    [Prop]
+                                a step on it corrects the air and the
+                                mass only; no figure is learned   [Prop]
 
   OUTDOOR     temperature, humidity, wind; the hourly forecast, any
               value it leaves out filled from the outdoor sensors now [Prop]
@@ -748,16 +750,28 @@ EVERY 5 MINUTES:
       F = for each element of z: (STEP with that element moved by 1e-5
           - z_new) / 1e-5
       P = F P F^T + Q  (+ the extra T noise if the compressor ran)
-  CORRECT, unless the room reading is STOOD-IN or MISSING, the
-  compressor state is UNKNOWN (or it ran in heat_cool or auto), the
-  sun was ESTIMATED, or fewer than 40 minutes of the unit's running
-  have been seen since start-up:                           [D074][Prop]
+          (+ Q_air on T, the room's learned unforecast change)
+          (+ the variance of any input the step could not know: a
+             compressor unknown, (r x 5 min)^2 / 3, r the rate its mode
+             and effort ask, or either curve's top in heat_cool or auto;
+             sun assumed, (s x 5 min)^2 / 3 on T, (m x 5 min)^2 / 3 on M)
+                                                                  [Der]
+      if STEP's arithmetic fails: nothing changes; RECORD why     [Der]
+  NO CORRECTION when the room reading is STOOD-IN or MISSING, or the
+  sensor's step is not yet known                                 [D074]
+  OTHERWISE CORRECT; the figures learn only when every input was known:
+  not when the compressor state was UNKNOWN in the step or in the
+  unit's last 40 minutes (or it ran in heat_cool or auto), the sun was
+  ESTIMATED, or fewer than max(40, delay + 3 lag) minutes have been
+  seen since start-up; then only T and M move           [D074][Prop][Der]
       nu = room reading - z[T]
-      IF a day of corrections has been made
-          R = the larger of q^2 / 12 and v - P[T,T]        [R17][Prop][Sim]
+      R = the larger of q^2 / 12 and the running average of the
+          readings' second differences squared / 6         [R21][Der]
       S = the larger of P[T,T] + R and nu^2 / 10.83: a surprise is
           weighted as a 3.3-sigma one at most                     [R20]
       v = v + (nu^2 - v) / 288
+      Q_air = the larger of 0 and v - (P[T,T] less Q_air, averaged
+          the same way) - R, once a day of learning is done  [R17][R21]
       ACTS: T, M, a, b, c, k and the heat pattern always; s and m
           only with sun on the glass this step; the cooling curve only
           if the unit cooled in the last 40 minutes, the heating curve
@@ -766,14 +780,17 @@ EVERY 5 MINUTES:
       P = (I - K e_T) P (I - K e_T)^T + (S - P[T,T]) K K^T   (Joseph)
       make P symmetric
       hold ln lag in [ln 1, ln 30] and delay in [0, 30]          [R19]
+      hold each log figure and curve step in [ln 1e-6, ln 1e3]    [Der]
+  JACOBIAN: for the lag, the delay or a log figure at the top of its
+      range, the element is moved down, not up                   [Der]
   IF any figure is not a finite number
       keep the state from before this step; RECORD why
 
 SEED (Memory, for a new room, or one whose stored state was refused):
 the same steps, run over the recorder's history in time order [Prop][R19]
 
-RESTORE: a stored state whose lag is outside 1 to 30 minutes is
-refused, with the trust it earned                                  [R19]
+RESTORE: a stored state whose lag is outside 1 to 30 minutes, or with a
+figure outside its range, is refused, with the trust it earned     [R19]
 ```
 
 #### model/unit.py
@@ -828,8 +845,18 @@ A second Kalman filter of the same kind as filter.py:
   each figure moves only on steps where it acts: drying in dry mode,
   cooling response while cooling, rebound in the 15 minutes after a
   stop                                                       [D026][D060]
-  a step with STOOD-IN, MISSING or UNKNOWN values corrects nothing [D074]
-                                                         [NYE: not simulated]
+  CORRECT, every 5 minutes, as filter.py does:                [R17][R20][R21]
+      R = the running average of the reading's second differences
+          (y_k - 2 y_k-1 + y_k-2)^2 / 6, never below q^2 / 12
+      the rest of the innovations' variance past R and the filter's own
+          uncertainty is the room's unforecast change in e, added to e's
+          noise each step
+      S = max(P_ee + R, nu^2 / 10.83); P in Joseph form
+  a step with no reading, or before the sensor's step is known,
+      corrects nothing                                            [D074]
+  a step whose inputs were STOOD-IN or UNKNOWN corrects e only and
+      teaches no figure                                           [D074]
+                                                 [Sim: the house's replay]
 ```
 
 #### model/trust.py
@@ -1028,8 +1055,8 @@ window is in force:                                                [I10]
   (rated discharge is optional; without it there is no plant limit) [D042]
   FOR EACH outdoor unit with a room whose power management is not OFF:
                                                              [D041][I10]
-      L = house load averaged over 15 minutes, measured while this
-          outdoor unit was not running; one running since start-up:
+      L = house load averaged over 15 minutes, measured while the room's
+          own outdoor unit and every other enforced one were stopped; one running since start-up:
           house load less its estimated draw, every room on it   [D067][D097]
       available = charge / 100 x size - reserve margin                [Set]
       IF a solar forecast can be read:                                 [D061]
@@ -1067,8 +1094,11 @@ window is in force:                                                [I10]
           IF even the lowest rate does not last to the window's end
               ceiling = the lowest rate: cool until the battery cannot
                                                            [D063][D067][Set]
+          IF the unit's draw is not yet learned
+              no ceiling, until the battery is down to its reserve or the
+              window ends: running is how the draw is learned  [D044][D063]
           IF the battery is down to its reserve, or cannot supply the
-             lowest rate's draw (plant), or that draw is not known
+             lowest rate's draw (plant)
               ask Limits to turn a running unit off; a resting room is
               left alone                                          [D063][D067]
       precool is never rationed                             [D033][D037][D063]
@@ -1088,7 +1118,7 @@ GRID CHECKS, only with a grid sensor:                             [D038][D043]
           above 0.05 kWh -> a repair naming the kWh; cleared by the
           next clean window
 
-DEMAND FORECAST, every 15 minutes:                                 [D005][Prop]
+DEMAND FORECAST, every cycle:                                 [D005][Prop]
   from now to the next tariff change: the first interval ahead whose
   rate, price or constraints differ from those in force          [Set]
   FOR EACH room, its plan in force (control/plan.py), to that change or
@@ -1184,8 +1214,9 @@ FILE control/pid.py — holds the room on the plan's path                [R7][Pr
 
 GAINS, with every plan, from the filter's figures, delay and lag:   [R8]
   tau1 = (c + k) / (a (c + k) + b k)       hours          [Der: |G(0)|, 4.5]
-  theta = delay + half the actuation interval: 0.25 min for a unit
-          stepping in tenths or finer, 5 min for whole degrees      [Der]
+  theta = delay + half the filter's 5-minute step + half the actuation
+          interval: 0.25 min for a unit stepping in tenths or finer,
+          5 min for whole degrees                                   [Der]
   tc   = theta                                                         [R7]
   Kc   = 1 / (tc + theta)                                              [R7]
   tI   = the smaller of tau1 and 4 x (tc + theta)                      [R7]
@@ -1333,7 +1364,8 @@ EVERY CYCLE, per room, given the action, the rate u and the plan's blinds:
   FREE COOLING:                                                     [D073]
       IF psychro.py advises it AND the room is occupied, while the step
          is COOL or its start is held for the advice
-          advise opening up (trace, and a warning where one can be heard)
+          advise opening up (in the trace and the room's Free cooling
+          attributes; nothing is spoken)
       (the coordinator judges it before the plan's first step goes out:
        when the plan is to cool, the advice starts then and the plan is
        made again at once, holding the start for 10 minutes)
@@ -1571,7 +1603,8 @@ SCORECARD, per room:                                                  [Prop]
   one Home Assistant allows for money), so Home Assistant keeps its
   long-term statistics                                       [HA][R15]
 
-WARNINGS, when Limits or Delivery says one is due:
+WARNINGS, when Limits says one is due (an empty room, or a door or
+window open, first and final):
   IF Automatic control is off, the room is waiting for its unit to
      report, or the room is asleep
       drop it; say nothing                                            [D071]
@@ -1600,8 +1633,8 @@ REPAIRS, raised when their cause appears and cleared when it goes:
   the grid sign contradicted 10 readings in a row                     [D038]
   grid import in a no-import window, naming the kWh                   [D043]
   two rooms configured on one climate entity (both locked out)        [D021]
-  a room's filter has made no correction for 24 hours, naming the reading
-  that stopped it                                                    [Prop]
+  a room's filter has learned nothing for 24 hours, naming the reading
+  that stopped it (it still follows the room's readings)                                                    [Prop]
   each repair says what to fix; none is raised for something the user
   cannot act on                                                       [R18]
 
