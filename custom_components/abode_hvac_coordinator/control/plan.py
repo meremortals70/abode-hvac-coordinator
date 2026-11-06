@@ -98,6 +98,10 @@ class PlanInputs:
     free_cooling_advised_at: datetime | None = None  # [D073]
     rebound_steps: int = 0  # coil rebound left from a stop before now [D060]
     last_kind: StepKind = StepKind.REST
+    # the room estimate now: the filter's, carried forward on the model's
+    # rate since its last step (control/pid.py estimate_now), so a plan made
+    # between filter steps starts where the PID will measure it [Der]
+    t_now: float | None = None
 
 
 def conditions_ahead(
@@ -333,7 +337,7 @@ def make_plan(inp: PlanInputs) -> Plan:
     can_carry_on = any(a.kind is inp.last_kind for a in actions)
     draws = {a.rate: (inp.draw_for_rate(a.rate) or DRAW_WITHOUT_LOAD_SENSOR_KW) for a in actions}
     start = _Node(
-        t=inp.heat.z[I_T],
+        t=inp.t_now if inp.t_now is not None else inp.heat.z[I_T],
         m=inp.heat.z[I_M],
         e=inp.humidity.z[H_E] if inp.humidity is not None else inp.e_now,
         outside=0.0,

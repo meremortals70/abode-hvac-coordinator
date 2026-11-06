@@ -386,7 +386,7 @@ class Filter(unittest.TestCase):
         f = self.ready()
         f.z[physics.I_LN_C] = 20.0  # e^20 per hour: the exponential would overflow
         f._hold_unit_in_range()
-        self.assertEqual(f.z[physics.I_LN_C], math.log(1e4))
+        self.assertEqual(f.z[physics.I_LN_C], math.log(1e3))
         data = self.ready().as_dict()
         data["z"][physics.I_LN_A] = -40.0
         self.assertIsNone(filt.HeatFilter.from_dict(data))

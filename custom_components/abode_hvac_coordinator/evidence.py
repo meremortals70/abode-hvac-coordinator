@@ -9,6 +9,7 @@ each room's mode sensor, speaks the warnings and raises the repairs.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -287,7 +288,7 @@ class RoomWarnings:
         self._held = []
         return [
             Speech(engine, room.announce_through, w.kind.value,
-                   {"room": room.name, "minutes": f"{max(w.seconds_to_off, 0.0) / 60.0:.0f}"})
+                   {"room": room.name, "minutes": f"{math.ceil(max(w.seconds_to_off, 0.0) / 60.0)}"})
             for w in say
         ]
 

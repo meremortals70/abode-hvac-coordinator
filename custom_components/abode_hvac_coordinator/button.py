@@ -19,7 +19,8 @@ PARALLEL_UPDATES = 1
 
 
 class LeaveButton(RoomEntity, ButtonEntity):
-    """Turns the room off at once until someone comes back [D088]."""
+    """Turns the room off at once until someone comes back, or in a room
+    without a presence sensor until the user changes a choice [D088]."""
 
     def __init__(self, coordinator: AbodeHvacCoordinator, room_id: str) -> None:
         super().__init__(coordinator, room_id, "leave")

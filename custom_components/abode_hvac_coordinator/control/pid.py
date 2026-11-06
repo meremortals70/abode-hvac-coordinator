@@ -78,6 +78,7 @@ class Pid:
     running: bool = False
     gains: Gains | None = None
     last_u: float | None = None
+    last_plan: float | None = None  # the plan's rate the last output was built on
     last_time: datetime | None = None
     last_free: bool = False  # the last output was not at a limit
 
@@ -85,6 +86,7 @@ class Pid:
         """When the plan rests, dries or is off the PID does nothing."""
         self.running = False
         self.last_u = None
+        self.last_plan = None
         self.last_time = None
 
     def bumpless(self, g: Gains, u_now: float, u_plan: float, e: float, d_term: float) -> None:
@@ -115,7 +117,12 @@ class Pid:
         if not self.running:
             self.integral = 0.0  # starts again at zero each time the unit starts [Prop][Sim]
         elif self.gains is not None and g != self.gains and self.last_u is not None:
-            self.bumpless(g, self.last_u, u_plan, e, d_term)
+            # the feedback part stays where it was across a change of gains;
+            # the plan's own rate passes straight through. Holding the whole
+            # output still cancelled each new plan's rate: asked for 4 C/h,
+            # a room on its path was sent 1 C/h indefinitely [Der]
+            feedback = self.last_u - (self.last_plan if self.last_plan is not None else u_plan)
+            self.bumpless(g, u_plan + feedback, u_plan, e, d_term)
         elif self.last_time is not None and delivered and self.last_free:
             # no wind-up: only while the output is delivered as asked [D054][R9]
             self.integral += e * (now - self.last_time).total_seconds() / 3600.0
@@ -129,6 +136,7 @@ class Pid:
         self.running = True
         self.gains = g
         self.last_u = u
+        self.last_plan = u_plan
         self.last_time = now
         return PidTerms(
             u=u,

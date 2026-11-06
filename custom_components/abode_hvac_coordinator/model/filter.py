@@ -244,10 +244,19 @@ def unknown_input_variance(z: Sequence[float], minutes: Sequence[MinuteSample]) 
     fig = figures(z)
     step_h = STEP_MIN / 60.0
     var_t = var_m = 0.0
-    unknown = [m for m in minutes if not m.compressor_known and m.mode_direction != 0]
+    unknown = [m for m in minutes if not m.compressor_known]
     if unknown:
-        steps = fig.cool_steps if unknown[0].mode_direction > 0 else fig.heat_steps
-        r = max(curve_rate(curve_efforts(), steps, m.effort) for m in unknown)
+        def most(m: MinuteSample) -> float:
+            # a mode with a direction: the rate its effort asks; heat_cool or
+            # auto: either way, up to the larger curve's top
+            if m.mode_direction > 0:
+                return curve_rate(curve_efforts(), fig.cool_steps, m.effort)
+            if m.mode_direction < 0:
+                return abs(curve_rate(curve_efforts(), fig.heat_steps, m.effort))
+            top = curve_efforts()[-1]
+            return max(curve_rate(curve_efforts(), fig.cool_steps, top),
+                       abs(curve_rate(curve_efforts(), fig.heat_steps, top)))
+        r = max(most(m) for m in unknown)
         var_t += (r * step_h * len(unknown) / STEP_MIN) ** 2 / 3.0
     if any(m.sun_estimated for m in minutes):
         var_t += (fig.s * step_h) ** 2 / 3.0

@@ -38,7 +38,7 @@
       },
       "power": {
         "title": "Power",
-        "description": "The house's battery, solar and load. All are needed for the power budget during a no-grid-import window.",
+        "description": "The house's battery, solar and load. The power budget during a no-grid-import window needs the battery charge, size and reserve, the solar power and the house load; the rated discharge, the grid sensor and the solar forecast sources are optional.",
         "data": {
           "battery_charge": "Battery charge sensor",
           "battery_size": "Battery size",
@@ -62,7 +62,7 @@
       },
       "grid_direction": {
         "title": "Grid direction",
-        "description": "Which way does a positive reading of {sensor} point? Pre-filled from the live readings where they decide it.",
+        "description": "Which way does a positive reading of {sensor} point? On Reconfigure it is pre-filled from the live readings where they decide it.",
         "data": {
           "grid_positive_is_import": "A positive reading means"
         },
@@ -305,7 +305,7 @@
       },
       "seed": {
         "title": "Seed from history",
-        "description": "Replaces what the room has learned with its model run from the start over the recorder's history.",
+        "description": "Replaces what the room has learned with its model run from the start over the recorder's history. A history that teaches nothing leaves the room as it was.",
         "data": {
           "room_id": "Room"
         },
@@ -325,7 +325,7 @@
       },
       "confirm_seed": {
         "title": "Seed {room}",
-        "description": "Seed {room} from the recorder's history? What it has learned is replaced by what its history teaches. It runs in the background."
+        "description": "Seed {room} from the recorder's history? What it has learned is replaced by what its history teaches; a history that teaches nothing leaves it as it was. It runs in the background."
       },
       "confirm_reset": {
         "title": "Reset {room}",
@@ -625,7 +625,7 @@
     },
     "filter_silent": {
       "title": "A room's model has stopped learning",
-      "description": "{room}'s model has made no correction for 24 hours: {reason}. Check the room's sensors and its air conditioner."
+      "description": "{room}'s model has learned nothing for 24 hours: {reason}. It still follows the room's readings. Check the room's sensors and its air conditioner."
     }
   },
   "services": {

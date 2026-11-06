@@ -16,8 +16,9 @@ gain. Not simulated [NYE].
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -137,6 +138,10 @@ class HumidityFilter:
     corrections: int = 0
     last_wet_stop: datetime | None = None
     _last_e: float | None = None
+    vapour_noise: float = 0.0  # learned: the room's own unforecast change in e, hPa^2 per step
+    reading_jitter: float | None = None  # learned: the reading's own noise, hPa^2
+    _prior_avg: float | None = None  # running average of P-[e,e] less vapour_noise
+    _step_readings: deque[float] = field(default_factory=lambda: deque(maxlen=3))
 
     @classmethod
     def start(cls, e0: float) -> HumidityFilter:
@@ -182,13 +187,22 @@ class HumidityFilter:
             out = moisture_step(moved, minutes)
             for i in range(H_SIZE):
                 f[i][j] = (out[i] - base[i]) / FILTER_JACOBIAN_DELTA
-        q = diagonal([HUMIDITY_NOISE_E_PER_H * len(minutes) / 60.0] + [HUMIDITY_NOISE_FIGURE] * (H_SIZE - 1))
+        q = diagonal([HUMIDITY_NOISE_E_PER_H * len(minutes) / 60.0 + self.vapour_noise]
+                     + [HUMIDITY_NOISE_FIGURE] * (H_SIZE - 1))
         self.z, self.p = base, symmetrise(add(sandwich(f, self.p), q))
         reason: str | None = None
-        if not trusted or reading_e is None:
+        if reading_e is None:
             reason = "a humidity input was stood in, missing or unknown"
         elif self.sensor_step is None or self.noise is None or self.innovation_avg is None:
             reason = "the sensor's step is not yet known"
+        elif not trusted:
+            # the reading still says where the room's moisture is; the
+            # figures learn nothing from a step whose inputs were not known,
+            # as in the heat filter [D074]
+            reason = "a humidity input was stood in, missing or unknown; the moisture corrected, no figure learned"
+            only_e = [False] * H_SIZE
+            only_e[H_E] = True
+            self._correct(reading_e, only_e, learn=False)
         else:
             self._correct(reading_e, acting(minutes))
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z)):
@@ -196,25 +210,40 @@ class HumidityFilter:
             reason = "a figure was not a finite number; step undone"
         return reason
 
-    def _correct(self, reading_e: float, acts: Sequence[bool]) -> None:
+    def _correct(self, reading_e: float, acts: Sequence[bool], *, learn: bool = True) -> None:
+        """What the innovations show is split between the reading and the
+        room, as in the heat filter [R17][R21]: R from the reading's second
+        differences, the rest the room's own unforecast change in moisture,
+        added to e's noise. Taking the whole miss as sensor noise learned
+        6.5 hPa^2 in the house's history and left the estimate 2 hPa or
+        more from the room on a quarter of its steps [Sim]."""
         assert self.sensor_step is not None and self.noise is not None and self.innovation_avg is not None
         nu = reading_e - self.z[H_E]
         p_ee = self.p[H_E][H_E]
         floor = self.sensor_step**2 / 12.0
-        self.noise = (
-            max(floor, self.innovation_avg - p_ee) if self.corrections >= SENSOR_NOISE_SETTLE_CORRECTIONS else floor
-        )
+        self._step_readings.append(reading_e)
+        if len(self._step_readings) == 3:
+            y0, y1, y2 = self._step_readings
+            d2 = (y2 - 2.0 * y1 + y0) ** 2 / 6.0
+            j0 = self.reading_jitter if self.reading_jitter is not None else floor
+            self.reading_jitter = j0 + (d2 - j0) * SENSOR_NOISE_WEIGHT
+        self.noise = max(floor, self.reading_jitter if self.reading_jitter is not None else floor)
+        base = p_ee - self.vapour_noise
+        self._prior_avg = base if self._prior_avg is None else self._prior_avg + (base - self._prior_avg) * SENSOR_NOISE_WEIGHT
         # a reading far outside what the filter expected is weighted down in
         # proportion, as in the heat filter [R20]
         s = max(p_ee + self.noise, nu * nu / FILTER_GATE_NIS)
         r_used = s - p_ee
         self.innovation_avg += (nu * nu - self.innovation_avg) * SENSOR_NOISE_WEIGHT
+        if self.corrections >= SENSOR_NOISE_SETTLE_CORRECTIONS or not learn:
+            self.vapour_noise = max(0.0, self.innovation_avg - self._prior_avg - self.noise)
         k = [self.p[i][H_E] / s if acts[i] else 0.0 for i in range(H_SIZE)]
         self.z = [zi + ki * nu for zi, ki in zip(self.z, k, strict=True)]
         # Joseph form: P = (I - K H) P (I - K H)^T + K R K^T, H = e_1
         ikh = [[(1.0 if i == j else 0.0) - (k[i] if j == H_E else 0.0) for j in range(H_SIZE)] for i in range(H_SIZE)]
         self.p = symmetrise(add(multiply(multiply(ikh, self.p), transpose(ikh)), scale(outer(k, k), r_used)))
-        self.corrections += 1
+        if learn:
+            self.corrections += 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -224,6 +253,9 @@ class HumidityFilter:
             "r": self.noise,
             "v": self.innovation_avg,
             "corrections": self.corrections,
+            "vapour_noise": self.vapour_noise,
+            "jitter": self.reading_jitter,
+            "prior_avg": self._prior_avg,
         }
 
     @classmethod
@@ -239,10 +271,14 @@ class HumidityFilter:
         if not all(math.isfinite(x) for x in z) or not is_finite(p):
             return None
         out = cls(z=z, p=p, corrections=int(data.get("corrections", 0)))
-        for key, attr in (("q", "sensor_step"), ("r", "noise"), ("v", "innovation_avg")):
+        for key, attr in (("q", "sensor_step"), ("r", "noise"), ("v", "innovation_avg"), ("jitter", "reading_jitter"),
+                          ("prior_avg", "_prior_avg")):
             v = data.get(key)
             if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(float(v)):
                 setattr(out, attr, float(v))
+        vn = data.get("vapour_noise")
+        if isinstance(vn, int | float) and not isinstance(vn, bool) and math.isfinite(float(vn)):
+            out.vapour_noise = max(float(vn), 0.0)
         return out
 
 

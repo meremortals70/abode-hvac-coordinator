@@ -374,7 +374,8 @@ class Budget(unittest.TestCase):
         unknown = b.evaluate(now=T0, window_end=T0 + 2 * H, house=HOUSE, rooms=[room()],
                              draw_for_rate={"r1": lambda r: None if r <= 1.0 else 9.0}, running_draw={},
                              solar_slices=None, worst_clear_sky=1.0)
-        self.assertTrue(unknown["r1"][1])  # the lowest rate's draw is not known
+        # the lowest rate's draw not yet learned: no ceiling, it keeps going (Jason, 6 November 2026)
+        self.assertEqual(unknown["r1"][:2], (None, False))
 
     def test_no_limit_when_the_top_fits(self) -> None:
         b = self.budget(load=0.0)
@@ -485,3 +486,29 @@ class Demand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnlearnedDraw(unittest.TestCase):
+    """Jason, 6 November 2026: with no draw learned the unit keeps going
+    until the battery reaches its reserve or the window ends; running is
+    the only way its draw is learned [D044][D063]."""
+
+    def evaluate(self, running: bool, charge: float = 50.0) -> Any:
+        b = eco.PowerBudget()
+        b.loads.add(T0 - timedelta(minutes=1), 1.0, 0.0, frozenset())
+        house = eco.HousePower(charge, 10.0, 1.0, None, True, True)
+        return b.evaluate(now=T0, window_end=T0 + 2 * H, house=house, rooms=[room(running=running)],
+                          draw_for_rate={"r1": lambda r: None}, running_draw={},
+                          solar_slices=None, worst_clear_sky=1.0)["r1"]
+
+    def test_it_keeps_running_with_no_ceiling(self) -> None:
+        for running in (True, False):
+            ceiling, turn_off, _allowance, reason = self.evaluate(running)
+            self.assertEqual((ceiling, turn_off), (None, False))
+            self.assertIn("the outdoor unit's draw is not yet learned", reason)
+
+    def test_at_the_reserve_a_running_room_is_turned_off(self) -> None:
+        ceiling, turn_off, _allowance, reason = self.evaluate(True, charge=10.0)
+        self.assertEqual((ceiling, turn_off), (0.0, True))
+        self.assertIn("reserve", reason)
+        self.assertEqual(self.evaluate(False, charge=10.0)[1], False)

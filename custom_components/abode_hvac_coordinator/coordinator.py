@@ -421,6 +421,22 @@ def _still_coming(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return entry.state is ConfigEntryState.NOT_LOADED and hass.state is not CoreState.running
 
 
+def _estimate_now(run: RoomRun, now: datetime) -> tuple[float, float]:
+    """The room estimate now and its rate, C/h: the filter's estimate at its
+    last step carried forward on the model's own rate since (4.5) [Der].
+    The PID acts on it and the plan starts from it, so a plan made between
+    filter steps does not start where the room was minutes ago."""
+    heat, snap = run.model.heat, run.snapshot
+    assert heat is not None and snap is not None
+    outdoor = snap.outdoor_temperature.value
+    if outdoor is None:
+        outdoor = heat.last_outdoor
+    slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now)) - heat.u) if outdoor is not None else 0.0
+    last = run.model.last_step
+    since_h = (now - last.time).total_seconds() / 3600.0 if last is not None else 0.0
+    return estimate_now(heat.z[0], slope, since_h), slope
+
+
 def native_temperature_unit(hass: HomeAssistant, entity_id: str) -> str | None:
     """A climate entity's own temperature unit, from the entity itself:
     its state shows only the system's unit. native_temperature_unit from
@@ -645,7 +661,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 blocking=True,
                 return_response=True,
             )
-        except (HomeAssistantError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
+            # another integration's own error (a timeout) is a failed read
+            # like Home Assistant's: the repair is raised and setup carries
+            # on, never stopped for good
             self.tariff = TariffRead((), frozenset(), str(err) or type(err).__name__)
             return
         self.tariff = parse_tariff(response if isinstance(response, Mapping) else None)
@@ -662,7 +681,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 WEATHER_DOMAIN, WEATHER_SERVICE, {ATTR_ENTITY_ID: entity, "type": "hourly"},
                 blocking=True, return_response=True,
             )
-        except (HomeAssistantError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
+            # another integration's own error is a failed read: setup
+            # carries on with no forecast, never stopped for good
             self.forecast, self.forecast_error = [], str(err) or type(err).__name__
             return
         found = response.get(entity) if isinstance(response, Mapping) else None
@@ -1112,15 +1133,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         control: ControlResult | None = None
         if heat is not None and fig is not None and run.control.plan is not None:
             direction = 1 if run.control.plan.first.rate >= 0 else -1
-            outdoor = snap.outdoor_temperature.value
-            if outdoor is None:
-                outdoor = heat.last_outdoor
-            slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now)) - heat.u) if outdoor is not None else 0.0
-            last = run.model.last_step
-            since_h = (now - last.time).total_seconds() / 3600.0 if last is not None else 0.0
+            t_est, slope = _estimate_now(run, now)
             control = run.control.cycle(
                 now=now,
-                t_est=estimate_now(heat.z[0], slope, since_h),
+                t_est=t_est,
                 slope_est=slope,
                 u_min=run.model.unit.lowest_rate(fig, direction),
                 top=_pid_top(top_rate(fig, direction),
@@ -1197,6 +1213,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             free_cooling_advised_at=run.free_cooling_since,
             rebound_steps=rebound,
             last_kind=last_kind,
+            t_now=_estimate_now(run, now)[0],
         )
 
     async def _act_and_record(
@@ -1300,7 +1317,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                  "message": self.words(s.key, s.placeholders)},
                 blocking=True,
             )
-        except (HomeAssistantError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
+            # a speech engine's own error (a timeout) never stops a cycle,
+            # as Home Assistant's does not [D069]
             if not self._tts_failed:
                 _LOGGER.warning("A spoken warning could not be said through %s: %s", s.engine, err)
             self._tts_failed = True

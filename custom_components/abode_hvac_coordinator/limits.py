@@ -148,7 +148,7 @@ class RoomLimits:
             return
         # 3. LEAVE [D088]
         if comfort.rule is BandRule.LEFT:
-            s.to(LimitRule.LEAVE, StepKind.OFF, "Leave: off at once, until someone comes back.")
+            s.to(LimitRule.LEAVE, StepKind.OFF, "Leave: off at once, until someone comes back or a choice changes.")
             s.user_stop = True
             return
         # 4. EMPTY ROOM [D012][D082]
@@ -338,6 +338,17 @@ def band_distances(index: float | None, low: float | None, high: float | None) -
     return max(low - index, index - high, 0.0), abs(index - (low + high) / 2.0)
 
 
+def _wanted_way(e: GuardEntry, unit: str) -> int:
+    """The way a room wants its outdoor unit: its step's way, or for a room
+    left as it is (NONE) and seen running, the way its heads run, read from
+    their modes; 0 for none [D016][D089]."""
+    if e.step.kind in RUNNING_KINDS:
+        return _direction(e.step.kind)
+    if e.step.kind is StepKind.NONE and e.observed_running.get(unit, False) and e.observed_heads:
+        return _direction(_running_kind(e.observed_heads))
+    return 0
+
+
 def _direction(kind: StepKind) -> int:
     """The way a running step moves heat: cooling and dry one way, heating
     the other."""
@@ -388,22 +399,26 @@ class HouseGuard:
             self._one_way(u, rooms)
         for u, rooms in by_unit.items():
             state = self._units[u]
-            ways = {_direction(e.step.kind) for e in rooms if e.step.kind in RUNNING_KINDS}
-            ways.discard(0)
+            ways = {_wanted_way(e, u) for e in rooms} - {0}
             if (state.running and state.direction and ways and state.direction not in ways
                     and state.since is not None):
                 # a reversal is a stop and a start: the run must have lasted
                 # its 10 minutes, and the rest its 5, before the other way
-                # runs [D016]
+                # runs [D016]. Inside the run, the rooms that were running
+                # the unit's way keep running whatever their step asks
+                # (unless the user stopped them), and the rooms wanting the
+                # other way rest
                 ran_for = now - state.since
-                if ran_for < _MIN_RUN:
-                    for e in rooms:
-                        if e.limits.last_running and e.step.kind in RUNNING_KINDS and not e.step.user_stop:
-                            self._keep_running(e, (_MIN_RUN - ran_for).total_seconds())
-                else:
-                    for e in rooms:
-                        if e.step.kind in RUNNING_KINDS:
-                            self._hold_rest(e.step, _MIN_REST.total_seconds())
+                for e in rooms:
+                    if e.step.kind not in RUNNING_KINDS and e.step.kind is not StepKind.REST:
+                        continue
+                    kept_way = (e.limits.last_running
+                                and _direction(_running_kind(e.limits.last_running)) == state.direction)
+                    if ran_for < _MIN_RUN and kept_way and not e.step.user_stop:
+                        self._keep_running(e, (_MIN_RUN - ran_for).total_seconds())
+                    elif e.step.kind in RUNNING_KINDS:
+                        wait = (_MIN_RUN - ran_for) + _MIN_REST if ran_for < _MIN_RUN else _MIN_REST
+                        self._hold_rest(e.step, wait.total_seconds())
                 continue
             # a room left as it is wants the unit as it is seen to run,
             # the same rule that records the unit's state below [D016][D020]
@@ -440,7 +455,13 @@ class HouseGuard:
                 for e in rooms
             )
             state = self._units[u]
-            ways = {_direction(results[e.step.room_id].kind) for e in rooms} - {0}
+            ways = {
+                _direction(results[e.step.room_id].kind) if results[e.step.room_id].kind in RUNNING_KINDS
+                else (_direction(_running_kind(e.observed_heads))
+                      if results[e.step.room_id].kind is StepKind.NONE and e.observed_running.get(u, False)
+                      and e.observed_heads else 0)
+                for e in rooms
+            } - {0}
             way = next(iter(ways)) if len(ways) == 1 else state.direction
             if running != state.running:
                 state.running, state.since = running, now
@@ -455,14 +476,18 @@ class HouseGuard:
         room furthest outside its band (then furthest from its centre) has
         it, and the rooms wanting the other way rest [D020] (decision of 6
         November 2026)."""
-        wanting = [e for e in rooms if e.step.kind in RUNNING_KINDS]
-        if len({_direction(e.step.kind) for e in wanting}) < 2:
+        wanting = [e for e in rooms if _wanted_way(e, unit) != 0]
+        if len({_wanted_way(e, unit) for e in wanting}) < 2:
             return
-        first = max(wanting, key=lambda e: (e.outside, e.from_centre))
-        way = _direction(first.step.kind)
-        reason = f"The outdoor unit {unit} runs one way at a time; another room on it is further from its band."
+        # a room run by hand is never changed, so its way stands; otherwise
+        # the room furthest outside its band, then from its centre, has it
+        by_hand = [e for e in wanting if e.step.kind is StepKind.NONE]
+        first = by_hand[0] if by_hand else max(wanting, key=lambda e: (e.outside, e.from_centre))
+        way = _wanted_way(first, unit)
+        reason = (f"The outdoor unit {unit} runs one way at a time; another room on it is "
+                  + ("run by hand the other way." if by_hand else "further from its band."))
         for e in wanting:
-            if _direction(e.step.kind) != way:
+            if e.step.kind in RUNNING_KINDS and _wanted_way(e, unit) != way:
                 if e.step.rest_heads:
                     e.step.to(LimitRule.SHORT_CYCLE_GUARD, StepKind.REST, reason, e.step.rest_heads)
                 else:

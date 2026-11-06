@@ -186,6 +186,12 @@ class Warnings(unittest.TestCase):
         self.assertEqual(s, [models.Speech("tts.home", ("media_player.office",), "empty_room",
                                            {"room": "Office", "minutes": "3"})])  # [D069]
 
+    def test_minutes_round_up(self) -> None:
+        # a grace of 30 s or 2.5 minutes is never said as 0 or 2 minutes
+        for seconds, said in ((30.0, "1"), (150.0, "3"), (0.0, "0")):
+            s = self.say(due=(models.DueWarning(WK.EMPTY_ROOM, seconds),))
+            self.assertEqual(s[0].placeholders["minutes"], said, seconds)
+
     def test_dropped(self) -> None:
         for kw in ({"automatic": False}, {"waiting_for_unit": True}, {"asleep": True},  # [D071]
                    {"unit_on_at_start": False},  # [D077]

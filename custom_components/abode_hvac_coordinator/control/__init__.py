@@ -31,7 +31,7 @@ class RoomControl:
     def replan(self, inputs: PlanInputs, gains: Gains) -> Plan:
         """Every 5 minutes: the plan, and the PID's gains with it."""
         self.plan = make_plan(inputs)
-        self.plan_t0 = inputs.heat.z[0]
+        self.plan_t0 = inputs.t_now if inputs.t_now is not None else inputs.heat.z[0]
         self.gains = gains
         return self.plan
 

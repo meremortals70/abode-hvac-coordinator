@@ -477,8 +477,17 @@ class PowerBudget:
         draw. Only then, and only while running, is it asked to turn off
         [D063][D067] (decision of 29 October 2026)."""
         state = self._ceilings.setdefault(room.room_id, _Ceiling())
-        if draw is None:
-            return None, False, allowance, "no limit: the outdoor unit's draw is not yet learned"
+        if draw is None or draw(room.lowest_rate) is None:
+            # Jason, 6 November 2026: with no draw learned the unit keeps
+            # going until the battery reaches its reserve or the window ends
+            # at the tariff change; running is the only way its draw is
+            # learned
+            if e_avail <= 0.0:
+                turn_off = room.management is PowerManagement.ENFORCED and room.compressor_running
+                return 0.0, turn_off, allowance, "the battery is down to its reserve: off"
+            return None, False, allowance, (
+                "no limit: the outdoor unit's draw is not yet learned; it runs until the battery "
+                "reaches its reserve or the window ends")
         candidate = highest_rate(draw, allowance, room.top_rate)
         rise_to = highest_rate(draw, allowance - CEILING_RISE_MARGIN_KW, room.top_rate)
         current = state.rate
@@ -499,7 +508,7 @@ class PowerBudget:
         low = draw(room.lowest_rate)
         if e_avail <= 0.0:
             why = "the battery is down to its reserve"
-        elif low is None or (plant is not None and low > plant):
+        elif plant is not None and low is not None and low > plant:
             why = "the battery cannot supply the lowest rate's draw"
         else:
             return room.lowest_rate, False, allowance, (

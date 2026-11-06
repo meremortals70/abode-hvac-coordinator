@@ -10,7 +10,7 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
 A rewrite of the whole component to the design specification of 23 October
 2026 (revised 27-29 October 2026), built one module at a time. It needs
-Home Assistant 2026.9.4 or later.
+Home Assistant 2026.10.4 or later (2026.9.4 until 6 November 2026).
 
 ### Added
 
@@ -57,9 +57,11 @@ Home Assistant 2026.9.4 or later.
   no-grid-import window in force; works out the house's one power allowance
   from the battery, the solar forecast (or, without one, the solar now) and
   the rest of the house's load; turns it into each room's ceiling, which
-  drops at once and rises only after 10 minutes with 0.3 kW to spare; asks
-  an enforced room that cannot run even its lowest rate for 10 minutes to
-  turn off; checks the grid sensor's sign and adds up import in a
+  drops at once and rises only after 10 minutes with 0.3 kW to spare; keeps
+  an enforced room whose lowest rate cannot last the window cooling at that
+  rate, and asks it to turn off, while running, only once the battery is
+  down to its reserve or cannot supply that rate's draw; a unit whose draw
+  is not yet learned has no ceiling until the battery reaches its reserve; checks the grid sensor's sign and adds up import in a
   no-import window; and adds the rooms' planned energy into a demand
   forecast by tariff interval.
 - **Step 5, Control.** `control/plan.py` finds, every 5 minutes, the
@@ -159,7 +161,8 @@ Home Assistant 2026.9.4 or later.
   forecast peak, stale feeds and the number of rooms. The `precool` and
   `cancel_precool` actions, repairs, spoken warnings, diagnostics (the home's
   position redacted), icons, brand images and the quality scale file are
-  included. Requires Home Assistant 2026.9 or later.
+  included. Required Home Assistant 2026.9 or later at the time; 2026.10.4
+  since 6 November 2026.
 - **Step 12, documentation and CI.** A README and user guides in `docs/`
   (use cases, installation and removal, configuration, entities, actions,
   data updates, examples, known limitations, troubleshooting), the design
@@ -167,8 +170,8 @@ Home Assistant 2026.9.4 or later.
   (`docs/decisions/`). `hacs.json`. CI on every push and pull request to
   main: ruff 0.17.3 and mypy --strict; the pure tests and the whole-loop
   simulation with nothing installed; and the whole suite through Home
-  Assistant 2026.9.4 and 2026.10.4, failing if any module is at or below
-  95 % coverage.
+  Assistant 2026.10.4 and 2026.11.0 (2026.9.4 until 6 November 2026),
+  failing if any module is at or below 95 % coverage.
 
 ### Fixed (since step 12, from live testing on Home Assistant 2026.11.0b0)
 
@@ -289,6 +292,51 @@ Home Assistant 2026.9.4 or later.
   - One head stopping as another started on the same outdoor unit in the
     same minute could be learned as the unit stopping and starting. Neither
     is learned now. (DR-028)
+
+- **From the eleventh independent review, 6 November (on r17):**
+  - The humidity estimate drifted from the room. Its filter took every
+    miss as sensor noise (6.5 hPa^2 learned in the house's history) and
+    left the estimate 2 hPa or more from the room's vapour pressure on a
+    quarter of its steps. It now splits the misses between the reading
+    and the room as the heat filter does; replaying the house's history,
+    the mean gap is 0.06 hPa. A step whose humidity inputs were stood in
+    or unknown now corrects the moisture and teaches no figure. (R21,
+    D074)
+  - A change of PID gains held the whole output where it was, cancelling
+    the new plan's own rate: a room asked for 4 C/h on its path was sent
+    1 C/h until the next stop. Only the feedback part is now held; the
+    plan's rate passes straight through.
+  - A plan made between filter steps started where the room was up to 5
+    minutes before; it now starts from the same estimate the PID acts on.
+  - The heat figures are held to at most 1,000 per hour (was 10,000), so
+    the 5-minute steps of the plan and forecast cannot overflow.
+  - A step with the compressor unknown in heat_cool or auto now widens
+    the room's uncertainty by either way's largest rate; before, it added
+    nothing.
+  - On a shared outdoor unit a room run by hand now has its way, and a
+    reversal holds the rooms wanting the other way at rest for the rest of
+    the minimum run plus the 5-minute rest. Before, a hand-run room was
+    not counted, and the unit could be asked to reverse with no rest.
+    (D016, D020)
+  - A timeout or other error from the tariff, the weather forecast or a
+    speech engine is now a failed read or failed warning like Home
+    Assistant's own; before, it could stop the cycle or the setup.
+  - The spoken countdown rounds its minutes up, so a warning never says 0
+    minutes while time remains.
+  - An Enforced room whose outdoor unit's draw is not yet learned is no
+    longer turned off: it has no ceiling and keeps going until the battery
+    is down to its reserve or the window ends at the tariff change, since
+    running is the only way its draw is learned. Before, it was turned off
+    and its draw could never be learned. (D044, D063)
+  - Setup texts: the power screen says which inputs are needed and which
+    optional; the grid direction is pre-filled on Reconfigure; a seed from
+    a history that teaches nothing leaves the model as it was; the
+    filter-silent repair says the room is still followed.
+  - Documents: the free-cooling advice is in the trace and attributes,
+    not spoken; the demand forecast runs every cycle; the rest of the
+    house's load is measured while the room's own and every other
+    enforced unit are stopped; assumed sun corrects the air and mass
+    only; the PID's delay adds half the filter's step.
 
 - **From the tenth independent review, 6 November (on r16):**
   - The room estimate stopped following the sensor. The r16 surprise limit
@@ -433,7 +481,8 @@ Home Assistant 2026.9.4 or later.
 
 ### Changed (since step 12, for Home Assistant 2026.11)
 
-- Ready for Home Assistant 2026.11, and still runs on 2026.9.4 and later.
+- Ready for Home Assistant 2026.11, and still runs on 2026.10.4 and later
+  (2026.9.4 until 6 November 2026).
 - The manifest declares its integration categories,
   `climate.heat_pumps_air_conditioning` and `energy.solar_batteries`, which
   the Marketplace browses by and the HACS action checks.

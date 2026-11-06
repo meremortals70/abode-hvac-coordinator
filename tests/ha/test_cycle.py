@@ -846,6 +846,39 @@ async def test_an_enforced_ceiling_reaches_the_pid_and_the_plan_in_the_cycle(
     assert tops and max(tops) <= 0.7
 
 
+async def test_a_plan_starts_from_the_estimate_the_pid_acts_on(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A plan made between filter steps starts from the filter's estimate
+    carried forward, the same one the PID is given that cycle (4.5) [Der]."""
+    from custom_components.abode_hvac_coordinator.models import RoomEconomics
+
+    set_house_states(hass)
+    entry = await setup_entry(hass)
+    run = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))  # a plan in force
+    starts: list[Any] = []
+    estimates: list[float] = []
+    kind = type(run.control)
+    cycle, replan = kind.cycle, kind.replan
+
+    def spy_cycle(self: Any, **kw: Any) -> Any:
+        estimates.append(kw["t_est"])
+        return cycle(self, **kw)
+
+    def spy_replan(self: Any, inputs: Any, g: Any) -> Any:
+        starts.append(inputs.t_now)
+        return replan(self, inputs, g)
+
+    econ = RoomEconomics((1.0,) * 12, 1.0, 0.7, None, False, 0.5, "ceiling 0.70 C/h")
+    with patch.object(kind, "cycle", spy_cycle), patch.object(kind, "replan", spy_replan), \
+            patch("custom_components.abode_hvac_coordinator.coordinator.room_economics", return_value=econ):
+        await _tick(hass, freezer, timedelta(minutes=2))  # between filter steps: replanned for the ceiling
+    assert starts and estimates and starts[0] is not None
+    assert starts[0] == pytest.approx(estimates[0])
+    assert run.control.plan_t0 == pytest.approx(estimates[0])
+
+
 async def test_a_heating_pid_is_held_to_the_heating_ceiling_in_the_cycle(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
