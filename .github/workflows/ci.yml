@@ -58,9 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - homeassistant: "2026.9.4"  # the oldest release supported (hacs.json)
-            install: '"pytest-homeassistant-custom-component==0.13.367"'
-          - homeassistant: "2026.10.4"
+          - homeassistant: "2026.10.4"  # the oldest release supported (hacs.json)
             install: '"pytest-homeassistant-custom-component==0.13.375"'
           # From 2026.11 the test helpers are Home Assistant's own pytest-homeassistant
           # (packages/pytest-homeassistant in core; renamed from pytest-home-assistant
