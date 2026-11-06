@@ -398,7 +398,9 @@ class PowerBudget:
             if not ok
         ]
         if missing:
-            self._reset()
+            # no limit while a figure is missing [D044], but the ceilings'
+            # memory stands: when the figures return, a ceiling still rises
+            # only after it has stood 10 minutes [D062]
             self.last_allowance = None
             self.last_reason = "no limit: " + ", ".join(missing) + " not available"  # [D044]
             return {r.room_id: (None, False, None, self.last_reason) for r in rooms}

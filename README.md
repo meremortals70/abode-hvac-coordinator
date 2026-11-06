@@ -48,7 +48,7 @@ The full list is in [entities](docs/entities.md).
 
 ## Requirements
 
-- Home Assistant 2026.9.4 or later.
+- Home Assistant 2026.10.4 or later.
 - The recorder, for seeding a new room from its history.
 - For each room: at least one air conditioner, and its own temperature and humidity sensors. The air conditioner's own reading is not good enough on its own, because it sits in the unit's airflow.
 - Optional: [Abode Power Tariffs](https://github.com/meremortals70/abode-power-tariffs) for prices, a weather entity with an hourly forecast, and the house's power sensors for the power budget.

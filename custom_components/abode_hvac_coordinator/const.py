@@ -199,7 +199,23 @@ UNIT_CURVE_EFFORTS_C: Final = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0)  # [Prop]
 # The unit's delay and lag are states of the heat filter (decision of 27
 # October 2026); the range is the specification's search range [Prop].
 UNIT_DELAY_RANGE_MIN: Final = (0.0, 30.0)  # [Prop]
-UNIT_LAG_MIN_MIN: Final = 1.0  # [Prop]
+# The lag is held between 1 and 30 minutes, the delay's own range: a
+# unit's start-up response is measured at 0.3 to 2 minutes (arXiv
+# 1212.5665, Section 2 and 5.5); a learned lag above 30 minutes is not the
+# unit's, and the PID's derivative time is the lag (Section 4.5) [R19].
+UNIT_LAG_RANGE_MIN: Final = (1.0, 30.0)  # [R19]
+# One reading moves the filter by at most what a 3.3-sigma surprise would:
+# beyond a normalised innovation squared of 10.83 (chi-square, one degree
+# of freedom, 0.1%) the innovation's variance is taken as nu^2 / 10.83, so
+# a reading far outside what the filter expected is weighted down in
+# proportion instead of being taken as exact [R20].
+FILTER_GATE_NIS: Final = 10.83  # [R20]
+# The logarithms of the heat figures (a, b, c, k, s, m) and of the curve's
+# steps are held between ln 1e-6 and ln 1e4 per hour: a numerical range, not
+# a physical one. Beyond it the exact step's matrix exponential overflows
+# (cosh past about 85,000 per hour over a minute) or its matrix is singular
+# (a and k both below about 1e-15) [Der].
+FIGURE_LOG_RANGE: Final = (-13.815510557964274, 9.210340371976184)  # ln 1e-6, ln 1e4 [Der]
 FILTER_START_VAR_LN_LAG: Final = 1.0  # [Sim][NYE]
 FILTER_START_VAR_DELAY: Final = 25.0  # min^2 [Sim][NYE]
 FILTER_NOISE_LN_LAG: Final = 1e-5  # per step [Sim][NYE]

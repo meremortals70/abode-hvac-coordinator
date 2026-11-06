@@ -639,6 +639,32 @@ async def test_rooms_on_one_outdoor_unit_are_each_charged_their_own_share(
     assert float(den.state) == pytest.approx(0.06, abs=0.012)
 
 
+async def test_the_guard_is_told_how_far_each_room_is_from_its_band(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """Each room's distance outside its band, and from its centre, reaches
+    the guard, which serves the furthest room first on a shared outdoor
+    unit (decision of 6 November 2026)."""
+    set_house_states(hass)
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data.coordinator
+    seen: list[Any] = []
+    guard_type = type(coordinator.guard)
+    real = guard_type.apply
+
+    def capture(self: Any, now: Any, entries: Any) -> Any:
+        seen.extend(entries)
+        return real(self, now, entries)
+
+    with patch.object(guard_type, "apply", capture):
+        await _tick(hass, freezer, timedelta(seconds=30))
+    c = coordinator.rooms[ROOM_ID].comfort_result
+    assert seen and c is not None and c.room_index is not None and c.band_high is not None
+    assert c.room_index > c.band_high  # 25 C at 55 %: above the 23-26 band
+    assert seen[-1].outside == pytest.approx(c.room_index - c.band_high)
+    assert seen[-1].from_centre == pytest.approx(c.room_index - (c.band_low + c.band_high) / 2)
+
+
 async def test_a_new_room_is_seeded_from_history(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -647,6 +673,42 @@ async def test_a_new_room_is_seeded_from_history(
     caplog.set_level(logging.INFO)
     await setup_entry(hass)
     assert any("seeded from" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_stored_model_learned_before_the_lag_was_held_is_relearned(
+    hass: HomeAssistant, hass_storage: dict[str, Any], climate_calls: dict[str, list[ServiceCall]],
+    caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stored heat filter whose lag is outside 1 to 30 minutes was learned
+    by a filter that could diverge (the office's 23,829 minutes): it is
+    refused, its trust goes with it, and the room is seeded again from
+    history. Its choices and the rest of what it keeps stand [R19]."""
+    import math
+
+    from custom_components.abode_hvac_coordinator import memory as mem
+    from custom_components.abode_hvac_coordinator.model import RoomModel
+    from custom_components.abode_hvac_coordinator.model.filter import HeatFilter
+    from custom_components.abode_hvac_coordinator.model.physics import I_LN_LAG
+    from custom_components.abode_hvac_coordinator.models import ComfortMode, RoomChoices
+
+    heat = HeatFilter.start(24.0)
+    heat.z[I_LN_LAG] = math.log(23829.4)
+    model = RoomModel(heat=heat)
+    model.trust.weekly_errors.append(("2026-W45", 1.2))
+    state = mem.RoomState(model=model, choices=RoomChoices(automatic_control=False, comfort_mode=ComfortMode.SLEEP))
+    hass_storage["abode_hvac_coordinator"] = {
+        "version": 1, "minor_version": 1, "key": "abode_hvac_coordinator",
+        "data": {"rooms": {ROOM_ID: mem.room_to_dict(state)}, "draw": {}},
+    }
+    set_house_states(hass)
+    await async_wait_recording_done(hass)
+    caplog.set_level(logging.INFO)
+    entry = await setup_entry(hass)
+    run = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    assert run.state.choices.comfort_mode is ComfortMode.SLEEP and not run.state.choices.automatic_control
+    assert run.state.model.trust.weekly_errors == []
+    assert any("seeded from" in r.getMessage() for r in caplog.records)
+    assert run.state.model.heat is None or run.state.model.heat.lag_min <= 30.0
 
 
 async def test_seeding_a_room_that_has_learned_starts_from_the_beginning(

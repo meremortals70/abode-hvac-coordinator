@@ -290,6 +290,93 @@ Home Assistant 2026.9.4 or later.
     same minute could be learned as the unit stopping and starting. Neither
     is learned now. (DR-028)
 
+- **From the tenth independent review, 6 November (on r16):**
+  - The room estimate stopped following the sensor. The r16 surprise limit
+    shrank each correction as the miss grew, and the learned sensor noise
+    took the miss instead: 2.17 C^2 on a sensor in 0.1 C steps, and the
+    living room's estimate stayed 1 C or more from the room for 12 hours.
+    The sensor's noise is now learned from the reading's own second
+    differences, and what the innovations show beyond it is the room's own
+    unforecast change, added to the air's noise, so a room that moves is
+    followed. Replaying the house's history: steps more than 1 C out fell
+    from 160 to 6 (office) and 652 to 15 (living room); the one-hour
+    forecast error with the unit resting fell from 0.33 to 0.21 C and 0.63
+    to 0.48 C. (R21)
+  - A reading is now always used to say where the room is. A step whose
+    compressor state is unknown, whose sun had to be assumed, or that
+    comes too soon after start-up corrects the air and mass, with the
+    unknown input's possible effect added to their uncertainty, and teaches
+    no figure. Before, the air ran open-loop through every such step: a
+    whole night of cooling in the living room. (DR-074)
+  - A minute whose compressor state was unknown in the unit's last 40
+    minutes no longer lets the figures learn as if it ran. (DR-074)
+  - After a restart the figures wait until the unit's rate has come through
+    its delay and three lags (95 %), not a fixed 40 minutes; with a 30-minute
+    lag the rate was still 29-32 % short and the curve learned high.
+  - The PID compared a path that moves every 30 seconds with an estimate
+    that moved every 5 minutes, so a room exactly on its path showed an
+    error and the output swung across its range. The estimate is carried
+    forward on the model's rate between filter steps, and the gains count
+    half the filter's step as delay. (DR-054)
+  - The plan and the forecast now start from the unit's rate now and reach
+    each rate through its delay and lag (taken as one lag of their sum);
+    they had the rate jump at once, up to 1.1 C off an hour after a stop.
+  - The plan's margin is the room's uncertainty, not the sensor's noise; it
+    moves one for one with temperature (the plan holds vapour pressure), not
+    1.5 times as fast; and it is held to half the band's half-width, so a
+    band always has an inside.
+  - A lag or delay at the top of its range could stick there: the filter's
+    slope is now taken downward at the top.
+  - Every figure is held within the range the arithmetic can carry, and a
+    step whose arithmetic fails is undone, not raised every 5 minutes.
+  - Rooms on one outdoor unit could be sent heat and cool together, which a
+    multi-split cannot do. The room furthest outside its band has the
+    outdoor unit; a room wanting the other way rests (decision of 6
+    November 2026). A reversal is a stop and a start: the run keeps its 10
+    minutes and the rest its 5. (DR-016, DR-020)
+  - A climate entity's own error (a timeout, a connection error, Home
+    Assistant's call validation) is recorded as a failed command and the
+    room's other commands still go; only Home Assistant's errors were.
+  - A tariff priced at or below zero throughout reversed the plan's comfort
+    weight; the price of no tariff, 1, now stands in.
+  - One missing battery, load or solar reading wiped the power ceiling's
+    memory, so it rose without its 10-minute hold when the reading came
+    back. The hold now stands. (DR-062)
+  - Leave in a room without a presence sensor stays until you change
+    Automatic control or Comfort mode or ask for Precool; the docs said
+    "until someone comes back". The behaviour is right (Jason) and the docs
+    now say so. (DR-088)
+  - Home Assistant 2026.10.4 is now the oldest release supported, in
+    `hacs.json`, the README and the install guide; CI no longer tests
+    2026.9.4 (Jason: "drop anything before .10.x").
+
+- **From replaying the house's own 12 days of history, 6 November:**
+  - One reading could wreck a room's model. A sensor reporting to 0.01 C
+    was trusted to about 0.003 C, so a single 0.4 C jump was forced into
+    the room's figures (the mass exchange went from 0.3 to 180 per hour in
+    one correction). The minute step's straight-line arithmetic then
+    diverged: the forecast room reached billions of degrees and the model
+    never recovered. A reading far outside what the filter expected is now
+    weighted as a 3.3-sigma surprise at most, in both filters; and the
+    minute step uses the heat balance's exact solution, which stays bounded
+    for any figures. (R20)
+  - The unit's lag could grow without limit (16.5 days and 4 years were
+    stored), and the PID's derivative time is the lag, so its gain reached
+    4,306 and the setpoint went to the unit's minimum. The lag is now held
+    between 1 and 30 minutes, the delay's own range, in the state itself.
+    (R19)
+  - A figure whose input never acted walked on the filter's correlations
+    alone: in a room whose sun is never measured, the mass's sun gain went
+    from 0.1 to 87 per hour and the forecast room passed 100 C. Each figure
+    is now corrected only on a step where its input acted, as the humidity
+    filter already did: the sun's figures with sun on the glass, each
+    direction's curve when the unit worked that way in the last 40 minutes,
+    the delay and lag when it worked either way. (DR-026, DR-060)
+  - A stored model whose lag is outside 1 to 30 minutes was learned by a
+    filter that could diverge: it is refused at start-up with the trust it
+    earned, and the room is seeded again from history. Choices and
+    everything else kept stand. (R19)
+
 - **From the ninth independent review, 5 November:**
   - Seeding a room in a house with no outdoor temperature sensor replaced
     what it had learned with the starting figures: the replay had no

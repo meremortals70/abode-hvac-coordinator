@@ -415,6 +415,39 @@ class Guard(unittest.TestCase):
         r = both(4, SK.COOL, True)  # and b may start again: the unit never stopped
         self.assertEqual((r["b"].kind, r["b"].changed), (SK.COOL, ()))
 
+    def test_an_outdoor_unit_runs_one_way_for_the_room_furthest_from_its_band(self) -> None:
+        """A multi-split cannot heat one room and cool another: the room
+        further outside its band has the outdoor unit, and the room wanting
+        the other way rests (decision of 6 November 2026) [D020]."""
+        a, b = limits.RoomLimits(room("a", "shared")), limits.RoomLimits(room("b", "shared"))
+        ea = limits.GuardEntry(a, step(a, p=proposed(SK.COOL, heads=(cmd(climate="climate.a"),))), ("shared",), {},
+                               (), 0.4, 1.4)
+        eb = limits.GuardEntry(b, step(b, p=proposed(SK.HEAT, heads=(cmd("heat", 22.0, climate="climate.b"),))),
+                               ("shared",), {}, (), 1.5, 2.5)
+        r = self.g.apply(T0, [ea, eb])
+        self.assertEqual((r["a"].kind, r["b"].kind), (SK.REST, SK.HEAT))
+        self.assertIn(LR.SHORT_CYCLE_GUARD, r["a"].changed)
+
+    def test_how_far_a_room_is_from_its_band(self) -> None:
+        self.assertEqual(limits.band_distances(27.5, 24.0, 26.0), (1.5, 2.5))
+        self.assertEqual(limits.band_distances(22.0, 24.0, 26.0), (2.0, 3.0))
+        self.assertEqual(limits.band_distances(25.5, 24.0, 26.0), (0.0, 0.5))
+        self.assertEqual(limits.band_distances(None, 24.0, 26.0), (0.0, 0.0))
+
+    def test_a_reversal_is_a_stop_and_a_start(self) -> None:
+        """Cool to heat on one outdoor unit stops the compressor and starts
+        it the other way: the cooling run keeps its 10 minutes, then the
+        unit rests its 5 before heating [D016]."""
+        heat = proposed(SK.HEAT, heads=(cmd("heat", 26.0),))
+        self.assertIs(self.run_(0, SK.COOL).kind, SK.COOL)
+        r = allowed(self.rl, self.g, p=heat, now=T0 + 1 * MIN)
+        self.assertEqual((r.kind, r.changed), (SK.COOL, (LR.SHORT_CYCLE_GUARD,)))
+        r = allowed(self.rl, self.g, p=heat, now=T0 + 10 * MIN)
+        self.assertEqual((r.kind, r.changed), (SK.REST, (LR.SHORT_CYCLE_GUARD,)))
+        r = allowed(self.rl, self.g, p=heat, now=T0 + 13 * MIN)
+        self.assertIs(r.kind, SK.REST)
+        self.assertIs(allowed(self.rl, self.g, p=heat, now=T0 + 16 * MIN).kind, SK.HEAT)
+
     def test_an_outdoor_unit_runs_if_any_room_on_it_wants_it(self) -> None:
         a, b = limits.RoomLimits(room("a", "shared")), limits.RoomLimits(room("b", "shared"))
 

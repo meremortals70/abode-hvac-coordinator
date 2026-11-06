@@ -326,6 +326,26 @@ class RoomLimits:
 class _Outdoor:
     running: bool
     since: datetime | None  # None: not known since start-up, so not held
+    direction: int = 0  # +1 cooling or dry, -1 heating, 0 not known
+
+
+def band_distances(index: float | None, low: float | None, high: float | None) -> tuple[float, float]:
+    """How far an index is outside its band (0 inside), and from its
+    centre: the order in which an outdoor unit serves rooms wanting
+    opposite ways (decision of 6 November 2026). Nothing known: 0, 0."""
+    if index is None or low is None or high is None:
+        return 0.0, 0.0
+    return max(low - index, index - high, 0.0), abs(index - (low + high) / 2.0)
+
+
+def _direction(kind: StepKind) -> int:
+    """The way a running step moves heat: cooling and dry one way, heating
+    the other."""
+    if kind is StepKind.HEAT:
+        return -1
+    if kind in (StepKind.COOL, StepKind.DRY):
+        return 1
+    return 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +360,11 @@ class GuardEntry:
     # guard keeps a room on when a start made by hand is not yet 10
     # minutes old and the plan would stop it [D016][D089]
     observed_heads: tuple[HeadCommand, ...] = ()
+    # how far the room's index is outside its band now (0 inside), and from
+    # its centre: which room an outdoor unit serves when rooms on it want
+    # opposite ways (decision of 6 November 2026)
+    outside: float = 0.0
+    from_centre: float = 0.0
 
 
 @dataclass(slots=True)
@@ -360,7 +385,26 @@ class HouseGuard:
                     self._units[u] = _Outdoor(bool(e.observed_running.get(u, False)), None)
         held_off: set[str] = set()
         for u, rooms in by_unit.items():
+            self._one_way(u, rooms)
+        for u, rooms in by_unit.items():
             state = self._units[u]
+            ways = {_direction(e.step.kind) for e in rooms if e.step.kind in RUNNING_KINDS}
+            ways.discard(0)
+            if (state.running and state.direction and ways and state.direction not in ways
+                    and state.since is not None):
+                # a reversal is a stop and a start: the run must have lasted
+                # its 10 minutes, and the rest its 5, before the other way
+                # runs [D016]
+                ran_for = now - state.since
+                if ran_for < _MIN_RUN:
+                    for e in rooms:
+                        if e.limits.last_running and e.step.kind in RUNNING_KINDS and not e.step.user_stop:
+                            self._keep_running(e, (_MIN_RUN - ran_for).total_seconds())
+                else:
+                    for e in rooms:
+                        if e.step.kind in RUNNING_KINDS:
+                            self._hold_rest(e.step, _MIN_REST.total_seconds())
+                continue
             # a room left as it is wants the unit as it is seen to run,
             # the same rule that records the unit's state below [D016][D020]
             wanted = any(
@@ -396,9 +440,33 @@ class HouseGuard:
                 for e in rooms
             )
             state = self._units[u]
+            ways = {_direction(results[e.step.room_id].kind) for e in rooms} - {0}
+            way = next(iter(ways)) if len(ways) == 1 else state.direction
             if running != state.running:
                 state.running, state.since = running, now
+            if running:
+                state.direction = way
         return results
+
+    @staticmethod
+    def _one_way(unit: str, rooms: Sequence[GuardEntry]) -> None:
+        """An outdoor unit runs one way at a time: a multi-split cannot heat
+        one room and cool another. Where rooms on it want opposite ways, the
+        room furthest outside its band (then furthest from its centre) has
+        it, and the rooms wanting the other way rest [D020] (decision of 6
+        November 2026)."""
+        wanting = [e for e in rooms if e.step.kind in RUNNING_KINDS]
+        if len({_direction(e.step.kind) for e in wanting}) < 2:
+            return
+        first = max(wanting, key=lambda e: (e.outside, e.from_centre))
+        way = _direction(first.step.kind)
+        reason = f"The outdoor unit {unit} runs one way at a time; another room on it is further from its band."
+        for e in wanting:
+            if _direction(e.step.kind) != way:
+                if e.step.rest_heads:
+                    e.step.to(LimitRule.SHORT_CYCLE_GUARD, StepKind.REST, reason, e.step.rest_heads)
+                else:
+                    e.step.to(LimitRule.SHORT_CYCLE_GUARD, StepKind.OFF, reason)
 
     @staticmethod
     def _hold_rest(s: RoomStep, wait_s: float) -> None:

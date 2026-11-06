@@ -276,6 +276,20 @@ class Budget(unittest.TestCase):
         out = self.go(eco.PowerBudget(), T0, [room()])
         self.assertIn("house load", out["r1"][3])
 
+    def test_a_missing_figure_does_not_skip_the_hold_on_a_rise(self) -> None:
+        """No limit while a figure is missing [D044], but the ceiling's
+        memory stands: when the figures return higher, it still rises only
+        after it has stood 10 minutes [D062]."""
+        b = self.budget()
+        low = eco.HousePower(40.0, 10.0, 1.0, None, True, True)
+        high = eco.HousePower(60.0, 10.0, 1.0, None, True, True)
+        first = self.go(b, T0, [room()], house=low)["r1"][0]
+        self.assertIsNotNone(first)
+        gap = self.go(b, T0 + timedelta(seconds=30), [room()], house=eco.HousePower(None, 10.0, 1.0, None, True, True))
+        self.assertIsNone(gap["r1"][0])
+        self.assertEqual(self.go(b, T0 + timedelta(minutes=1), [room()], house=high)["r1"][0], first)
+        self.assertGreater(self.go(b, T0 + timedelta(minutes=11), [room()], house=high)["r1"][0] or 99.0, first)
+
     def test_ceiling(self) -> None:
         # E_avail = 5 - 1 = 4 kWh over 2 h, rest 1 kW, no solar: P* = 1 kW
         out = self.go(self.budget(), T0, [room()])

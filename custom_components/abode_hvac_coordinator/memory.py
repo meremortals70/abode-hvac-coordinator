@@ -184,9 +184,12 @@ def room_from_dict(data: Mapping[str, Any]) -> RoomState:
 
     heat = HeatFilter.from_dict(h) if (h := part("heat")) is not None else None
     humidity = HumidityFilter.from_dict(h) if (h := part("humidity")) is not None else None
+    # a heat filter refused is relearned, and the trust earned by its
+    # forecasts goes with it: trust measures that model, not the next [R19]
+    refused = part("heat") is not None and heat is None
     model = RoomModel(heat=heat, humidity=humidity,
                       unit=UnitModel.from_dict(part("unit") or {}),
-                      trust=Trust.from_dict(part("trust") or {}))
+                      trust=Trust() if refused else Trust.from_dict(part("trust") or {}))
     occupied = data.get("occupied")
     return RoomState(
         model=model,

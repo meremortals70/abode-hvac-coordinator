@@ -61,6 +61,23 @@ async def test_a_failed_call_does_not_stop_the_others(hass: HomeAssistant, caplo
     assert "set_hvac_mode {'hvac_mode': 'cool'} failed: unit offline" in caplog.text
 
 
+async def test_a_units_own_error_does_not_stop_the_others(hass: HomeAssistant) -> None:
+    """A climate entity's integration can raise its own error, not Home
+    Assistant's (here a timeout): the command is recorded as failed and the
+    room's other commands still go."""
+    async def fail(call: ServiceCall) -> None:
+        raise TimeoutError("no answer")
+
+    hass.services.async_register("climate", "set_hvac_mode", fail)
+    fans = async_mock_service(hass, "climate", "set_fan_mode")
+    calls = [models.ServiceCall("climate", "set_hvac_mode", {"entity_id": "climate.a", "hvac_mode": "cool"}),
+             models.ServiceCall("climate", "set_fan_mode", {"entity_id": "climate.a", "fan_mode": "auto"})]
+    records = await act.async_send(hass, calls, room_id="r1", log=act.CommandLog(), now=T0,
+                                   about=act.CommandContext(None, None, None))
+    assert [(r.ok, r.error) for r in records] == [(False, "no answer"), (True, None)]
+    assert len(fans) == 1
+
+
 async def test_user_command_sent_to_every_head(hass: HomeAssistant) -> None:
     temps = async_mock_service(hass, "climate", "set_temperature")
     log = act.CommandLog()
@@ -109,23 +126,17 @@ async def test_fahrenheit_system_is_sent_fahrenheit(hass: HomeAssistant) -> None
 async def test_a_c_unit_in_a_f_house_at_its_maximum_is_not_refused(hass: HomeAssistant) -> None:
     """At the top of the unit's range the value sent converts to no more
     than its maximum: Home Assistant refuses even a float above (2026.11.0b0
-    climate/services.py:150; 2026.9.4 climate/__init__.py:828) [HA][D051]."""
+    climate/services.py:150) [HA][D051]."""
     from homeassistant.components.climate import (
         ClimateEntity,
         ClimateEntityFeature,
         HVACMode,
     )
+    from homeassistant.components.climate.services import (
+        _async_service_temperature_set as handler,
+    )
     from homeassistant.const import UnitOfTemperature
     from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
-
-    try:
-        from homeassistant.components.climate.services import (
-            _async_service_temperature_set as handler,
-        )
-    except ImportError:  # 2026.9
-        from homeassistant.components.climate import (
-            async_service_temperature_set as handler,
-        )
 
     capabilities = load("capabilities")
 

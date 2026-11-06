@@ -15,7 +15,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..const import UNIT_DELAY_RANGE_MIN, UNIT_LAG_MIN_MIN
+from ..const import UNIT_DELAY_RANGE_MIN, UNIT_LAG_RANGE_MIN
 from ..linalg import (
     Matrix,
     eigenvalues_2x2,
@@ -91,7 +91,7 @@ def figures(z: Sequence[float]) -> Figures:
         be2=z[I_BE2],
         cool_steps=tuple(z[I_COOL : I_COOL + CURVE_POINTS]),
         heat_steps=tuple(z[I_HEAT : I_HEAT + CURVE_POINTS]),
-        lag_min=max(math.exp(z[I_LN_LAG]), UNIT_LAG_MIN_MIN),
+        lag_min=min(max(math.exp(z[I_LN_LAG]), UNIT_LAG_RANGE_MIN[0]), UNIT_LAG_RANGE_MIN[1]),
         delay_min=min(max(z[I_DELAY], UNIT_DELAY_RANGE_MIN[0]), UNIT_DELAY_RANGE_MIN[1]),
     )
 
@@ -209,9 +209,15 @@ def step(z: Sequence[float], inputs: StepInputs) -> StepResult:
 
     Five one-minute steps. The unit's rate follows r(effort) after its
     delay, through its first-order lag, U = U + (r - U) x 1 min / lag, each
-    minute. The figures, delay and lag are unchanged by STEP.
+    minute. The room and mass move by the heat balance's exact solution
+    over the minute, the inputs held for it (EXACT STEP below): stable for
+    any positive figures, where a straight-line step diverges once a + b or
+    c + k passes 120 per hour, and a figure the filter has just been taught
+    can be that large [Der]. The figures, delay and lag are unchanged by
+    STEP.
     """
     fig = figures(z)
+    minute = exact_step(fig, MINUTE_H)
     t, mass = z[I_T], z[I_M]
     u = inputs.u_start
     path: list[float] = []
@@ -219,11 +225,7 @@ def step(z: Sequence[float], inputs: StepInputs) -> StepResult:
         r = delayed_rate(fig, inputs, i)
         u = u + (r - u) * 1.0 / fig.lag_min
         path.append(u)
-        g = fig.g(inputs.hours[i])
-        dt = fig.a * (inputs.outdoor - t) + fig.b * (mass - t) + fig.s * inputs.sun + g - u
-        dm = fig.c * (t - mass) + fig.k * (inputs.outdoor - mass) + fig.m * inputs.sun
-        t = t + dt * MINUTE_H
-        mass = mass + dm * MINUTE_H
+        t, mass = minute.advance((t, mass), inputs.outdoor, inputs.sun, fig.g(inputs.hours[i]), u)
     out = list(z)
     out[I_T], out[I_M] = t, mass
     return StepResult(out, tuple(path), u)

@@ -23,6 +23,7 @@ from typing import Any
 
 from ..const import (
     COIL_REBOUND_S,
+    FILTER_GATE_NIS,
     FILTER_JACOBIAN_DELTA,
     HUMIDITY_NOISE_E_PER_H,
     HUMIDITY_NOISE_FIGURE,
@@ -203,13 +204,16 @@ class HumidityFilter:
         self.noise = (
             max(floor, self.innovation_avg - p_ee) if self.corrections >= SENSOR_NOISE_SETTLE_CORRECTIONS else floor
         )
-        s = p_ee + self.noise
+        # a reading far outside what the filter expected is weighted down in
+        # proportion, as in the heat filter [R20]
+        s = max(p_ee + self.noise, nu * nu / FILTER_GATE_NIS)
+        r_used = s - p_ee
         self.innovation_avg += (nu * nu - self.innovation_avg) * SENSOR_NOISE_WEIGHT
         k = [self.p[i][H_E] / s if acts[i] else 0.0 for i in range(H_SIZE)]
         self.z = [zi + ki * nu for zi, ki in zip(self.z, k, strict=True)]
         # Joseph form: P = (I - K H) P (I - K H)^T + K R K^T, H = e_1
         ikh = [[(1.0 if i == j else 0.0) - (k[i] if j == H_E else 0.0) for j in range(H_SIZE)] for i in range(H_SIZE)]
-        self.p = symmetrise(add(multiply(multiply(ikh, self.p), transpose(ikh)), scale(outer(k, k), self.noise)))
+        self.p = symmetrise(add(multiply(multiply(ikh, self.p), transpose(ikh)), scale(outer(k, k), r_used)))
         self.corrections += 1
 
     def as_dict(self) -> dict[str, Any]:

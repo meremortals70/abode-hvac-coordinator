@@ -86,16 +86,45 @@ class Physics(unittest.TestCase):
         got = physics.step(z, si)
         a, b, c, k, s_, m = 0.2, 0.2, 0.3, 0.1, 0.7, 0.1
         t, mass, u = 22.0, 25.0, 0.5
+        # the reference: each minute's inputs held, the heat balance stepped
+        # in 6000 straight-line slices, which converges on the exact answer
+        n = 6000
         for h in hours:
             w = 2 * math.pi * h / 24
             g = 0.2 + 0.1 * math.cos(w) - 0.05 * math.sin(w) + 0.07 * math.cos(2 * w) + 0.03 * math.sin(2 * w)
             u += (2.4 - u) / 12.0  # ln 1 curve: 2 C/h at 1.0, 3 at 1.5 -> 2.4 at 1.2
-            dt = a * (31.0 - t) + b * (mass - t) + s_ * 0.6 + g - u
-            dm = c * (t - mass) + k * (31.0 - mass) + m * 0.6
-            t, mass = t + dt / 60, mass + dm / 60
-        self.assertAlmostEqual(got.z[physics.I_T], t, places=12)
-        self.assertAlmostEqual(got.z[physics.I_M], mass, places=12)
+            for _ in range(n):
+                dt = a * (31.0 - t) + b * (mass - t) + s_ * 0.6 + g - u
+                dm = c * (t - mass) + k * (31.0 - mass) + m * 0.6
+                t, mass = t + dt / 60 / n, mass + dm / 60 / n
+        self.assertAlmostEqual(got.z[physics.I_T], t, places=6)
+        self.assertAlmostEqual(got.z[physics.I_M], mass, places=6)
         self.assertAlmostEqual(got.u_end, u, places=12)
+
+    def test_step_stays_bounded_for_any_positive_figures(self) -> None:
+        """A figure just taught can be large: the minute step is the heat
+        balance's exact solution, which a straight-line minute is not once
+        c + k passes 120 per hour (here c = 180, as one correction made it
+        in the office's history on 26 October) [Der]."""
+        z = filt.start_state(28.0)
+        z[physics.I_M] = 26.0
+        z[physics.I_LN_C] = math.log(180.0)
+        z[physics.I_LN_K] = math.log(3.65)
+        z[physics.I_LN_B] = math.log(11.3)
+        z = with_unit(z, 12.0, 0.0)
+        si = physics.StepInputs(31.0, 0.0, (14.0,) * 5, ((0.0, 0),) * 5, 0.0, EFF)
+        for _ in range(12):  # an hour
+            z = physics.step(z, si).z
+        self.assertTrue(26.0 <= z[physics.I_T] <= 31.0)
+        self.assertTrue(26.0 <= z[physics.I_M] <= 31.0)
+
+    def test_lag_held_between_one_and_thirty_minutes(self) -> None:
+        """The lag is read and kept within 1 to 30 minutes [R19]."""
+        z = filt.start_state(24.0)
+        z[physics.I_LN_LAG] = math.log(23829.4)  # the office's stored lag
+        self.assertEqual(physics.figures(z).lag_min, 30.0)
+        z[physics.I_LN_LAG] = math.log(0.2)
+        self.assertEqual(physics.figures(z).lag_min, 1.0)
 
     def test_unit_lag(self) -> None:
         z = with_unit(filt.start_state(24.0), 10.0, 0.0)
@@ -171,20 +200,27 @@ class Filter(unittest.TestCase):
         f.observe_reading(24.2)  # q = 0.2
         f.observe_reading(24.0)
         f._history.extend([(0.0, 0)] * physics.HISTORY_MIN)  # the unit known to have rested
+        f._history_known.extend([True] * physics.HISTORY_MIN)
+        f._seen_minutes = 24 * 60  # running a day since start-up
         return f
 
-    def test_nothing_is_learned_until_the_units_last_40_minutes_are_known(self) -> None:
-        """After a start or a restart the unit's rate through its delay and
-        lag is not known, so the first 40 minutes correct nothing."""
+    def test_nothing_is_learned_until_the_units_rate_is_known(self) -> None:
+        """After a start or a restart the unit's rate starts at 0 and comes
+        through its delay and lag: the figures learn nothing until the
+        delay and three lags have passed (6 + 3 x 15 = 51 minutes here, more
+        than 40), while the room and mass are corrected throughout."""
         f = filt.HeatFilter.from_dict(self.ready().as_dict())
         f.observe_reading(24.0)
         f.observe_reading(24.2)
         f.observe_reading(24.0)
-        for minute in range(5, physics.HISTORY_MIN, 5):  # 5 to 35 minutes known
-            r = feed(f, [reading_sample(25.0)] * 5)
+        a0 = f.z[physics.I_LN_A]
+        for minute in range(5, 55, 5):  # 5 to 50 minutes seen
+            r = feed(f, [reading_sample(24.2)] * 5)
             self.assertFalse(r.corrected, minute)
-            self.assertIn("40 minutes", r.reason)
-        self.assertTrue(feed(f, [reading_sample(25.0)] * 5).corrected)  # 40 known
+            self.assertIsNotNone(r.innovation, minute)  # the room was corrected
+            self.assertIn("not yet known since start-up", r.reason)
+        self.assertEqual(f.z[physics.I_LN_A], a0)
+        self.assertTrue(feed(f, [reading_sample(24.2)] * 5).corrected)  # 55 seen
 
     def test_start(self) -> None:
         f = filt.HeatFilter.start(23.5)
@@ -217,16 +253,170 @@ class Filter(unittest.TestCase):
     def test_correction_pulls_toward_the_reading(self) -> None:
         f = self.ready()
         before = f.p[0][0]
-        r = feed(f, [reading_sample(25.0)] * 5)
+        r = feed(f, [reading_sample(24.2)] * 5)  # one sensor step: inside the gate
         self.assertTrue(r.corrected)
         self.assertGreater(f.z[0], 24.0)
-        self.assertLess(f.z[0], 25.0)
+        self.assertLess(f.z[0], 24.2)
         self.assertLess(f.p[0][0], before + 1e-3)
         self.assertEqual(f.corrections, 1)
         self.assertAlmostEqual(f.noise, 0.04 / 12, places=15)  # q^2/12 for the first day
         v0 = 0.04 / 12
         nu = r.innovation
         self.assertAlmostEqual(f.innovation_avg, v0 + (nu * nu - v0) / 288, places=15)
+
+    def test_a_surprise_moves_the_state_no_more_than_a_gated_one(self) -> None:
+        """A reading far outside what the filter expected is weighted as a
+        3.3-sigma surprise at most: in the office's history one 0.4 C step,
+        taken as exact, moved c from 0.3 to 180 per hour [R20]."""
+        f = self.ready()
+        f.p[physics.I_LN_C][0] = f.p[0][physics.I_LN_C] = 0.05  # correlated with the air
+        before = f.z[physics.I_LN_C]
+        r = feed(f, [reading_sample(30.0)] * 5)  # 6 C from the forecast
+        self.assertTrue(r.corrected)
+        nu = r.innovation
+        p_tt = f.p[0][0]  # after; the gain used was P_cT / max(S, nu^2 / 10.83)
+        moved = abs(f.z[physics.I_LN_C] - before)
+        self.assertLess(moved, 0.05 * abs(nu) / (nu * nu / 10.83) + 1e-9)
+        self.assertLess(f.z[0], 24.0 + 0.5 * 6.0)  # the air is not dragged to the reading
+        self.assertGreater(p_tt, 0.0)
+
+    def test_sun_figures_learn_only_with_sun_on_the_glass(self) -> None:
+        """The sun's figures are corrected only on a step with sun on the
+        glass; in the living room's history, where it was never measured,
+        the mass's sun gain walked from 0.1 to 87 per hour [D026][R16]."""
+        f = self.ready()
+        f.p[physics.I_LN_M][0] = f.p[0][physics.I_LN_M] = 0.2
+        f.p[physics.I_LN_S][0] = f.p[0][physics.I_LN_S] = 0.2
+        s0, m0 = f.z[physics.I_LN_S], f.z[physics.I_LN_M]
+        r = feed(f, [reading_sample(24.2)] * 5)  # no sun
+        self.assertTrue(r.corrected)
+        self.assertEqual((f.z[physics.I_LN_S], f.z[physics.I_LN_M]), (s0, m0))
+        self.assertNotEqual(f.z[0], 24.0)
+
+    def test_unit_figures_learn_only_when_the_unit_worked(self) -> None:
+        f = self.ready()  # the unit rested for the last 40 minutes
+        for i in (physics.I_COOL, physics.I_HEAT, physics.I_LN_LAG, physics.I_DELAY):
+            f.p[i][0] = f.p[0][i] = 0.1
+        before = [f.z[i] for i in (physics.I_COOL, physics.I_HEAT, physics.I_LN_LAG, physics.I_DELAY)]
+        self.assertTrue(feed(f, [reading_sample(24.2)] * 5).corrected)
+        self.assertEqual([f.z[i] for i in (physics.I_COOL, physics.I_HEAT, physics.I_LN_LAG, physics.I_DELAY)],
+                         before)
+        acts = filt.acting([reading_sample()] * 5, [(1.0, 1)] + [(0.0, 0)] * 39)
+        self.assertTrue(acts[physics.I_COOL] and acts[physics.I_LN_LAG] and acts[physics.I_DELAY])
+        self.assertFalse(acts[physics.I_HEAT])
+
+    def test_a_correction_that_leaves_figures_out_keeps_p_as_joseph_gives_it(self) -> None:
+        """With a gain that leaves figures out, the uncertainty is the Joseph
+        form's, (I - K H) P (I - K H)^T + K R K^T: P - K H P holds only for
+        the full gain, and would leave P wrong for the figures left out."""
+        f = self.ready()
+        f.observe_reading(24.2)
+        f.noise, f.innovation_avg = 0.01, 0.01
+        for i in range(filt.STATE_SIZE):
+            f.p[i][0] = f.p[0][i] = 0.01 * (1 + i % 3)
+        f.p[0][0] = 0.05
+        p0 = [r[:] for r in f.p]
+        acts = filt.acting([reading_sample()] * 5, [(0.0, 0)] * physics.HISTORY_MIN)  # no sun, no unit
+        r = f.sensor_step ** 2 / 12.0  # the first day's R
+        nu = f._correct(f.z[0] + 0.1, acts)
+        n = filt.STATE_SIZE
+        s = max(p0[0][0] + r, nu * nu / 10.83)
+        k = [p0[i][0] / s if acts[i] else 0.0 for i in range(n)]
+        ikh = [[(1.0 if i == j else 0.0) - (k[i] if j == 0 else 0.0) for j in range(n)] for i in range(n)]
+        a = [[sum(ikh[i][m] * p0[m][j] for m in range(n)) for j in range(n)] for i in range(n)]
+        want = [[sum(a[i][m] * ikh[j][m] for m in range(n)) + k[i] * k[j] * (s - p0[0][0]) for j in range(n)]
+                for i in range(n)]
+        for i in range(n):
+            for j in range(n):
+                self.assertAlmostEqual(f.p[i][j], want[i][j], places=12)
+
+    def test_an_unknown_compressor_corrects_the_room_but_teaches_no_figure(self) -> None:
+        """A step whose compressor state is unknown still says where the
+        room is: the air and mass are corrected and no figure moves [D074].
+        In the living room's history the air ran open-loop through a whole
+        night of cooling with its compressor unknown."""
+        f = self.ready()
+        before = list(f.z[2:])
+        r = feed(f, [reading_sample(25.0, known=False)] * 5)
+        self.assertFalse(r.corrected)
+        self.assertIsNotNone(r.innovation)
+        self.assertGreater(f.z[0], 24.0)
+        self.assertEqual(f.z[2:], before)
+
+    def test_an_unknown_minute_in_the_last_40_blocks_learning(self) -> None:
+        """The unit's rate now comes through its delay and lag from the last
+        40 minutes; a minute among them whose compressor was unknown would
+        be learned as running the way its mode asks."""
+        f = self.ready()
+        f._history_known[5] = False
+        r = feed(f, [reading_sample(24.2)] * 5)
+        self.assertFalse(r.corrected)
+        self.assertIn("last 40 minutes", r.reason)
+
+    def test_the_rooms_learned_change_widens_the_air_each_step(self) -> None:
+        f = self.ready()
+        p0 = f.p[0][0]
+        feed(f, [reading_sample(None)] * 5)  # no reading: predict only
+        quiet = f.p[0][0] - p0
+        g = self.ready()
+        g.air_noise = 0.5
+        feed(g, [reading_sample(None)] * 5)
+        self.assertAlmostEqual(g.p[0][0] - p0 - quiet, 0.5, places=6)
+
+    def test_unknown_inputs_widen_the_air_and_mass(self) -> None:
+        z = filt.start_state(24.0)
+        sunless = filt.unknown_input_variance(z, [reading_sample()] * 5)
+        sunny = filt.unknown_input_variance(z, [reading_sample(sun_est=True)] * 5)
+        self.assertEqual(sunless, (0.0, 0.0))
+        self.assertAlmostEqual(sunny[0], (0.4 * 5 / 60) ** 2 / 3)
+        self.assertAlmostEqual(sunny[1], (0.1 * 5 / 60) ** 2 / 3)
+
+    def test_a_lag_at_the_top_of_its_range_can_come_down(self) -> None:
+        """At the top of the range a step up is clamped away; the Jacobian
+        steps down there, so the filter still sees the lag's effect and can
+        move it back (a lag held at 30 against a true 15 for six days)."""
+        z = filt.start_state(24.0)
+        z[physics.I_LN_LAG] = math.log(30.0)
+        si = physics.StepInputs(30.0, 0.0, (12.0,) * 5, ((2.0, 1),) * 40, 1.0, EFF)
+        base = physics.step(z, si)
+        f = filt.jacobian(z, si, base)
+        self.assertNotEqual(f[0][physics.I_LN_LAG], 0.0)
+
+    def test_figures_are_held_within_the_range_the_arithmetic_carries(self) -> None:
+        f = self.ready()
+        f.z[physics.I_LN_C] = 20.0  # e^20 per hour: the exponential would overflow
+        f._hold_unit_in_range()
+        self.assertEqual(f.z[physics.I_LN_C], math.log(1e4))
+        data = self.ready().as_dict()
+        data["z"][physics.I_LN_A] = -40.0
+        self.assertIsNone(filt.HeatFilter.from_dict(data))
+
+    def test_a_step_whose_arithmetic_fails_is_undone(self) -> None:
+        f = self.ready()
+        f.z[physics.I_LN_C] = 20.0
+        z0 = list(f.z)
+        r = feed(f, [reading_sample(24.0)] * 5)
+        self.assertIn("arithmetic failed", r.reason)
+        self.assertEqual(f.z, z0)
+
+    def test_lag_kept_in_range_by_a_correction(self) -> None:
+        f = self.ready()
+        f._history.extend([(2.0, 1)] * physics.HISTORY_MIN)
+        f.z[physics.I_LN_LAG] = math.log(29.9)
+        f.p[physics.I_LN_LAG][0] = f.p[0][physics.I_LN_LAG] = 0.5
+        f.p[physics.I_LN_LAG][physics.I_LN_LAG] = 5.0
+        feed(f, [reading_sample(24.6, running=True)] * 5)
+        self.assertLessEqual(f.z[physics.I_LN_LAG], math.log(30.0) + 1e-12)
+        self.assertGreaterEqual(f.z[physics.I_LN_LAG], 0.0)
+
+    def test_a_stored_lag_outside_the_range_is_relearned(self) -> None:
+        """The office's and living room's stored lags (23,829 and 2,120,772
+        minutes) were learned by a filter that could diverge [R19]."""
+        data = self.ready().as_dict()
+        data["z"][physics.I_LN_LAG] = math.log(23829.4)
+        self.assertIsNone(filt.HeatFilter.from_dict(data))
+        data["z"][physics.I_LN_LAG] = math.log(15.0)
+        self.assertIsNotNone(filt.HeatFilter.from_dict(data))
 
     def test_the_reading_at_the_step_is_the_one_used(self) -> None:
         f = self.ready()
@@ -264,16 +454,35 @@ class Filter(unittest.TestCase):
         r = feed(f, [reading_sample(outdoor=None)] * 5)
         self.assertIn("outdoor temperature was missing", r.reason)
 
-    def test_learned_noise_after_a_day(self) -> None:
+    def test_the_readings_noise_is_what_its_second_differences_show(self) -> None:
+        """R is learned from the reading's second differences, step to step:
+        white noise of variance R gives a second difference of variance 6 R
+        [R21]."""
+        f = self.ready()
+        for y in (24.0, 24.4, 24.0):
+            feed(f, [reading_sample(y)] * 5)
+        floor = 0.04 / 12
+        d2 = (24.0 - 2 * 24.4 + 24.0) ** 2 / 6.0
+        self.assertAlmostEqual(f.reading_jitter, floor + (d2 - floor) / 288, places=12)
+        self.assertAlmostEqual(f.noise, max(floor, f.reading_jitter), places=12)
+
+    def test_a_room_that_moves_is_followed_not_taken_as_a_noisy_sensor(self) -> None:
+        """A room warming steadily, which the model did not forecast: the
+        miss is the room's own change, added to the air's noise, and the
+        estimate follows; the sensor's noise stays at its rounding. Before
+        this, R took the whole miss (2.17 C^2 on a sensor in 0.1 C steps)
+        and the estimate stayed 1 C or more from the room for 12 hours
+        [R21][Sim]."""
         f = self.ready()
         f.corrections = 288
-        f.innovation_avg = 0.05
-        same = physics.StepInputs(24.0, 0.0, (12.0,) * 5, ((0.0, 0),) * 5, 0.0, EFF)
-        base = physics.step(f.z, same)
-        p_tt = la.add(la.sandwich(filt.jacobian(f.z, same, base), f.p), filt.process_noise(False))[0][0]
-        feed(f, [reading_sample(24.0)] * 5)
-        self.assertAlmostEqual(f.noise, max(0.04 / 12, 0.05 - p_tt), places=12)
-        self.assertGreater(f.noise, 0.04 / 12)
+        for _ in range(12):  # an hour as forecast
+            feed(f, [reading_sample(round(f.z[0], 1))] * 5)
+        y = round(f.z[0], 1) + 3.0  # the room warms 3 C and stays (the sun, a door)
+        for _ in range(24):  # two hours
+            feed(f, [reading_sample(y)] * 5)
+        self.assertLess(f.noise, 0.05)  # the sensor is not taken as noisy
+        self.assertGreater(f.air_noise, 0.0)  # the room's own change is
+        self.assertLess(abs(f.z[0] - y), 0.5)  # and the estimate has followed
 
     def test_non_finite_step_undone(self) -> None:
         f = self.ready()
@@ -287,6 +496,7 @@ class Filter(unittest.TestCase):
         feed(f, [reading_sample(24.4)] * 5)
         g = filt.HeatFilter.from_dict(f.as_dict())
         self.assertEqual((g.z, g.p, g.sensor_step, g.noise, g.corrections), (f.z, f.p, f.sensor_step, f.noise, 1))
+        self.assertEqual((g.air_noise, g.reading_jitter, g._prior_avg), (f.air_noise, f.reading_jitter, f._prior_avg))
         bad = f.as_dict()
         bad["z"][3] = float("nan")
         self.assertIsNone(filt.HeatFilter.from_dict(bad))
@@ -567,6 +777,14 @@ class Humidity(unittest.TestCase):
         f.observe_e(20.1)
         return f
 
+    def test_a_surprise_moves_the_humidity_no_more_than_a_gated_one(self) -> None:
+        """As in the heat filter, a reading far outside what the filter
+        expected moves it as a 3.3-sigma surprise at most [R20]."""
+        f = self.ready()
+        self.assertIsNone(f.five_minutes([self.minute()] * 5, 30.0, True))  # 10 hPa from the forecast
+        self.assertLess(f.z[hum.H_E], 25.0)
+        self.assertGreater(f.z[hum.H_E], 20.0)
+
     def test_figure_moves_only_where_it_acts(self) -> None:
         f = self.ready()
         f.p[hum.H_LN_DRY][hum.H_E] = f.p[hum.H_E][hum.H_LN_DRY] = 0.3  # correlated
@@ -722,11 +940,28 @@ class Forecasts(unittest.TestCase):
         self.assertGreaterEqual(pts[0].sigma_t, math.sqrt(0.003))
         p = pts[10]
         self.assertAlmostEqual(p.hci, hci.comfort_index(p.t, p.rh), places=12)
-        self.assertAlmostEqual(p.sigma_hci, p.sigma_t * hci.index_slope(p.t, p.rh), places=12)
+        self.assertAlmostEqual(p.sigma_hci, p.sigma_t, places=12)  # e held: the index moves with T one for one
         self.assertAlmostEqual(p.e, 15.0)
+
+    def test_forecast_starts_from_the_units_rate_now(self) -> None:
+        """The unit reaches a new rate through its delay and lag, taken as
+        one lag of their sum: a forecast from a resting unit asked for 3 C/h
+        cools less in its first 5 minutes than one already at 3 C/h."""
+        f = filt.HeatFilter.start(24.0)
+        cold = fc.forecast(f, None, self.rest(1, kind=models.StepKind.COOL, rate=3.0), e_now=15.0)[0]
+        f.u = 3.0
+        warm = fc.forecast(f, None, self.rest(1, kind=models.StepKind.COOL, rate=3.0), e_now=15.0)[0]
+        self.assertLess(warm.t, cold.t)
+        fig = physics.figures(f.z)
+        tau = (fig.lag_min + fig.delay_min) / 60.0
+        mean = 3.0 * (1.0 - tau / (5 / 60) * (1.0 - math.exp(-(5 / 60) / tau)))
+        ex = physics.exact_step(fig)
+        want = ex.advance((24.0, 24.0), 30.0, 0.0, fig.g(12.0), mean)
+        self.assertAlmostEqual(cold.t, want[0], places=12)
 
     def test_forecast_matches_exact_step(self) -> None:
         f = filt.HeatFilter.start(24.0)
+        f.u = 1.0  # already at the step's rate
         ex = physics.exact_step(physics.figures(f.z))
         want = ex.advance((24.0, 24.0), 30.0, 0.0, physics.figures(f.z).g(12.0), 1.0)
         got = fc.forecast(f, None, self.rest(1, kind=models.StepKind.COOL, rate=1.0), e_now=15.0)[0]

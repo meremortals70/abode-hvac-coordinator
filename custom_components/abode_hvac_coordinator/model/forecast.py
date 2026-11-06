@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..const import COIL_REBOUND_S, FILTER_NOISE_M_PER_H, FILTER_NOISE_T_PER_H
-from ..hci import comfort_index, index_slope, rh_at_temperature
+from ..hci import comfort_index, rh_at_temperature
 from ..hci import vapour_pressure as _vp
 from ..linalg import add, diagonal, sandwich
 from ..models import StepKind
@@ -80,13 +80,22 @@ def forecast(
     e = humidity.z[H_E] if humidity is not None else e_now
     rebound = rebound_steps
     wet_before = False
+    # the unit's rate starts where the filter has it and reaches each
+    # step's rate through its delay and lag, taken as one lag of their sum,
+    # as the plan takes it [Der]
+    u = heat.u
+    tau_h = (fig.lag_min + fig.delay_min) / 60.0
+    decay = math.exp(-STEP_H / tau_h)
+    mean = tau_h / STEP_H * (1.0 - decay)
     out: list[ForecastPoint] = []
     for step_in in inputs:
         wet = step_in.kind in (StepKind.COOL, StepKind.DRY)
         if wet_before and not wet:
             rebound = _REBOUND_STEPS
         wet_before = wet
-        tm = ex.advance(tm, step_in.outdoor, step_in.sun, fig.g(step_in.hour), step_in.rate)
+        u_step = step_in.rate + (u - step_in.rate) * mean
+        u = step_in.rate + (u - step_in.rate) * decay
+        tm = ex.advance(tm, step_in.outdoor, step_in.sun, fig.g(step_in.hour), u_step)
         p2 = add(sandwich(ex.phi, p2), noise)
         if mfig is not None:
             removed = 0.0
@@ -110,7 +119,7 @@ def forecast(
                 e=e,
                 hci=comfort_index(t, rh),
                 sigma_t=sigma_t,
-                sigma_hci=sigma_t * index_slope(t, rh),
+                sigma_hci=sigma_t,  # e is held as a vapour pressure: the index moves one for one with T
             )
         )
     return out

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..const import CYCLE_S, PID_FINE_STEP_C, SETPOINT_MIN_HOLD_S
+
+FILTER_STEP_MIN = 5.0  # the heat filter corrects every 5 minutes (model/filter.py)
 from ..model.physics import Figures, steady_gain_h
 from ..models import PidTerms
 
@@ -42,15 +44,30 @@ def gains(fig: Figures, delay_min: float, lag_min: float, actuation_min: float) 
     half the actuation interval (decision of 27 October 2026); tau_c =
     theta; Kc = 1 / (tau_c + theta); tau_I = min(tau1, 4 (tau_c + theta));
     tau_D = the lag. Series to parallel: Kp = Kc (1 + tau_D / tau_I),
-    Ti = tau_I + tau_D, Td = tau_I tau_D / (tau_I + tau_D).
+    Ti = tau_I + tau_D, Td = tau_I tau_D / (tau_I + tau_D). theta also
+    holds half the filter's 5-minute step.
     """
     tau1 = steady_gain_h(fig)
-    theta = (delay_min + actuation_min / 2.0) / 60.0
+    # the room estimate the PID acts on is corrected every 5 minutes and
+    # carried forward on the model between, so what it learns of the room
+    # arrives on average half a filter step late, as the setpoint's own
+    # interval does [Der]
+    theta = (delay_min + actuation_min / 2.0 + FILTER_STEP_MIN / 2.0) / 60.0
     tc = theta
     kc = 1.0 / (tc + theta)
     t_i = min(tau1, 4.0 * (tc + theta))
     t_d = lag_min / 60.0
     return Gains(kp=kc * (1.0 + t_d / t_i), ti=t_i + t_d, td=t_i * t_d / (t_i + t_d))
+
+
+def estimate_now(t_step: float, slope: float, since_h: float) -> float:
+    """The room estimate the PID acts on: the filter's estimate at its last
+    5-minute step, carried forward on the model's own rate since. The plan's
+    path moves every cycle; an estimate that stood still between filter
+    steps showed an error of slope x time since the step, even for a room
+    exactly on its path, and swung the output across its range every five
+    minutes (4.5) [Der]. Carried at most one filter step."""
+    return t_step + slope * min(max(since_h, 0.0), FILTER_STEP_MIN / 60.0)
 
 
 @dataclass(slots=True)

@@ -62,7 +62,7 @@ from .const import (
     WEATHER_READ_S,
 )
 from .control import RoomControl
-from .control.pid import actuation_minutes, gains
+from .control.pid import actuation_minutes, estimate_now, gains
 from .control.plan import Conditions, PlanInputs, conditions_ahead
 from .delivery import RoomDelivery, outdoor_air_would_cool
 from .economics import (
@@ -92,7 +92,7 @@ from .evidence import (
 )
 from .forms import house_from_data, rooms_from_options
 from .hci import outdoor_apparent_temperature, vapour_pressure
-from .limits import GuardEntry, HouseGuard, RoomLimits, RoomStep
+from .limits import GuardEntry, HouseGuard, RoomLimits, RoomStep, band_distances
 from .memory import (
     HouseState,
     Memory,
@@ -425,11 +425,9 @@ def native_temperature_unit(hass: HomeAssistant, entity_id: str) -> str | None:
     """A climate entity's own temperature unit, from the entity itself:
     its state shows only the system's unit. native_temperature_unit from
     2026.11, temperature_unit before it (climate/entity.py:267,
-    2026.11.0b0; climate/__init__.py:417, 2026.9.4) [HA]. None when the
-    entity is not loaded."""
+    2026.11.0b0) [HA]. None when the entity is not loaded."""
     # the climate entity component, kept under its domain (climate's
-    # DATA_COMPONENT is HassKey("climate"), climate/const.py:16 from 2026.10,
-    # climate/__init__.py:96 in 2026.9) [HA]
+    # DATA_COMPONENT is HassKey("climate"), climate/const.py:16 from 2026.10) [HA]
     component = hass.data.get(CLIMATE_COMPONENT)
     entity = component.get_entity(entity_id) if component is not None else None
     if entity is None:
@@ -441,9 +439,8 @@ def native_temperature_unit(hass: HomeAssistant, entity_id: str) -> str | None:
 def native_limits(hass: HomeAssistant, entity_id: str) -> tuple[float, float] | None:
     """A climate entity's own min_temp and max_temp, in its own unit: what
     Home Assistant checks a setpoint against (climate/services.py:150), not
-    the shown, rounded figures (climate/entity.py:159-164, 2026.11.0b0;
-    climate/__init__.py:727-742, 2026.9.4) [HA]. None when the entity is
-    not loaded."""
+    the shown, rounded figures (climate/entity.py:159-164, 2026.11.0b0)
+    [HA]. None when the entity is not loaded."""
     component = hass.data.get(CLIMATE_COMPONENT)
     entity = component.get_entity(entity_id) if component is not None else None
     if entity is None:
@@ -571,8 +568,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
     def _add_room(self, room: RoomConfig, now: datetime) -> RoomRun:
         stored = self._stored_rooms.pop(room.room_id, None)
         state = stored if stored is not None else RoomState()
-        if stored is None:
-            self.unseeded.append(room.room_id)  # a new room is seeded from history [Prop]
+        if stored is None or stored.model.heat is None:
+            # a new room, or one whose stored heat filter was refused, is
+            # seeded from history [Prop][R19]
+            self.unseeded.append(room.room_id)
         profile = room.profile or state.profile
         if profile is None:
             profile = self._read_profile(room)  # [D048]
@@ -825,7 +824,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                                if (h.outdoor_unit or f"own:{h.climate}") == u) for u in run.outdoor_units}
             seen = tuple(HeadCommand(h.climate, h.mode, None, None, None, None, None, None)
                          for h in run.snapshot.heads if h.compressor is CompressorState.RUNNING and h.mode)
-            entries.append(GuardEntry(run.limits, run.step, run.outdoor_units, observed, seen))
+            c = run.comfort_result
+            outside, from_centre = (band_distances(c.room_index, c.band_low, c.band_high) if c is not None
+                                    else (0.0, 0.0))
+            entries.append(GuardEntry(run.limits, run.step, run.outdoor_units, observed, seen, outside, from_centre))
         allowed = self.guard.apply(now, entries)
 
         # 8-9: Act, Evidence, per room
@@ -1114,9 +1116,11 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             if outdoor is None:
                 outdoor = heat.last_outdoor
             slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now)) - heat.u) if outdoor is not None else 0.0
+            last = run.model.last_step
+            since_h = (now - last.time).total_seconds() / 3600.0 if last is not None else 0.0
             control = run.control.cycle(
                 now=now,
-                t_est=heat.z[0],
+                t_est=estimate_now(heat.z[0], slope, since_h),
                 slope_est=slope,
                 u_min=run.model.unit.lowest_rate(fig, direction),
                 top=_pid_top(top_rate(fig, direction),

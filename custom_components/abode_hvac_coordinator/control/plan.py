@@ -55,7 +55,6 @@ from ..observe import clear_sky_fraction
 from ..sun import SunOnWindow, sun_on_window, sun_position
 
 _E_COEFF, _OFFSET = 0.33, 4.00  # hci.py, Steadman [R2][D010]
-_SLOPE_K = 17.27 * 237.7  # hci.py index_slope
 _REBOUND_STEPS = round(COIL_REBOUND_S / 300.0)
 _POINT_H = STEP_H
 
@@ -198,6 +197,7 @@ class _Node:
     last_kind: StepKind
     rebound: int
     c_start: float
+    u: float = 0.0  # the unit's rate now, through its delay and lag
     actions: list[PlanAction] = field(default_factory=list)
     points: list[PlanPoint] = field(default_factory=list)
 
@@ -230,6 +230,8 @@ class _Fixed:
     cooling: float
     rebound: float
     have_moisture: bool
+    u_decay: float  # e^(-5 min / (lag + delay))
+    u_mean: float  # the share of the step's change in rate seen on average over it
 
 
 def _fixed(inp: PlanInputs) -> _Fixed:
@@ -237,11 +239,19 @@ def _fixed(inp: PlanInputs) -> _Fixed:
     ex = exact_step(fig)
     p2 = [[inp.heat.p[0][0], inp.heat.p[0][1]], [inp.heat.p[1][0], inp.heat.p[1][1]]]
     noise = diagonal([FILTER_NOISE_T_PER_H * STEP_H, FILTER_NOISE_M_PER_H * STEP_H])
-    r = inp.heat.noise or 0.0
+    # the margin is the room's own uncertainty, not the sensor's: the
+    # comfort is the room's [Der]; the room's learned unforecast change is
+    # part of it (model/filter.py air_noise)
+    noise = add(noise, diagonal([inp.heat.air_noise, 0.0]))
     sigmas: list[float] = []
     for _ in inp.conditions:
         p2 = add(sandwich(ex.phi, p2), noise)
-        sigmas.append(math.sqrt(max(p2[0][0], 0.0) + r))
+        sigmas.append(math.sqrt(max(p2[0][0], 0.0)))
+    # the unit reaches a new rate through its delay and lag; the plan takes
+    # them as one first-order lag of their sum (a delay as a lag of its own
+    # length, the first-order Pade form) [Der]
+    tau = (fig.lag_min + fig.delay_min) / 60.0
+    decay = math.exp(-_POINT_H / tau)
     mf = moisture_figures(inp.humidity.z) if inp.humidity is not None else None
     return _Fixed(
         phi=(ex.phi[0][0], ex.phi[0][1], ex.phi[1][0], ex.phi[1][1]),
@@ -257,6 +267,8 @@ def _fixed(inp: PlanInputs) -> _Fixed:
         cooling=mf.cooling if mf else 0.0,
         rebound=mf.rebound if mf else 0.0,
         have_moisture=mf is not None,
+        u_decay=decay,
+        u_mean=tau / _POINT_H * (1.0 - decay),
     )
 
 
@@ -312,8 +324,11 @@ def make_plan(inp: PlanInputs) -> Plan:
     sign = -1.0 if "cool" not in inp.modes and "heat" in inp.modes else 1.0
     d_min = inp.draw_for_rate(sign * (u_min_heat if sign < 0 else u_min)) or DRAW_WITHOUT_LOAD_SENSOR_KW
     d_one = inp.draw_for_rate(sign * 1.0) or DRAW_WITHOUT_LOAD_SENSOR_KW
-    w = inp.p_max * d_min  # [I4][Der]
-    c_start = PLAN_START_COST_SHARE * inp.p_max * d_one * 1.0  # [Prop][Sim][NYE]
+    # a tariff priced at or below zero throughout still values comfort and
+    # starts: the price of no tariff, 1, stands in [Prop]
+    p_ref = inp.p_max if inp.p_max > 0.0 else 1.0
+    w = p_ref * d_min  # [I4][Der]
+    c_start = PLAN_START_COST_SHARE * p_ref * d_one * 1.0  # [Prop][Sim][NYE]
     actions = candidate_actions(inp, u_min, u_min_heat)
     can_carry_on = any(a.kind is inp.last_kind for a in actions)
     draws = {a.rate: (inp.draw_for_rate(a.rate) or DRAW_WITHOUT_LOAD_SENSOR_KW) for a in actions}
@@ -329,6 +344,7 @@ def make_plan(inp: PlanInputs) -> Plan:
         last_kind=inp.last_kind,
         rebound=inp.rebound_steps,
         c_start=c_start,
+        u=inp.heat.u,
     )
     beam = [start]
     best_by_first: dict[PlanAction, _Node] = {}
@@ -375,7 +391,7 @@ def _extend(
         n.rebound = _REBOUND_STEPS
     n.running = runs
     n.last_kind = action.kind
-    u = action.rate if runs else 0.0  # dry removes heat at U_min
+    u_target = action.rate if runs else 0.0  # dry removes heat at U_min
     if action.blinds_closed is None:
         tau = inp.transmission_now
     else:
@@ -387,6 +403,8 @@ def _extend(
         c = inp.conditions[i]
         s = tau * c.f_clear if c.sun_on_glass else 0.0  # S, the model's sun input (4.2)
         g = fx.g[i]
+        u = u_target + (n.u - u_target) * fx.u_mean
+        n.u = u_target + (n.u - u_target) * fx.u_decay
         t = p0 * n.t + p1 * n.m + g0[0] * c.outdoor + g0[1] * s + g0[2] * g + g0[3] * u
         m = p2_ * n.t + p3 * n.m + g1[0] * c.outdoor + g1[1] * s + g1[2] * g + g1[3] * u
         n.t, n.m = t, m
@@ -401,8 +419,11 @@ def _extend(
         if n.rebound > 0:
             n.rebound -= 1
         hci = t + _E_COEFF * n.e - _OFFSET  # the index, T + 0.33 e - 4.00 [D010]
-        sigma = PLAN_MARGIN_SIGMA * fx.sigma_t[i] * (1.0 + _E_COEFF * n.e * _SLOPE_K / (237.7 + t) ** 2)
         band = inp.bands[i]
+        # e is carried as a vapour pressure, so the index moves one for one
+        # with T here; the margin is held to half the band's half-width, so
+        # a band always has an inside to aim for [Der][Set]
+        sigma = min(PLAN_MARGIN_SIGMA * fx.sigma_t[i], 0.5 * band.half_width)
         outside = False
         if band.required:
             outside = hci > band.high - sigma or hci < band.low + sigma

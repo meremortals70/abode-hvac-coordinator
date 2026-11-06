@@ -84,7 +84,7 @@ def read_profile(
     read in the system's temperature unit and stored in C. Home Assistant
     converts the limits to the system's unit but publishes the step in
     the entity's own unit (climate/entity.py capability_attributes,
-    2026.11.0b0; climate/__init__.py, 2026.9.4) [HA], so the step is
+    2026.11.0b0) [HA], so the step is
     converted from native_temperature_unit, or from the system's unit
     where that is not known.
 

@@ -300,7 +300,61 @@ class Plans(unittest.TestCase):
         for pt in p.points:
             near = pt.hci > 27.0 - pt.sigma_hci or pt.hci < 24.0 + pt.sigma_hci
             self.assertEqual(pt.outside, near)
+            self.assertLessEqual(pt.sigma_hci, 0.75)
         self.assertGreater(p.points[-1].sigma_hci, p.points[0].sigma_hci)
+
+    def test_the_margin_is_the_rooms_uncertainty_not_the_sensors(self) -> None:
+        """The margin is the room's forecast uncertainty: the sensor's noise
+        R does not widen it, and it is held to half the band's half-width,
+        so a band always has an inside to aim for [Der][Set]."""
+        quiet, noisy = heat(25.0), heat(25.0)
+        noisy.noise = 2.17  # the learned R the review found
+        a = plan.make_plan(inputs(heat=quiet, modes=frozenset({"fan_only"}), conditions=conds(outdoor=26.0)))
+        b = plan.make_plan(inputs(heat=noisy, modes=frozenset({"fan_only"}), conditions=conds(outdoor=26.0)))
+        self.assertEqual([pt.sigma_hci for pt in a.points], [pt.sigma_hci for pt in b.points])
+        wide = heat(25.0)
+        wide.p[0][0] = 25.0
+        c = plan.make_plan(inputs(heat=wide, modes=frozenset({"fan_only"}), conditions=conds(outdoor=26.0)))
+        self.assertTrue(all(pt.sigma_hci <= 0.5 * 1.5 + 1e-12 for pt in c.points))
+
+    def test_the_unit_reaches_its_rate_through_its_lag(self) -> None:
+        """The plan starts from the unit's rate now and reaches each step's
+        rate through its delay and lag, taken as one lag of their sum; with
+        the humidity filter too, whose own figures must not stand in [Der]."""
+        hum = load("model.humidity").HumidityFilter.start(E_ROOM)
+        inp = inputs(heat=heat(26.5), humidity=hum, conditions=conds(outdoor=33.0))
+        fx = plan._fixed(inp)
+        fig = physics.figures(inp.heat.z)
+        tau = (fig.lag_min + fig.delay_min) / 60.0
+        self.assertAlmostEqual(fx.u_decay, math.exp(-(5 / 60) / tau), places=12)
+        start = plan._Node(t=inp.heat.z[0], m=inp.heat.z[1], e=E_ROOM, outside=0.0, comfort=0.0, energy=0.0,
+                           starts=0, running=False, last_kind=SK.REST, rebound=0, c_start=0.0, u=0.0)
+        n = plan._extend(start, plan.PlanAction(SK.COOL, 3.0, None), 0, inp, fx, 1.0, 0.9)
+        self.assertAlmostEqual(n.u, 3.0 * (1.0 - fx.u_decay ** 6), places=12)
+        p0, p1, _, _ = fx.phi
+        g0 = fx.gam[0]
+        c = inp.conditions[0]
+        u_first = 3.0 * (1.0 - fx.u_mean)
+        want = p0 * start.t + p1 * start.m + g0[0] * c.outdoor + g0[1] * 0.0 + g0[2] * fx.g[0] + g0[3] * u_first
+        self.assertAlmostEqual(n.points[0].t, want, places=12)
+
+    def test_a_plan_starts_from_the_units_rate_now(self) -> None:
+        """A unit still cooling at 3 C/h when the plan is made goes on
+        cooling through its lag, even in a plan that only rests."""
+        resting, running = heat(25.0), heat(25.0)
+        running.u = 3.0
+        kw = {"modes": frozenset({"fan_only"}), "conditions": conds(outdoor=26.0)}
+        a = plan.make_plan(inputs(heat=resting, **kw))
+        b = plan.make_plan(inputs(heat=running, **kw))
+        self.assertLess(b.points[0].t, a.points[0].t - 0.05)
+
+    def test_a_tariff_at_or_below_zero_still_values_comfort(self) -> None:
+        """Prices at or below zero throughout: the comfort weight and the
+        start cost take the price of no tariff, 1, so comfort is still
+        wanted and starts still cost [Prop]."""
+        p = plan.make_plan(inputs(prices=[-0.05] * 12, p_max=-0.05))
+        self.assertGreater(p.w, 0.0)
+        self.assertGreater(p.c_start, 0.0)
 
     def test_comfort_cost_in_half_bands(self) -> None:
         p = plan.make_plan(inputs(modes=frozenset({"fan_only"}), heat=heat(25.0), conditions=conds(outdoor=26.0)))
@@ -422,12 +476,13 @@ def figs(**kw: float) -> Any:
 
 class Gains(unittest.TestCase):
     def test_spec_example(self) -> None:
-        # 4.5: theta 6 min, tau 15 min, tau1 above 48 min: Kc = 5 /h, tau_I = 48 min,
-        # Kp = 6.56 /h, Ti = 63 min, Td = 11.4 min
+        # 4.5: delay 6 min with half the filter's 5-minute step, theta 8.5 min;
+        # tau 15 min; tau1 above 68 min: Kc = 60/17 /h, tau_I = 68 min,
+        # Kp = 4.31 /h, Ti = 83 min, Td = 12.3 min
         g = pid.gains(figs(a=0.1, b=0.5, c=0.15, k=0.05), 6.0, 15.0, 0.0)
-        self.assertAlmostEqual(g.kp, 6.5625, places=9)
-        self.assertAlmostEqual(g.ti * 60, 63.0, places=9)
-        self.assertAlmostEqual(g.td * 60, 48 * 15 / 63, places=9)
+        self.assertAlmostEqual(g.kp, 60 / 17 * (1 + 15 / 68), places=9)
+        self.assertAlmostEqual(g.ti * 60, 83.0, places=9)
+        self.assertAlmostEqual(g.td * 60, 68 * 15 / 83, places=9)
 
     def test_tau1_binds_for_a_fast_room(self) -> None:
         f = figs(a=5.0, b=0.5, c=0.15, k=0.05)
@@ -454,6 +509,35 @@ def step(p: Any, minute: float, **kw: Any) -> Any:
                             "delivered": True}
     args.update(kw)
     return p.step(**args)
+
+
+class EstimateBetweenFilterSteps(unittest.TestCase):
+    def test_a_room_on_its_path_shows_no_error_between_filter_steps(self) -> None:
+        """The plan's path moves every cycle; the filter's estimate only every
+        5 minutes. Carried forward on the model's rate, a room exactly on its
+        path shows no error, and the PID asks for the plan's rate; standing
+        still, the estimate showed slope x time since the step, and the
+        output swung across its range (4.5) [Der]."""
+        z = [0.0] * 27
+        for i, v in zip((2, 3, 4, 5, 6, 7), (0.077, 0.414, 6.544, 0.009, 0.4, 0.1), strict=True):
+            z[i] = math.log(v)
+        g = pid.gains(physics.figures(z), 0.46, 1.87, pid.actuation_minutes(None))
+        p = pid.Pid()
+        t0 = datetime(2026, 11, 6, 14, 0, tzinfo=UTC)
+        slope = -1.0
+        for k in range(21):
+            now = t0 + timedelta(seconds=30 * k)
+            t_path = 26.0 + slope * (30 * k) / 3600.0
+            last = (30 * k) // 300 * 300
+            t_est = pid.estimate_now(26.0 + slope * last / 3600.0, slope, (30 * k - last) / 3600.0)
+            terms = p.step(now=now, g=g, u_plan=3.0, t_est=t_est, t_path=t_path, slope_est=slope,
+                           slope_path=slope, u_min=1.0, top=6.0, delivered=True)
+            self.assertAlmostEqual(terms.error, 0.0, places=9)
+            self.assertAlmostEqual(terms.u, 3.0, places=6)
+
+    def test_carried_at_most_one_filter_step(self) -> None:
+        self.assertEqual(pid.estimate_now(25.0, -2.0, 1.0), 25.0 - 2.0 * 5 / 60)
+        self.assertEqual(pid.estimate_now(25.0, -2.0, -0.1), 25.0)
 
 
 class PidTests(unittest.TestCase):

@@ -417,6 +417,12 @@ async def async_send(
             await hass.services.async_call(call.domain, call.service, dict(call.data), blocking=True, context=context)
         except HomeAssistantError as err:
             ok, error = False, str(err) or type(err).__name__
+        except Exception as err:  # noqa: BLE001
+            # another integration's climate entity can raise its own error
+            # (a timeout, a connection error), and Home Assistant's call
+            # validation raises probatio's (core.py, 2026.11.0): the command
+            # is recorded as failed and the room's other commands still go
+            ok, error = False, str(err) or type(err).__name__
         record = CommandRecord(now, room_id, call.entity_id, call.service, call.data, about.rate,
                                about.room_temperature, about.centre_c, by_user, ok, error)
         log.add(record)

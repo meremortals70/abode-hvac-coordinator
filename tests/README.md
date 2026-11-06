@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | `tests/pure` | Python 3.14 only, nothing installed. Tests the decision modules, the helpers and `forms.py` directly; `test_structure.py` fails if any of them imports Home Assistant | `python3 -m unittest discover -s tests/pure -t .` |
 | `tests/sim` | Python 3.14 only. The whole loop on a simulated room for three days (about 75 seconds) | `python3 -m unittest discover -s tests/sim -t .` |
-| `tests/ha` | The test helpers for the release under test: from 2026.11, Home Assistant's own `pytest-homeassistant`, installed from the core tag (`pip install "pytest-homeassistant @ git+https://github.com/home-assistant/core@2026.11.0#subdirectory=packages/pytest-homeassistant"`); before it, `pytest-homeassistant-custom-component` (0.13.375 for 2026.10.4, 0.13.367 for 2026.9.4). `tests/ha/harness.py` imports from whichever is installed. Sets up a config entry and goes through Home Assistant as a user would | `python -m pytest tests/ha` |
+| `tests/ha` | The test helpers for the release under test: from 2026.11, Home Assistant's own `pytest-homeassistant`, installed from the core tag (`pip install "pytest-homeassistant @ git+https://github.com/home-assistant/core@2026.11.0#subdirectory=packages/pytest-homeassistant"`); before it, `pytest-homeassistant-custom-component` (0.13.375 for 2026.10.4). `tests/ha/harness.py` imports from whichever is installed. Sets up a config entry and goes through Home Assistant as a user would | `python -m pytest tests/ha` |
 
 Coverage is measured over the pure and Home Assistant tests together:
 

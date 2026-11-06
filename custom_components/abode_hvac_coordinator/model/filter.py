@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any
 
 from ..const import (
+    FIGURE_LOG_RANGE,
+    FILTER_GATE_NIS,
     FILTER_JACOBIAN_DELTA,
     FILTER_NOISE_DELAY,
     FILTER_NOISE_FIGURE,
@@ -37,6 +39,8 @@ from ..const import (
     FILTER_START_VAR_T,
     SENSOR_NOISE_SETTLE_CORRECTIONS,
     SENSOR_NOISE_WEIGHT,
+    UNIT_DELAY_RANGE_MIN,
+    UNIT_LAG_RANGE_MIN,
 )
 from ..linalg import (
     Matrix,
@@ -45,6 +49,7 @@ from ..linalg import (
     is_finite,
     outer,
     sandwich,
+    scale,
     subtract,
     symmetrise,
 )
@@ -67,6 +72,7 @@ from .physics import (
     STATE_SIZE,
     StepInputs,
     StepResult,
+    curve_rate,
     figures,
     step,
 )
@@ -179,16 +185,35 @@ def start_uncertainty() -> Matrix:
     return diagonal(d)
 
 
-def process_noise(compressor_ran: bool) -> Matrix:
+def process_noise(compressor_ran: bool, unknown_t: float = 0.0, unknown_m: float = 0.0) -> Matrix:
     """Q per 5 minutes; the air's noise is raised while the unit runs,
-    because the unit's rate is itself learned [Prop][NYE]."""
+    because the unit's rate is itself learned [Prop][NYE]; and by the
+    variance of an input the step could not know (unknown_t, unknown_m:
+    see unknown_input_variance) [Der]."""
     step_h = STEP_MIN / 60.0
-    t_noise = FILTER_NOISE_T_PER_H * step_h
+    t_noise = FILTER_NOISE_T_PER_H * step_h + unknown_t
     if compressor_ran:
         t_noise += (FILTER_RUNNING_RATE_NOISE_C_PER_H * step_h) ** 2
-    d = [t_noise, FILTER_NOISE_M_PER_H * step_h] + [FILTER_NOISE_FIGURE] * (STATE_SIZE - 4)
+    d = [t_noise, FILTER_NOISE_M_PER_H * step_h + unknown_m] + [FILTER_NOISE_FIGURE] * (STATE_SIZE - 4)
     d += [FILTER_NOISE_LN_LAG, FILTER_NOISE_DELAY]
     return diagonal(d)
+
+
+_LOG_FIGURES = frozenset(
+    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, *range(I_COOL, I_COOL + CURVE_POINTS),
+     *range(I_HEAT, I_HEAT + CURVE_POINTS))
+)
+
+
+def _at_top(j: int, value: float) -> bool:
+    """Whether a step up in z[j] would pass the top of its range."""
+    if j == I_LN_LAG:
+        return value + FILTER_JACOBIAN_DELTA > math.log(UNIT_LAG_RANGE_MIN[1])
+    if j == I_DELAY:
+        return value + FILTER_JACOBIAN_DELTA > UNIT_DELAY_RANGE_MIN[1]
+    if j in _LOG_FIGURES:
+        return value + FILTER_JACOBIAN_DELTA > FIGURE_LOG_RANGE[1]
+    return False
 
 
 def jacobian(z: Sequence[float], inputs: StepInputs, base: StepResult) -> Matrix:
@@ -197,11 +222,67 @@ def jacobian(z: Sequence[float], inputs: StepInputs, base: StepResult) -> Matrix
     f = [[0.0] * n for _ in range(n)]
     for j in range(n):
         moved = list(z)
-        moved[j] += FILTER_JACOBIAN_DELTA
+        # at the top of the lag's or delay's range a step up is clamped away
+        # and would show no effect: there the step is taken downward
+        delta = -FILTER_JACOBIAN_DELTA if _at_top(j, z[j]) else FILTER_JACOBIAN_DELTA
+        moved[j] += delta
         out = step(moved, inputs).z
         for i in range(n):
-            f[i][j] = (out[i] - base.z[i]) / FILTER_JACOBIAN_DELTA
+            f[i][j] = (out[i] - base.z[i]) / delta
     return f
+
+
+def unknown_input_variance(z: Sequence[float], minutes: Sequence[MinuteSample]) -> tuple[float, float]:
+    """The variance a step's unknown inputs add to the air and the mass
+    over 5 minutes [Der]. A minute whose compressor state is unknown is run
+    at the rate its mode and effort ask, r; the unit may have delivered
+    anything from 0 to r, so the air may be out by up to r x 5 min. Sun
+    that had to be assumed is taken as full (1); the true sun lies between
+    0 and 1, so the air may be out by up to s x 5 min and the mass by
+    m x 5 min. Each is taken as the mean square of a miss spread evenly
+    from 0 to its largest, one third of the largest squared."""
+    fig = figures(z)
+    step_h = STEP_MIN / 60.0
+    var_t = var_m = 0.0
+    unknown = [m for m in minutes if not m.compressor_known and m.mode_direction != 0]
+    if unknown:
+        steps = fig.cool_steps if unknown[0].mode_direction > 0 else fig.heat_steps
+        r = max(curve_rate(curve_efforts(), steps, m.effort) for m in unknown)
+        var_t += (r * step_h * len(unknown) / STEP_MIN) ** 2 / 3.0
+    if any(m.sun_estimated for m in minutes):
+        var_t += (fig.s * step_h) ** 2 / 3.0
+        var_m += (fig.m * step_h) ** 2 / 3.0
+    return var_t, var_m
+
+
+def state_only() -> list[bool]:
+    """The air and the mass only: a step whose inputs were not all known
+    corrects where the room is and teaches no figure [D074]."""
+    acts = [False] * STATE_SIZE
+    acts[I_T] = acts[I_M] = True
+    return acts
+
+
+def acting(minutes: Sequence[MinuteSample], history: Sequence[tuple[float, int]]) -> list[bool]:
+    """Which parts of the state a step may correct: the air, the mass, the
+    exchange figures and the heat pattern always; the sun's two figures
+    only on a step with sun on the glass; each direction's curve only when
+    the unit worked that way in the last 40 minutes, and the delay and lag
+    when it worked either way. A figure whose input did not act has nothing
+    in the reading to learn from: without this its estimate walks on the
+    filter's cross-covariances alone, as the mass's sun gain did in a room
+    whose sun was never measured (0.1 to 87 per hour). The humidity filter
+    learns the same way [D026][D060][R16]."""
+    sun = any(m.sun > 0.0 for m in minutes)
+    cool = any(d > 0 for _, d in history)
+    heat = any(d < 0 for _, d in history)
+    acts = [True] * STATE_SIZE
+    acts[I_LN_S] = acts[I_LN_M] = sun
+    for j in range(CURVE_POINTS):
+        acts[I_COOL + j] = cool
+        acts[I_HEAT + j] = heat
+    acts[I_LN_LAG] = acts[I_DELAY] = cool or heat
+    return acts
 
 
 @dataclass(slots=True)
@@ -220,6 +301,12 @@ class HeatFilter:
     _last_reading: float | None = None
     _minutes: list[MinuteSample] = field(default_factory=list)
     _history: deque[tuple[float, int]] = field(default_factory=lambda: deque(maxlen=HISTORY_MIN))
+    _history_known: deque[bool] = field(default_factory=lambda: deque(maxlen=HISTORY_MIN))
+    air_noise: float = 0.0  # learned: the room's own unforecast change, C^2 per step
+    reading_jitter: float | None = None  # learned: the reading's own noise, C^2
+    _prior_avg: float | None = None  # running average of P-[T,T] less air_noise
+    _step_readings: deque[float] = field(default_factory=lambda: deque(maxlen=3))
+    _seen_minutes: int = 0  # minutes collected since start-up
     recent: deque[FilterStep] = field(default_factory=lambda: deque(maxlen=72))
 
     @classmethod
@@ -251,6 +338,8 @@ class HeatFilter:
         self.observe_reading(sample.reading)
         self._minutes.append(sample)
         self._history.append((sample.effort, sample.direction))
+        self._history_known.append(sample.compressor_known)
+        self._seen_minutes += 1
 
     @property
     def delay_min(self) -> float:
@@ -292,65 +381,138 @@ class HeatFilter:
             curve_efforts=self.efforts,
         )
         ran = any(m.compressor_running for m in minutes)
-        reason = self._why_not(minutes, complete, bool(outdoors))
+        blocked = self._why_not_at_all(minutes)
+        reason = blocked or self._why_not(minutes, complete, bool(outdoors))
+        unknown_t, unknown_m = unknown_input_variance(self.z, minutes) if blocked is None else (0.0, 0.0)
         z_before, p_before, u_before = list(self.z), [r[:] for r in self.p], self.u
-        base = step(self.z, inputs)
-        f = jacobian(self.z, inputs, base)
-        p_minus = add(sandwich(f, self.p), process_noise(ran))
+        try:
+            base = step(self.z, inputs)
+            f = jacobian(self.z, inputs, base)
+        except (ArithmeticError, ValueError):
+            # the matrix exponential overflowed or its matrix was singular:
+            # nothing is changed, and the step says why [Der]
+            failed = FilterStep(now, self.z[I_T], False, "the model's arithmetic failed; step undone", None, inputs,
+                                (), ran)
+            self.recent.append(failed)
+            return failed
+        p_minus = add(sandwich(f, self.p), process_noise(ran, unknown_t + self.air_noise, unknown_m))
         self.z, self.p, self.u = base.z, symmetrise(p_minus), base.u_end
         predicted = self.z[I_T]
         innovation: float | None = None
         reading = minutes[-1].reading
-        if reason is None and reading is not None:
-            innovation = self._correct(reading)
-            self.last_correction = now
+        if blocked is None and reading is not None:
+            # the reading always tells the filter where the room is; the
+            # figures learn only from a step whose inputs were all known
+            # [D074][Prop]. Without this the air and mass ran open-loop
+            # through every step with the unit running and its compressor
+            # unknown: a whole night in the living room's history
+            learn = reason is None
+            acts = acting(minutes, history) if learn else state_only()
+            innovation = self._correct(reading, acts, learn=learn)
+            if learn:
+                self.last_correction = now
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z) and math.isfinite(self.u)):
             self.z, self.p, self.u = z_before, p_before, u_before
             result = FilterStep(now, predicted, False, "a figure was not a finite number; step undone", None,
                                 inputs, base.u_path, ran)
         else:
-            result = FilterStep(now, predicted, innovation is not None, reason, innovation, inputs, base.u_path, ran)
+            result = FilterStep(now, predicted, innovation is not None and reason is None, reason, innovation, inputs,
+                                base.u_path, ran)
         self.recent.append(result)
         return result
 
-    def _why_not(self, minutes: Sequence[MinuteSample], complete: bool, outdoor_seen: bool) -> str | None:
-        """The reason the step corrects nothing, or None [D074][Prop]."""
+    def _why_not_at_all(self, minutes: Sequence[MinuteSample]) -> str | None:
+        """The reason the reading cannot be used at all, or None [D074]."""
         if minutes[-1].reading is None:
             return "the room reading was stood in or missing"
+        if self.sensor_step is None or self.noise is None or self.innovation_avg is None:
+            return "the sensor's step is not yet known"
+        return None
+
+    def _why_not(self, minutes: Sequence[MinuteSample], complete: bool, outdoor_seen: bool) -> str | None:
+        """The reason the step's figures learn nothing, or None: the room
+        and mass are still corrected [D074][Prop]."""
         if not all(m.compressor_known for m in minutes):
             return "the compressor state, or the way it ran, was unknown"
+        if not all(self._history_known):
+            # the unit's rate now comes through its delay and lag from the
+            # last 40 minutes: a minute among them whose compressor was not
+            # known would be learned as running the way its mode asks
+            return "the compressor state was unknown in the unit's last 40 minutes"
         if any(m.sun_estimated for m in minutes):
             return "the sun had to be assumed"
         if not complete:
             return "fewer than five minutes were seen"
         if not outdoor_seen:
             return "the outdoor temperature was missing"
-        if self.sensor_step is None or self.noise is None or self.innovation_avg is None:
-            return "the sensor's step is not yet known"
-        if len(self._history) < HISTORY_MIN:
-            # since start-up the unit's rate through its delay and lag is not
-            # known: the filter would take the unit as having rested, and
-            # learn the delay, lag and curve from that
-            return "the unit's last 40 minutes are not yet known since start-up"
+        fig = figures(self.z)
+        if self._seen_minutes < max(HISTORY_MIN, fig.delay_min + 3.0 * fig.lag_min):
+            # the unit's rate is not kept across a restart and starts again
+            # at 0: until it has come through the delay and three lags (95 %
+            # of the way, e^-3) from minutes actually seen, the filter would
+            # take the unit as slower than it is and learn the curve high
+            return "the unit's rate is not yet known since start-up"
         return None
 
-    def _correct(self, reading: float) -> float:
-        """CORRECT [R6][R17][Prop][Sim]."""
+    def _correct(self, reading: float, acts: Sequence[bool], *, learn: bool = True) -> float:
+        """CORRECT [R6][R17][Prop][Sim].
+
+        What the innovations show is split between the reading and the
+        room [R17][R21]. The reading's own noise R is what its second
+        differences show, step to step: a sensor's error is new each
+        reading, while a room's change carries on, and over 5-minute steps
+        a carried-on change hardly shows in a second difference. The rest
+        of the innovations' variance, past R and the filter's own
+        uncertainty, is the room's unforecast change: it is added to the
+        air's noise, so a room that has moved is followed, not taken as a
+        noisy sensor. Without the split, R took the whole miss: 2.17 C^2
+        on a sensor in 0.1 C steps, and the estimate stayed 1 C or more
+        from the room for 12 hours [Sim: replay of the house's history].
+        """
         assert self.sensor_step is not None and self.noise is not None and self.innovation_avg is not None
         nu = reading - self.z[I_T]
         p_tt = self.p[I_T][I_T]
         floor = self.sensor_step**2 / 12.0
-        if self.corrections >= SENSOR_NOISE_SETTLE_CORRECTIONS:
-            self.noise = max(floor, self.innovation_avg - p_tt)
-        else:
-            self.noise = floor
-        s = p_tt + self.noise
+        self._step_readings.append(reading)
+        if len(self._step_readings) == 3:
+            y0, y1, y2 = self._step_readings
+            d2 = (y2 - 2.0 * y1 + y0) ** 2 / 6.0  # white noise of variance R gives 6 R
+            j0 = self.reading_jitter if self.reading_jitter is not None else floor
+            self.reading_jitter = j0 + (d2 - j0) * SENSOR_NOISE_WEIGHT
+        self.noise = max(floor, self.reading_jitter if self.reading_jitter is not None else floor)
+        base = p_tt - self.air_noise
+        self._prior_avg = base if self._prior_avg is None else self._prior_avg + (base - self._prior_avg) * SENSOR_NOISE_WEIGHT
+        # a reading far outside what the filter expected is weighted down in
+        # proportion, never taken as exact: its variance is at least
+        # nu^2 / 10.83, so it moves the state as a 3.3-sigma surprise would
+        # at most [R20]. The noise is still learned from the whole nu [R17].
+        s = max(p_tt + self.noise, nu * nu / FILTER_GATE_NIS)
+        r_used = s - p_tt
         self.innovation_avg += (nu * nu - self.innovation_avg) * SENSOR_NOISE_WEIGHT
-        k = [self.p[i][I_T] / s for i in range(STATE_SIZE)]
+        if self.corrections >= SENSOR_NOISE_SETTLE_CORRECTIONS or not learn:
+            self.air_noise = max(0.0, self.innovation_avg - self._prior_avg - self.noise)
+        k = [self.p[i][I_T] / s if acts[i] else 0.0 for i in range(STATE_SIZE)]
         self.z = [zi + ki * nu for zi, ki in zip(self.z, k, strict=True)]
-        self.p = symmetrise(subtract(self.p, outer(k, self.p[I_T])))
-        self.corrections += 1
+        # Joseph form, P = (I - K H) P (I - K H)^T + K R K^T with H = e_T: it
+        # holds for a gain that leaves figures out, where P - K H P does not
+        q = subtract(self.p, outer(k, self.p[I_T]))
+        q = subtract(q, outer([row[I_T] for row in q], k))
+        self.p = symmetrise(add(q, scale(outer(k, k), r_used)))
+        self._hold_unit_in_range()
+        if learn:
+            self.corrections += 1
         return nu
+
+    def _hold_unit_in_range(self) -> None:
+        """The delay and lag are held in their ranges in the state itself,
+        not only where they are read, so the filter cannot carry either
+        beyond its range unseen [R19]; and every figure within the range the
+        arithmetic can carry (FIGURE_LOG_RANGE) [Der]."""
+        lo, hi = (math.log(v) for v in UNIT_LAG_RANGE_MIN)
+        self.z[I_LN_LAG] = min(max(self.z[I_LN_LAG], lo), hi)
+        self.z[I_DELAY] = min(max(self.z[I_DELAY], UNIT_DELAY_RANGE_MIN[0]), UNIT_DELAY_RANGE_MIN[1])
+        for i in _LOG_FIGURES:
+            self.z[i] = min(max(self.z[i], FIGURE_LOG_RANGE[0]), FIGURE_LOG_RANGE[1])
 
     def as_dict(self) -> dict[str, Any]:
         """What Memory keeps: 27 numbers, 27 x 27, q, R and v."""
@@ -362,6 +524,9 @@ class HeatFilter:
             "v": self.innovation_avg,
             "corrections": self.corrections,
             "last_outdoor": self.last_outdoor,
+            "air_noise": self.air_noise,
+            "jitter": self.reading_jitter,
+            "prior_avg": self._prior_avg,
         }
 
     @classmethod
@@ -377,6 +542,13 @@ class HeatFilter:
             return None
         if not all(math.isfinite(x) for x in z) or not is_finite(p):
             return None
+        lo, hi = (math.log(v) for v in UNIT_LAG_RANGE_MIN)
+        if not (lo - 1e-9 <= z[I_LN_LAG] <= hi + 1e-9) or any(
+            not (FIGURE_LOG_RANGE[0] - 1e-9 <= z[i] <= FIGURE_LOG_RANGE[1] + 1e-9) for i in _LOG_FIGURES
+        ):
+            # learned before the lag was held in range: a lag outside it was
+            # learned by a filter that could diverge, and is relearned [R19]
+            return None
         return cls(
             z=z,
             p=p,
@@ -385,6 +557,9 @@ class HeatFilter:
             innovation_avg=_finite_or_none(data.get("v")),
             corrections=int(data.get("corrections", 0)),
             last_outdoor=_finite_or_none(data.get("last_outdoor")),
+            air_noise=max(_finite_or_none(data.get("air_noise")) or 0.0, 0.0),
+            reading_jitter=_finite_or_none(data.get("jitter")),
+            _prior_avg=_finite_or_none(data.get("prior_avg")),
         )
 
 
