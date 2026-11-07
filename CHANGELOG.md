@@ -6,6 +6,20 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.2 - 2026-11-07
+
+### Fixed
+
+- **Shared outdoor unit message.** Where a room on a shared outdoor unit is
+  left as it is and runs the other way, the room that rests is now told
+  another room is "left as it is, running the other way". It said "run by
+  hand" even when the room was left as it is for another reason (Automatic
+  control off, an empty-room warning counting down). Wording only; what the
+  guard does is unchanged [D020].
+- **Device version test.** The test of a room's device compared its software
+  version with a fixed "0.10.0", so it failed on 0.10.1. It now reads the
+  version from the manifest.
+
 ## 0.10.1 - 2026-11-07
 
 A rewrite of the whole component to the design specification of 23 October

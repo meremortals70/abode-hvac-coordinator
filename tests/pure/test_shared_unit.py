@@ -99,7 +99,7 @@ class HandRunRoomDirection(unittest.TestCase):
             r = g.apply(now, [ea, eb])
         self.assertIs(r["a"].kind, SK.NONE)
         self.assertIsNot(r["b"].kind, SK.COOL)
-        self.assertIn("run by hand", r["b"].reasons[-1])
+        self.assertIn("left as it is, running the other way", r["b"].reasons[-1])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,6 +25,11 @@ from .harness import (
 )
 
 pytestmark = pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+
+# the room device's software version is the manifest's, whatever the release
+_MANIFEST_VERSION = json.loads(
+    (Path(__file__).parents[2] / "custom_components" / "abode_hvac_coordinator" / "manifest.json").read_text()
+)["version"]
 
 
 async def test_setup_runs_the_first_cycle_before_any_entity(
@@ -50,7 +57,7 @@ async def test_devices_room_reached_through_the_house(hass: HomeAssistant,
     assert house.entry_type is dr.DeviceEntryType.SERVICE
     assert room.via_device_id == house.id
     assert (room.name, room.manufacturer, room.model, room.sw_version) == ("Office", "Abode", "Room coordinator",
-                                                                           "0.10.0")
+                                                                           _MANIFEST_VERSION)
 
 
 async def test_unload_writes_memory_and_remove_deletes_it(
