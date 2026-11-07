@@ -5,6 +5,8 @@ warning, as Home Assistant's are: the cycle and the setup carry on
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -12,7 +14,8 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 
 from .conftest import HOUSE, set_house_states, setup_entry, stored_room
-from .test_cycle import TARIFF, _issue, _tick
+from .harness import MockConfigEntry
+from .test_cycle import TARIFF, _issue, _tick, solar_source  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 
@@ -59,3 +62,22 @@ async def test_a_tariff_timing_out_raises_the_repair(
     entry = await setup_entry(hass, data={**HOUSE, "tariff_entry": TARIFF})
     assert entry.state is ConfigEntryState.LOADED
     assert _issue(hass, "tariff_unreadable") is not None
+
+
+async def test_a_solar_source_timing_out_raises_the_repair(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], solar_source: MockConfigEntry  # noqa: F811
+) -> None:
+    """Whatever a forecast integration raises, a timeout too, the forecast is
+    unreadable and the repair says so; setup carries on [D061]."""
+    set_house_states(hass)
+    hass.states.async_set("sensor.solar", "3.0", {"unit_of_measurement": "kW"})
+
+    async def forecast(hass: HomeAssistant, entry_id: str) -> Any:
+        raise TimeoutError
+
+    with patch("homeassistant.components.energy.websocket_api.async_get_energy_platforms",
+               return_value={"forecast_solar": forecast}):
+        entry = await setup_entry(hass, data={**HOUSE, "solar_power": "sensor.solar",
+                                              "solar_forecast_sources": [solar_source.entry_id]})
+    assert entry.state is ConfigEntryState.LOADED, f"entry state {entry.state}"
+    assert _issue(hass, "solar_forecast_unreadable") is not None

@@ -1,7 +1,7 @@
 """The only matrix arithmetic the component needs (Section 9) [Der][R18].
 
 Matrices are lists of rows of floats; vectors are lists of floats. The
-largest matrix is the heat filter's 25 x 25 uncertainty. Nothing needs
+largest matrix is the heat filter's 27 x 27 uncertainty. Nothing needs
 more than multiplying, transposing, an outer product and a 2 x 2
 exponential and inverse, so no external package is used.
 """

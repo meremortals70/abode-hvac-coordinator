@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_RESTORED
 from homeassistant.core import Context, CoreState, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -108,12 +107,11 @@ from .memory import (
 from .model import RoomModel
 from .model.forecast import ForecastInput, drift_now
 from .model.physics import Figures, figures
-from .model.unit import effort_for_rate, head_effort, top_rate
+from .model.unit import effort_for_rate, head_effort, seen_running, top_rate
 from .models import (
     CapabilityProfile,
     ComfortResult,
     CommandRecord,
-    CompressorState,
     ControlResult,
     DayScore,
     DeliveryResult,
@@ -310,6 +308,8 @@ class RoomRun:
         return tuple(dict.fromkeys(h.outdoor_unit or f"own:{h.climate}" for h in self.config.heads))
 
 
+
+
 def _by_unit(draws: Mapping[tuple[str, str], float | None]) -> dict[str, float | None]:
     """Each outdoor unit's draw now: the sum over the rooms running on it;
     None if any of theirs is not yet learned [D028][D097]."""
@@ -378,7 +378,7 @@ def _room_power(run: RoomRun, draw: Callable[[float], float | None]) -> tuple[Ro
         outdoor_unit=run.outdoor_units[0],
         management=run.config.power_management,
         precool_on=run.comfort_result.precool_on,
-        compressor_running=any(h.compressor is CompressorState.RUNNING for h in run.snapshot.heads),
+        compressor_running=any(seen_running(h) for h in run.snapshot.heads),
         top_rate=top_rate(fig, d) if fig is not None else 0.0,
         lowest_rate=run.model.unit.lowest_rate(fig, d) if fig is not None else 0.0,
     )
@@ -562,7 +562,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         data = await self.memory.async_load()
         self._stored_rooms, self.house_state = from_data(data, has_load_sensor=self.house.house_load is not None)
         if self.house.grid_power and self.house.grid_positive_is_import is not None:
-            self.grid = GridChecks(self.house.grid_positive_is_import)
+            self.grid = GridChecks.restore(self.house.grid_positive_is_import, self.house_state.grid)
         self._words = await async_get_translations(self.hass, self.hass.config.language, "exceptions", [DOMAIN])
         now = dt_util.utcnow()
         for room in rooms_from_options(self.config_entry.options):
@@ -622,6 +622,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             r.state.yesterday = r.scorecard.yesterday
             r.state.arbiter = r.control.arbiter
             rooms[rid] = r.state
+        self.house_state.grid = self.grid.as_dict() if self.grid is not None else {}
         return to_data(rooms, self.house_state)
 
     async def async_shutdown_rooms(self) -> None:
@@ -738,9 +739,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                     continue
                 for when, value in result["wh_hours"].items():
                     wh[when] = wh.get(when, 0.0) + float(value)
-        except (HomeAssistantError, ValueError, TypeError, KeyError, AttributeError) as err:
-            # another integration's forecast code: whatever it raises, the
-            # forecast is unreadable and a repair says so [D061]
+        except Exception as err:  # noqa: BLE001
+            # another integration's forecast code: whatever it raises (a
+            # timeout too), the forecast is unreadable and a repair says so
+            # [D061]
             self.solar, self.solar_error = None, str(err) or type(err).__name__
             return
         slices: list[SolarSlice] = []
@@ -808,7 +810,10 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         location = (self.hass.config.latitude, self.hass.config.longitude)
         head_units = {h.climate: h.outdoor_unit or f"own:{h.climate}" for r in self.rooms.values()
                       for h in r.config.heads}
-        draw_now = _by_unit(self._running_draws())
+        # the house-load step (4.8, source 3) judges a head whose compressor
+        # no other source answers, so it is given each unit's learned draw
+        # whatever its compressor is seen to do [D028][Prop]
+        draw_now = _by_unit(self._running_draws(running_only=False))
         shared = self._shared_climates()
 
         # 1-3: Observe, Model, Comfort, per room
@@ -841,10 +846,12 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         entries = []
         for run in runs:
             assert run.step is not None and run.snapshot is not None
-            observed = {u: any(h.compressor is CompressorState.RUNNING for h in run.snapshot.heads
+            # a head running unseen counts, so a hand-run unit's way holds
+            # and its run is not taken as a stop [D016][D020]
+            observed = {u: any(seen_running(h) for h in run.snapshot.heads
                                if (h.outdoor_unit or f"own:{h.climate}") == u) for u in run.outdoor_units}
             seen = tuple(HeadCommand(h.climate, h.mode, None, None, None, None, None, None)
-                         for h in run.snapshot.heads if h.compressor is CompressorState.RUNNING and h.mode)
+                         for h in run.snapshot.heads if seen_running(h) and h.mode)
             c = run.comfort_result
             outside, from_centre = (band_distances(c.room_index, c.band_low, c.band_high) if c is not None
                                     else (0.0, 0.0))
@@ -968,18 +975,19 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         run.state.model = work
         return work
 
-    def _running_draws(self) -> dict[tuple[str, str], float | None]:
+    def _running_draws(self, *, running_only: bool = True) -> dict[tuple[str, str], float | None]:
         """Each room's learned draw now on each outdoor unit it runs, at the
         mean effort of its running heads on that unit, from the last cycle's
         snapshots: (outdoor unit, room id) to kW [D028][I10]. A unit's draw
-        is the sum over the rooms on it."""
+        is the sum over the rooms on it. With running_only False, every head
+        with an effort counts, its compressor known or not."""
         efforts: dict[tuple[str, str], list[float]] = {}
         for run in self.rooms.values():
             if run.snapshot is None:
                 continue
             for h in run.snapshot.heads:
                 e = head_effort(h)
-                if e is not None and h.compressor is CompressorState.RUNNING:
+                if e is not None and (seen_running(h) or not running_only):
                     efforts.setdefault((h.outdoor_unit, run.config.room_id), []).append(e)
         draw = self.house_state.draw
         return {k: draw.draw_at(k[0], sum(v) / len(v)) for k, v in efforts.items()}
@@ -1026,7 +1034,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         self.load_history.add(now, load)
         running = frozenset(
             h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads
-            if h.compressor is CompressorState.RUNNING
+            if seen_running(h)
         )
         self.budget.loads.add(now, load, solar, running)
         for unit in {h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads}:
@@ -1232,19 +1240,27 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             records = await async_send(self.hass, calls, room_id=run.config.room_id, log=self.commands, now=now,
                                        about=about)
         for rec in records:
-            if rec.ok:
-                self._last_command[rec.entity_id] = now  # Act tells Model what was sent [D081]
+            if rec.ok and rec.entity_id.startswith("climate."):
+                # Act tells Model what was sent [D081]; a blind moved with a
+                # start is not another unit changing [D028]
+                self._last_command[rec.entity_id] = now
                 if rec.service == "set_temperature":
                     head = next((h for h in result.heads if h.climate == rec.entity_id), None)
                     if head is not None:
-                        run.commanded_c = head.setpoint
+                        # a range-only unit is sent a range: its middle [D024]
+                        if head.setpoint is not None:
+                            run.commanded_c = head.setpoint
+                        elif head.setpoint_low is not None and head.setpoint_high is not None:
+                            run.commanded_c = (head.setpoint_low + head.setpoint_high) / 2.0
         wanted = [h.wanted for h in (run.delivery_result.heads if run.delivery_result else ()) if h.wanted is not None]
         if wanted:
             run.wanted_c = wanted[0]
         run.trace = trace(snapshot=snap, answers=run.answers, comfort=comfort, economics=run.economics,
                           control=run.control_result, other_proposal=run.other_proposal,
                           delivery=run.delivery_result, limits=result, choices=run.state.choices)
-        running = any(h.compressor is CompressorState.RUNNING for h in snap.heads)
+        # running as the power budget counts it: a unit running unseen with
+        # its draw not yet learned leaves the day unpriced [D097]
+        running = any(seen_running(h) for h in snap.heads)
         draws = self._running_draws()
         rid = run.config.room_id
         # the room's own share of each outdoor unit it runs, not the whole unit's draw [D097];
@@ -1338,7 +1354,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             speech_wanted=any(r.config.announce and r.config.announce_through for r in self.rooms.values()),
             speech_engine=self._engine(),
             speech_engines_available=len(self.hass.states.async_entity_ids(TTS_DOMAIN)),
-            solar_forecast_configured=bool(self.house.solar_forecast_sources),
+            # the Energy dashboard's forecast is read when none is chosen: its failure
+            # raises the repair too [D061]
+            solar_forecast_configured=self.house.solar_power is not None,
             solar_forecast_error=self.solar_error,
             grid_sign_contradicted=self.grid.sign_repair if self.grid is not None else False,
             grid_import_kwh=self.grid.import_repair_kwh if self.grid is not None else None,
@@ -1520,7 +1538,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         records = await async_user_command(self.hass, run.config, run.state.choices, cmd, log=self.commands,
                                            now=now, context=context)
         for rec in records:
-            self._last_command[rec.entity_id] = now
+            if rec.entity_id.startswith("climate."):
+                self._last_command[rec.entity_id] = now
         await self.async_refresh()
 
     def has_room(self, room_id: str) -> bool:
@@ -1605,7 +1624,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             ids = seed_entities(run.config, self.house)
             try:
                 histories = await async_read_history(self.hass, ids, start, end)
-            except (HomeAssistantError, KeyError) as err:
+            except Exception as err:  # noqa: BLE001
+                # the recorder's own error (a database error, a timeout): the
+                # room is not seeded, and says why
                 _LOGGER.warning("%s: the recorder's history could not be read: %s", run.config.name, err)
                 return
             # always from the starting figures: replaying old readings onto a

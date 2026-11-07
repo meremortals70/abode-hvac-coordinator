@@ -26,7 +26,7 @@ from ..const import (
     UNIT_CURVE_EFFORTS_C,
     UNIT_MIN_RATE_HOLD_MIN,
 )
-from ..models import CompressorState, HeadSnapshot
+from ..models import CompressorSource, CompressorState, HeadSnapshot
 from ..observe import LoadHistory
 from .physics import Figures, curve_effort, curve_rate
 
@@ -49,6 +49,16 @@ def head_direction(mode: str | None) -> int:
     if mode in HEATING_MODES:
         return -1
     return 0
+
+
+def seen_running(head: HeadSnapshot) -> bool:
+    """Running for what the component decides (the power budget, the plan,
+    the cost, the short-cycle guard, an opening): seen running, or in a mode
+    that runs the compressor with its state unknown. The model and the draw
+    learner use only a known state [D028][D074]."""
+    if head.compressor is CompressorState.RUNNING:
+        return True
+    return head.compressor is CompressorState.UNKNOWN and head_direction(head.mode) != 0
 
 
 def head_effort(head: HeadSnapshot) -> float | None:
@@ -228,10 +238,15 @@ class DrawLearner:
                 continue
             sign = 0
             at_effort: float | None = None
-            if prev.compressor is CompressorState.STOPPED and h.compressor is CompressorState.RUNNING:
+            # a state the house-load step judged is dated a minute or more
+            # after the change it found, so it teaches no draw: the load
+            # either side of it is not either side of the change [D028]
+            timely = h.compressor_source is not CompressorSource.LOAD_STEP
+            if timely and prev.compressor is CompressorState.STOPPED and h.compressor is CompressorState.RUNNING:
                 sign = 1
                 at_effort = effort
-            elif (prev.compressor is CompressorState.RUNNING and h.compressor is CompressorState.STOPPED) or (
+            elif (timely and prev.compressor is CompressorState.RUNNING
+                  and h.compressor is CompressorState.STOPPED) or (
                 # or the mode stopped the compressor (decision of 27 October 2026)
                 prev.mode in COOLING_MODES | HEATING_MODES
                 and h.mode in RESTING_MODES

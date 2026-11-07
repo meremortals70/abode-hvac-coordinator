@@ -157,6 +157,9 @@ class FilterStep:
     inputs: StepInputs | None
     u_path: tuple[float, ...]
     compressor_ran: bool
+    # every minute's compressor state was known: an hour counts as resting
+    # only when each of its steps was known and stopped (the trust check)
+    compressor_known: bool = True
 
 
 def start_state(t0: float) -> list[float]:
@@ -390,9 +393,12 @@ class HeatFilter:
             curve_efforts=self.efforts,
         )
         ran = any(m.compressor_running for m in minutes)
+        known = all(m.compressor_known for m in minutes)
         blocked = self._why_not_at_all(minutes)
         reason = blocked or self._why_not(minutes, complete, bool(outdoors))
-        unknown_t, unknown_m = unknown_input_variance(self.z, minutes) if blocked is None else (0.0, 0.0)
+        # an unknown input widens the air and mass whether or not there is a
+        # reading to correct them [D074][Der]
+        unknown_t, unknown_m = unknown_input_variance(self.z, minutes)
         z_before, p_before, u_before = list(self.z), [r[:] for r in self.p], self.u
         try:
             base = step(self.z, inputs)
@@ -401,7 +407,7 @@ class HeatFilter:
             # the matrix exponential overflowed or its matrix was singular:
             # nothing is changed, and the step says why [Der]
             failed = FilterStep(now, self.z[I_T], False, "the model's arithmetic failed; step undone", None, inputs,
-                                (), ran)
+                                (), ran, known)
             self.recent.append(failed)
             return failed
         p_minus = add(sandwich(f, self.p), process_noise(ran, unknown_t + self.air_noise, unknown_m))
@@ -423,10 +429,10 @@ class HeatFilter:
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z) and math.isfinite(self.u)):
             self.z, self.p, self.u = z_before, p_before, u_before
             result = FilterStep(now, predicted, False, "a figure was not a finite number; step undone", None,
-                                inputs, base.u_path, ran)
+                                inputs, base.u_path, ran, known)
         else:
             result = FilterStep(now, predicted, innovation is not None and reason is None, reason, innovation, inputs,
-                                base.u_path, ran)
+                                base.u_path, ran, known)
         self.recent.append(result)
         return result
 

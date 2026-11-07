@@ -14,6 +14,7 @@ from tests.pure._load import load
 from tests.pure.sim_room import SimRoom
 
 mem = load("memory")
+eco = load("economics")
 models = load("models")
 model = load("model")
 filt = load("model.filter")
@@ -137,6 +138,24 @@ class Kept(unittest.TestCase):
         self.assertFalse(mem.from_data({}, has_load_sensor=False)[1].draw.has_load_sensor)
         rooms, house = mem.from_data({"rooms": "x", "draw": {"table": {"u1": {"x": [1, 1]}}}}, has_load_sensor=True)
         self.assertEqual((rooms, house.draw.table), ({}, {}))
+
+    def test_the_grid_checks_are_kept(self) -> None:
+        """The grid repairs and their counts survive a restart [D038][D043]."""
+        g = eco.GridChecks(positive_is_import=True, contradictions=3, agreements=0, sign_repair=True,
+                           import_repair_kwh=0.4)
+        data = json.loads(json.dumps(mem.to_data({}, mem.HouseState(grid=g.as_dict()))))
+        _rooms, house = mem.from_data(data, has_load_sensor=True)
+        back = eco.GridChecks.restore(True, house.grid)
+        self.assertEqual((back.contradictions, back.sign_repair, back.import_repair_kwh), (3, True, 0.4))
+        # a direction changed on Reconfigure starts afresh
+        fresh = eco.GridChecks.restore(False, house.grid)
+        self.assertEqual((fresh.contradictions, fresh.sign_repair, fresh.import_repair_kwh), (0, False, None))
+        # anything unreadable is dropped
+        odd = eco.GridChecks.restore(True, {"positive_is_import": True, "contradictions": -1, "agreements": True,
+                                            "sign_repair": "yes", "import_repair_kwh": float("nan")})
+        self.assertEqual((odd.contradictions, odd.agreements, odd.sign_repair, odd.import_repair_kwh),
+                         (0, 0, False, None))
+        self.assertEqual(mem.from_data({"grid": "x"}, has_load_sensor=True)[1].grid, {})
 
     def test_migrate_never_discards_learning(self) -> None:
         data = mem.to_data({"sim": learned_state()}, mem.HouseState())

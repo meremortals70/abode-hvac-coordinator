@@ -401,6 +401,11 @@ class RoomObserver:
         window = timedelta(seconds=LOAD_STEP_WINDOW_S)
         if now - commanded < window:
             return
+        # judged once a load reading from the end of the minute is in: this
+        # cycle's reading is added after Observe runs, so the newest one
+        # held can be from 30 seconds before now [Prop]
+        if not load_history.samples or load_history.samples[-1][0] < commanded + window:
+            return
         memory.evaluated_command = commanded
         draw = draw_kw.get(outdoor_unit)
         if draw is None or draw <= 0.0:

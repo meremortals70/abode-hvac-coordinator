@@ -279,6 +279,8 @@ class Compressor(unittest.TestCase):
         hist = observe.LoadHistory()
         hist.add(commanded - timedelta(seconds=30), before)
         hist.add(commanded + timedelta(seconds=40), after)
+        # the step is judged once a reading from the end of the minute is in
+        hist.add(commanded + timedelta(seconds=60), after)
         return hist
 
     def test_load_step_start_and_stop(self) -> None:

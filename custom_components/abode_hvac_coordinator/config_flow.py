@@ -183,7 +183,10 @@ async def _solar_forecast_options(hass: HomeAssistant) -> list[SelectOptionDict]
     solar forecast [D061]."""
     from homeassistant.components.energy.websocket_api import async_get_energy_platforms
 
-    domains = await async_get_energy_platforms(hass)
+    try:
+        domains = await async_get_energy_platforms(hass)
+    except Exception:  # noqa: BLE001 - another integration's platform: no choices, not a broken screen
+        return []
     return [SelectOptionDict(value=e.entry_id, label=e.title) for e in hass.config_entries.async_entries()
             if e.domain in domains]
 
@@ -232,6 +235,7 @@ class _HouseScreens:
         async def async_house_done(self) -> ConfigFlowResult: ...
 
         def grid_suggestion(self, grid_entity: str) -> bool | None: ...
+        def grid_sign_doubted(self) -> bool: ...
 
     def _form(self, step_id: str, schema: probatio.Schema, errors: dict[str, str] | None = None,
               placeholders: Mapping[str, str] | None = None) -> ConfigFlowResult:
@@ -272,6 +276,9 @@ class _HouseScreens:
             self._take(user_input, schema)
             if grid_sensor_changed(self.house_before, self.house):
                 self.house.pop(CONF_GRID_POSITIVE_IS_IMPORT, None)
+                return await self.async_step_grid_direction()
+            if CONF_GRID_POWER in self.house and self.grid_sign_doubted():
+                # the sign repair says to check the direction here [D038]
                 return await self.async_step_grid_direction()
             if CONF_GRID_POWER not in self.house:
                 self.house.pop(CONF_GRID_POSITIVE_IS_IMPORT, None)
@@ -497,6 +504,14 @@ class AbodeHvacConfigFlow(_HouseScreens, _RoomScreens, ConfigFlow, domain=DOMAIN
         self.house = dict(entry.data)
         self.house_before = dict(entry.data)
         return await self.async_step_tariff()
+
+    def grid_sign_doubted(self) -> bool:
+        """On Reconfigure, while the grid-direction repair stands [D038]."""
+        if not self._reconfigure:
+            return False
+        runtime = getattr(self._get_reconfigure_entry(), "runtime_data", None)
+        grid = getattr(runtime.coordinator, "grid", None) if runtime is not None else None
+        return bool(grid is not None and grid.sign_repair)
 
     def grid_suggestion(self, grid_entity: str) -> bool | None:
         if not self._reconfigure:

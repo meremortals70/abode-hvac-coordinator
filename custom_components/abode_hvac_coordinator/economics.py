@@ -427,6 +427,13 @@ class PowerBudget:
             known_draw = {u: (d if unit_known.get(u) else None) for u, d in unit_draw.items()}
             rest = self.loads.rest_of_house(enforced_units | {room.outdoor_unit}, known_draw)
             if rest is None:
+                # the reserve still holds while the rest of the house is
+                # unmeasured: an Enforced room running is turned off there
+                # [D063][D067] (Jason, 6 November 2026)
+                if e_avail <= 0.0:
+                    turn_off = room.management is PowerManagement.ENFORCED and room.compressor_running
+                    out[room.room_id] = (0.0, turn_off, None, "the battery is down to its reserve: off")
+                    continue
                 out[room.room_id] = (None, False, None, "no limit: the rest of the house is not yet measured")
                 continue
             plant = (
@@ -572,12 +579,39 @@ class GridChecks:
 
     positive_is_import: bool
     contradictions: int = 0
+    agreements: int = 0
     sign_repair: bool = False
     import_kwh: float = 0.0
     import_repair_kwh: float | None = None
     _charges: deque[tuple[datetime, float]] = field(default_factory=deque)
     _last: datetime | None = None
     _in_window: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        """What is kept across a restart: the direction it was judged
+        against, the counts and the standing repairs."""
+        return {"positive_is_import": self.positive_is_import, "contradictions": self.contradictions,
+                "agreements": self.agreements, "sign_repair": self.sign_repair,
+                "import_repair_kwh": self.import_repair_kwh}
+
+    @classmethod
+    def restore(cls, positive_is_import: bool, data: Mapping[str, Any]) -> GridChecks:
+        """Fresh checks, with what was kept if it was judged against the
+        same direction: a direction changed on Reconfigure starts afresh."""
+        out = cls(positive_is_import)
+        if data.get("positive_is_import") is not positive_is_import:
+            return out
+
+        def count(key: str) -> int:
+            v = data.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+
+        out.contradictions, out.agreements = count("contradictions"), count("agreements")
+        out.sign_repair = data.get("sign_repair") is True
+        kwh = data.get("import_repair_kwh")
+        if isinstance(kwh, int | float) and not isinstance(kwh, bool) and math.isfinite(float(kwh)) and kwh > 0:
+            out.import_repair_kwh = float(kwh)
+        return out
 
     def import_kw(self, grid_kw: float) -> float:
         """The grid reading as import (+) or export (-), by the sign set up."""
@@ -607,10 +641,16 @@ class GridChecks:
             elif seen is not None:
                 if seen != self.positive_is_import:
                     self.contradictions += 1
+                    self.agreements = 0
                     if self.contradictions >= GRID_SIGN_CONTRADICTIONS:
                         self.sign_repair = True
                 else:
+                    # as many readings in a row agreeing clear the repair: the
+                    # direction kept on Reconfigure was right [D038]
                     self.contradictions = 0
+                    self.agreements += 1
+                    if self.agreements >= GRID_SIGN_CONTRADICTIONS:
+                        self.sign_repair = False
         # import over each no-import window [D043]
         if in_no_import_window:
             if not self._in_window:

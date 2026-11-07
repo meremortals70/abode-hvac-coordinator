@@ -258,6 +258,17 @@ async def test_reconfigure_suggests_the_grid_direction(hass: HomeAssistant,
 
 
 
+async def test_the_power_screen_opens_when_the_energy_platforms_fail(hass: HomeAssistant) -> None:
+    """Another integration's energy platform failing leaves the solar forecast
+    choice empty; the screen still opens [D061]."""
+    set_house_states(hass)
+    with patch("homeassistant.components.energy.websocket_api.async_get_energy_platforms",
+               side_effect=RuntimeError("a platform failed")):
+        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        for _ in range(3):
+            r = await hass.config_entries.flow.async_configure(r["flow_id"], {})
+    assert r["step_id"] == "power"
+
 async def test_reconfigure_while_not_loaded_suggests_no_grid_direction(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(domain=DOMAIN, data={}, options={"rooms": []}, version=1, minor_version=1)
     entry.add_to_hass(hass)
@@ -290,6 +301,29 @@ async def test_reconfigure_without_a_grid_sensor_drops_its_direction(
     assert r["reason"] == "reconfigure_successful"
     assert entry.data == {}
 
+
+async def test_reconfigure_asks_the_grid_direction_while_its_repair_stands(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]
+) -> None:
+    """The repair says to check the direction on Reconfigure, so the Grid
+    direction screen is shown for the same sensor while it stands [D038]."""
+    set_house_states(hass)
+    hass.states.async_set("sensor.grid", "1500", {"unit_of_measurement": "W"})
+    entry = await setup_entry(hass, data={"grid_power": "sensor.grid", "grid_positive_is_import": True})
+    grid = entry.runtime_data.coordinator.grid
+    assert grid is not None
+    grid.sign_repair = True
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_RECONFIGURE,
+                                                                   "entry_id": entry.entry_id})
+    for _ in range(3):
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {})
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"grid_power": "sensor.grid"})
+    assert r["step_id"] == "grid_direction"
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"grid_positive_is_import": "export"})
+    assert r["step_id"] == "announcements"
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {})
+    assert r["reason"] == "reconfigure_successful"
+    assert entry.data["grid_positive_is_import"] is False
 
 async def test_options_add_edit_and_remove_a_room_without_a_reload(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]

@@ -459,6 +459,18 @@ class Grid(unittest.TestCase):
             g.observe(T0 + (10 + i) * timedelta(minutes=1), grid_kw=-0.8, **kw)
         self.assertTrue(g.sign_repair)
 
+    def test_ten_agreements_in_a_row_clear_the_repair(self) -> None:
+        g = eco.GridChecks(positive_is_import=True, sign_repair=True)
+        kw: dict[str, Any] = {"load_kw": 1.0, "solar_kw": 0.0, "charge_pct": 50.0, "in_no_import_window": False}
+        for i in range(9):
+            g.observe(T0 + i * timedelta(minutes=1), grid_kw=0.8, **kw)
+        g.observe(T0 + 9 * timedelta(minutes=1), grid_kw=-0.8, **kw)  # one contradiction restarts the count
+        for i in range(9):
+            g.observe(T0 + (10 + i) * timedelta(minutes=1), grid_kw=0.8, **kw)
+        self.assertTrue(g.sign_repair)
+        g.observe(T0 + 19 * timedelta(minutes=1), grid_kw=0.8, **kw)
+        self.assertFalse(g.sign_repair)
+
     def test_import_in_a_window(self) -> None:
         g = eco.GridChecks(positive_is_import=False)
         common: dict[str, Any] = {"load_kw": None, "solar_kw": None, "charge_pct": None}

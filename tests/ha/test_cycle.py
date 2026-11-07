@@ -327,6 +327,8 @@ async def test_the_energy_dashboards_solar_forecast_is_used_when_none_is_chosen(
         entry = await setup_entry(hass, data={**HOUSE, "solar_power": "sensor.solar"})
     diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
     assert diag["forecast"]["solar_error"] == "the solar forecast gave no hours"
+    # the dashboard's forecast failing raises the repair as a chosen one does [D061]
+    assert _issue(hass, "solar_forecast_unreadable") is not None
 
 
 async def test_a_spoken_warning_before_an_empty_room_turns_off(
@@ -1220,6 +1222,19 @@ async def test_seeding_when_the_history_cannot_be_read(
         await setup_entry(hass)
     assert any("could not be read: the recorder is busy" in r.getMessage() for r in caplog.records)
 
+
+async def test_seeding_when_the_recorder_raises_its_own_error(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A database error or a timeout from the recorder is a history that
+    could not be read, as Home Assistant's own error is."""
+    set_house_states(hass)
+    with patch("custom_components.abode_hvac_coordinator.coordinator.async_read_history",
+               side_effect=TimeoutError("the database did not answer")):
+        entry = await setup_entry(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert any("could not be read: the database did not answer" in r.getMessage() for r in caplog.records)
+    assert entry.runtime_data.coordinator.rooms[ROOM_ID].seeding is False
 
 async def test_reset_with_no_history_starts_afresh(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], hass_client: ClientSessionGenerator

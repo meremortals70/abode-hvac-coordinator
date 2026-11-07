@@ -394,7 +394,7 @@ class Availability:
             if not ok and entity not in self._lost:
                 self._lost.add(entity)
                 changes.append((entity, True))
-                self.log("%s: %s cannot be read; the room's sensors that need it are unavailable", self.room.name,
+                self.log("%s: %s cannot be read; a stand-in is used where there is one", self.room.name,
                          entity)
             elif ok and entity in self._lost:
                 self._lost.discard(entity)

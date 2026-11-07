@@ -97,7 +97,9 @@ class RoomModel:
         if self.heat is None:
             return
         steps = [s for s in self.heat.recent if s.time > now - timedelta(hours=1)]
-        resting = len(steps) >= 12 and not any(s.compressor_ran for s in steps)
+        # resting only when every step's compressor was known and stopped: an
+        # hour cooling unseen is not scored as a rest forecast [Prop]
+        resting = len(steps) >= 12 and all(s.compressor_known and not s.compressor_ran for s in steps)
         ahead = forecast(self.heat, self.humidity, rest_inputs[:12], e_now=e_now)
         next_hour = ahead[-1].t if len(ahead) == 12 else None
         six_error: float | None = None

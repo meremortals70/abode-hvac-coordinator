@@ -609,7 +609,7 @@
     },
     "grid_sign_contradicted": {
       "title": "The grid sensor's direction looks wrong",
-      "description": "The grid readings have contradicted the direction set up ten times in a row. Check it in Reconfigure, on the Grid direction screen."
+      "description": "The grid readings have contradicted the direction set up ten times in a row. Check it in Reconfigure, on the Grid direction screen, which is shown while this stands. It clears once ten readings in a row agree."
     },
     "grid_import": {
       "title": "Grid import during a no-grid-import window",

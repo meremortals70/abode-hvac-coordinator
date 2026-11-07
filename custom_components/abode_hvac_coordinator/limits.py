@@ -21,12 +21,12 @@ from datetime import datetime, timedelta
 
 from .capabilities import round_to_step
 from .const import CYCLE_S, KNOWN_CONSTRAINTS, MIN_REST_S, MIN_RUN_S, RANGE_HALF_WIDTH_C
+from .model.unit import seen_running
 from .models import (
     BandRule,
     BlindCommand,
     CapabilityProfile,
     ComfortResult,
-    CompressorState,
     DeliveryResult,
     DueWarning,
     Flag,
@@ -208,6 +208,9 @@ class RoomLimits:
         opened = min(f.since for f in open_now if f.since is not None)
         if self._for_free_cooling(open_now):
             s.to(LimitRule.OPENING, StepKind.OFF, "A door or window was opened on free-cooling advice: off at once.")
+            # the user opened it on the advice: their stop, not held to the
+            # minimum run [D073]
+            s.user_stop = True
             return True
         if self._opening_since != opened:
             self._opening_since, self._opening_warned = opened, set()
@@ -248,7 +251,9 @@ class RoomLimits:
 
     @staticmethod
     def _compressor_running(snapshot: Snapshot) -> bool:
-        return any(h.compressor is CompressorState.RUNNING for h in snapshot.heads)
+        # a unit running unseen keeps its grace: it is not "something new
+        # started" [D050]
+        return any(seen_running(h) for h in snapshot.heads)
 
     # rule 8 --------------------------------------------------------------
 
@@ -400,21 +405,26 @@ class HouseGuard:
         for u, rooms in by_unit.items():
             state = self._units[u]
             ways = {_wanted_way(e, u) for e in rooms} - {0}
-            if (state.running and state.direction and ways and state.direction not in ways
-                    and state.since is not None):
+            if state.running and state.direction and ways and state.direction not in ways:
                 # a reversal is a stop and a start: the run must have lasted
                 # its 10 minutes, and the rest its 5, before the other way
                 # runs [D016]. Inside the run, the rooms that were running
                 # the unit's way keep running whatever their step asks
                 # (unless the user stopped them), and the rooms wanting the
                 # other way rest
-                ran_for = now - state.since
+                # running since start-up (since not known): its run is taken
+                # as served, and the rest still holds [D016]
+                ran_for = now - state.since if state.since is not None else _MIN_RUN
                 for e in rooms:
-                    if e.step.kind not in RUNNING_KINDS and e.step.kind is not StepKind.REST:
+                    if e.step.kind not in RUNNING_KINDS and e.step.kind not in (StepKind.REST, StepKind.OFF):
                         continue
                     kept_way = (e.limits.last_running
                                 and _direction(_running_kind(e.limits.last_running)) == state.direction)
                     if ran_for < _MIN_RUN and kept_way and not e.step.user_stop:
+                        # an OFF that is not the user's is held to the run as
+                        # it is without a reversal
+                        if e.step.kind is StepKind.OFF:
+                            held_off.add(e.step.room_id)
                         self._keep_running(e, (_MIN_RUN - ran_for).total_seconds())
                     elif e.step.kind in RUNNING_KINDS:
                         wait = (_MIN_RUN - ran_for) + _MIN_REST if ran_for < _MIN_RUN else _MIN_REST

@@ -24,6 +24,7 @@ from typing import Any
 
 from ..const import (
     COIL_REBOUND_S,
+    FIGURE_LOG_RANGE,
     FILTER_GATE_NIS,
     FILTER_JACOBIAN_DELTA,
     HUMIDITY_NOISE_E_PER_H,
@@ -102,12 +103,19 @@ def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute) -> float:
     return out
 
 
+_LOG_FIGURES = (H_LN_H, H_LN_DRY, H_LN_COOL, H_LN_REB)
+
+
 def moisture_step(z: Sequence[float], minutes: Sequence[MoistureMinute]) -> list[float]:
-    """Five one-minute steps; the figures are unchanged."""
+    """Five one-minute steps, each by the exact solution with its inputs
+    held, as the plan and the forecast step: a straight-line minute
+    diverges once h passes 120 per hour [Der]. The figures are unchanged."""
     fig = moisture_figures(z)
     e = z[H_E]
     for m in minutes:
-        e = e + rate_of_change(fig, e, m) * _MINUTE_H
+        # de/dt = h (target - e), with target where the room's moisture settles
+        target = e + rate_of_change(fig, e, m) / fig.h
+        e = target + (e - target) * math.exp(-fig.h * _MINUTE_H)
     out = list(z)
     out[H_E] = e
     return out
@@ -242,6 +250,11 @@ class HumidityFilter:
         # Joseph form: P = (I - K H) P (I - K H)^T + K R K^T, H = e_1
         ikh = [[(1.0 if i == j else 0.0) - (k[i] if j == H_E else 0.0) for j in range(H_SIZE)] for i in range(H_SIZE)]
         self.p = symmetrise(add(multiply(multiply(ikh, self.p), transpose(ikh)), scale(outer(k, k), r_used)))
+        # the figures' logarithms are held in the range the heat filter's
+        # are [Der]
+        lo, hi = FIGURE_LOG_RANGE
+        for i in _LOG_FIGURES:
+            self.z[i] = min(max(self.z[i], lo), hi)
         if learn:
             self.corrections += 1
 
@@ -270,6 +283,9 @@ class HumidityFilter:
             return None
         if not all(math.isfinite(x) for x in z) or not is_finite(p):
             return None
+        lo, hi = FIGURE_LOG_RANGE
+        if any(not lo <= z[i] <= hi for i in _LOG_FIGURES):
+            return None  # learned outside the range it is held to: relearned
         out = cls(z=z, p=p, corrections=int(data.get("corrections", 0)))
         for key, attr in (("q", "sensor_step"), ("r", "noise"), ("v", "innovation_avg"), ("jitter", "reading_jitter"),
                           ("prior_avg", "_prior_avg")):

@@ -204,14 +204,17 @@ def room_from_dict(data: Mapping[str, Any]) -> RoomState:
 @dataclass(slots=True)
 class HouseState:
     """What Memory keeps for the house: each outdoor unit's draw by effort
-    [D028]."""
+    [D028], and the grid checks' standing repairs and counts [D038][D043],
+    so a restart or reload neither clears nor restarts them."""
 
     draw: DrawLearner = field(default_factory=DrawLearner)
+    grid: dict[str, Any] = field(default_factory=dict)
 
 
 def to_data(rooms: Mapping[str, RoomState], house: HouseState) -> dict[str, Any]:
     """The whole stored file's data."""
-    return {"rooms": {rid: room_to_dict(s) for rid, s in rooms.items()}, "draw": house.draw.as_dict()}
+    return {"rooms": {rid: room_to_dict(s) for rid, s in rooms.items()}, "draw": house.draw.as_dict(),
+            "grid": dict(house.grid)}
 
 
 def from_data(data: Mapping[str, Any] | None, *, has_load_sensor: bool) -> tuple[dict[str, RoomState], HouseState]:
@@ -228,7 +231,8 @@ def from_data(data: Mapping[str, Any] | None, *, has_load_sensor: bool) -> tuple
         draw = DrawLearner.from_dict(draw_raw if isinstance(draw_raw, Mapping) else {}, has_load_sensor)
     except (TypeError, ValueError):
         draw = DrawLearner(has_load_sensor=has_load_sensor)
-    return rooms, HouseState(draw)
+    grid_raw = data.get("grid")
+    return rooms, HouseState(draw, dict(grid_raw) if isinstance(grid_raw, Mapping) else {})
 
 
 def migrate(old_major: int, old_minor: int, data: Mapping[str, Any]) -> dict[str, Any]:
