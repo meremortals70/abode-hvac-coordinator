@@ -489,13 +489,15 @@ class HouseGuard:
         wanting = [e for e in rooms if _wanted_way(e, unit) != 0]
         if len({_wanted_way(e, unit) for e in wanting}) < 2:
             return
-        # a room run by hand is never changed, so its way stands; otherwise
-        # the room furthest outside its band, then from its centre, has it
-        by_hand = [e for e in wanting if e.step.kind is StepKind.NONE]
-        first = by_hand[0] if by_hand else max(wanting, key=lambda e: (e.outside, e.from_centre))
+        # a room left as it is (run by hand, Automatic control off, an
+        # empty-room warning counting down) is never changed, so its way
+        # stands; otherwise the room furthest outside its band, then from
+        # its centre, has it
+        left = [e for e in wanting if e.step.kind is StepKind.NONE]
+        first = left[0] if left else max(wanting, key=lambda e: (e.outside, e.from_centre))
         way = _wanted_way(first, unit)
         reason = (f"The outdoor unit {unit} runs one way at a time; another room on it is "
-                  + ("run by hand the other way." if by_hand else "further from its band."))
+                  + ("left as it is, running the other way." if left else "further from its band."))
         for e in wanting:
             if e.step.kind in RUNNING_KINDS and _wanted_way(e, unit) != way:
                 if e.step.rest_heads:
