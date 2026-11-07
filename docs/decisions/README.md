@@ -92,7 +92,7 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D085](D085.md) | A room coming out of Sleep is not heated while it is waking |
 | [D086](D086.md) | The room's rate of change used for control comes from the filter's estimate, not from the slope of the raw readings |
 | [D087](D087.md) | Presence and door or window sensors have no age limit |
-| [D088](D088.md) | Each room has a Leave button. It turns the room off at once, not held by the minimum run, until someone comes back; without a presence sensor, until the user changes Automatic control or Comfort mode or asks for Precool |
+| [D088](D088.md) | Each room has a Leave button. It turns the room off at once, not held by the minimum run, until someone comes back; without a presence sensor, until the user changes Automatic control or Comfort mode |
 | [D089](D089.md) | Switching Automatic control off turns the unit off, once |
 | [D090](D090.md) | Superseded |
 | [D091](D091.md) | Superseded |
