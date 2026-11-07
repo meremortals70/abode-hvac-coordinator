@@ -20,6 +20,6 @@ In a room with a presence sensor, the **Precool** button starts cooling an empty
 
 ## Leave, sleep, and hand back control
 
-- **Leave** turns a room off at once until someone comes back; in a room without a presence sensor, until you change Automatic control or Comfort mode or ask for Precool.
+- **Leave** turns a room off at once until someone comes back; in a room without a presence sensor, until you change Automatic control or Comfort mode.
 - **Comfort mode** follows the sleep schedule, or stays on Sleep or Awake until you change it.
 - **Automatic control off** sends the unit off once, then leaves it entirely to you.

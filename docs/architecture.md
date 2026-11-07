@@ -221,7 +221,7 @@ P = (I - K e_1^\top)\,P^-\,(I - K e_1^\top)^\top + K (S_\nu - P^-_{11}) K^\top
 
 **Why the mass is a state of its own.** Treating the mass as a running average of the room's readings assumes heat reaches the mass only from the room air [Der]. Bacher and Madsen's model, and real buildings, also connect the mass to outdoors [R1]. On three simulated rooms, with figures fitted by maximum likelihood, a filter with a mass state forecast one hour ahead 3.2–3.9 times more accurately than a running-average mass, and six hours ahead 8.3–8.9 times [Sim].
 
-**Trust.** Every hour, each resting hour's one-hour forecast is compared with what happened [Prop]:
+**Trust.** Every hour, each resting hour's one-hour forecast is compared with what happened. An hour is resting only when every one of its steps knew the compressor and found it stopped; an hour the unit may have run unseen is not scored [Prop]:
 
 ```latex
 E_{48} = \frac{1}{N}\sum_{j=1}^{N}\bigl|\hat T(t_j \mid t_j - 1\,h) - T(t_j)\bigr|, \qquad \text{trusted} \iff E_{48} \le 0.3\,^{\circ}C \;\wedge\; N \ge 24
@@ -328,7 +328,7 @@ u = u_{plan} + K_p\left[e + \frac{1}{T_i}\int e\,dt + T_d\left(\frac{dT}{dt} - \
 - **dT/dt** is the filter's estimate of the room's rate of change now: the model's drift (forecast.py, DRIFT NOW) less the unit's current rate U, from the latest correction. Like e, it does not act on the raw readings [Der][D086].
 - **When the plan rests**, the PID does nothing. Its integral starts again at zero each time the unit starts [Prop][Sim].
 - **No wind-up:** the integral grows only while the output is delivered as asked, not held by a limit or a ceiling [D054][R9].
-- **When the gains change** with a new plan, the integral is set so that the output does not jump: the law above solved for the integral at the output now [Der].
+- **When the gains change** with a new plan, only the feedback part is held: the integral is set so the last output less the old plan's rate carries over, and the new plan's rate passes straight through [Der].
 - **The integral is not kept across a restart** [D031].
 
 **The gains** are worked out again with every plan, from the filter's current figures and the unit's learned delay θ and lag τ [R8][Prop]. From the model, the response of T to U is [Der]:
@@ -349,7 +349,7 @@ SIMC's controller is in series form, C(s) = K\_c (1 + 1/(τ\_I s))(1 + τ\_D s) 
 K_p = K_c\left(1 + \frac{\tau_D}{\tau_I}\right), \qquad T_i = \tau_I + \tau_D, \qquad T_d = \frac{\tau_I\,\tau_D}{\tau_I + \tau_D}
 ```
 
-**Example, illustration only:** θ = 8.5 min (a 6-minute delay with half the filter's step), τ = 15 min, τ₁ = 4.4 h give K\_c = 3.53 per hour, τ\_I = 68 min, and K\_p = 4.31 per hour, T\_i = 83 min, T\_d = 12.3 min [Der]. A room 0.5 °C warmer than its path is then asked for 2.2 °C/h more cooling.
+**Example, illustration only:** θ = 8.75 min (a 6-minute delay, half the filter's 5-minute step, and 0.25 min for a unit stepping in tenths), τ = 15 min, τ₁ = 4.4 h give K\_c = 3.43 per hour, τ\_I = 70 min, and K\_p = 4.16 per hour, T\_i = 85 min, T\_d = 12.4 min [Der]. A room 0.5 °C warmer than its path is then asked for 2.1 °C/h more cooling.
 
 **What was simulated** [Sim]: the P and I terms. The D term was not used in the simulations [NYE].
 
@@ -421,7 +421,7 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 **The whole house shares the allowance** [I10]:
 
 1. **Several enforced rooms at once.** P\* is the house's allowance, not each room's. The house decides once per cycle and informs each room [I10]. Each enforced outdoor unit is allowed P\* less the learned draw of the other enforced outdoor units now running, so the total cannot exceed P\* [Der].
-2. **Rooms on one outdoor unit.** A multi-head unit is one draw on the battery [I10]. Each room's draw now on the unit is its learned draw at the mean effort of its own running heads, and the unit's draw is the sum over its rooms. A room's allowance is P\* less the other enforced outdoor units now running and less the other rooms now running on its own unit, whatever their power management, because the rest of the house is measured while the room's own unit and every other enforced one are stopped, and so does not hold them [D097][Der]. A room is charged on its scorecard for its own share, not the whole unit's [D097].
+2. **Rooms on one outdoor unit.** A multi-head unit is one draw on the battery [I10]. Each room's draw now on the unit is its learned draw at the mean effort of its own running heads, and the unit's draw is the sum over its rooms. A room's allowance is P\* less the other enforced outdoor units now running and less the other rooms now running on its own unit, whatever their power management, because the rest of the house is measured while the room's own unit and every other enforced one are stopped, and so does not hold them [D097][Der]. A head in a running mode whose compressor is unknown counts as running here, so its draw is not counted as the rest of the house [D028]. A room is charged on its scorecard for its own share, not the whole unit's [D097].
 
 **One gap in the budget's mathematics** [Der]:
 
@@ -430,7 +430,7 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 **Grid checks** [D038][D043]:
 
 - **The grid sign** is settled at setup and never changed at run time. House load − solar is what the house draws from the grid and the battery together. At a moment when it is above 0.2 kW and the battery charge has not fallen over 5 minutes [Set], the grid must be importing, so the sign of the grid reading then shows which way positive points; on Reconfigure it is pre-filled from such a moment [Der]. Ten readings in a row that contradict it raise a repair. A reading within 5 W of zero is no evidence and resets the count [D038].
-- **Battery power** = house load − solar − grid, published for display. The budget uses the rated discharge, not this reading [D042][Der].
+- **Battery power** = house load − solar − grid. It is not published, and the budget does not use it: it uses the rated discharge [D042][Der].
 - **Import in a no-import window** is added up over the window. More than 0.05 kWh raises a repair naming the kWh [D043].
 
 **The demand forecast** [D005]:
@@ -449,8 +449,8 @@ Whether the compressor ran decides which rate the filter is told the unit delive
 | 0. The head is off or in fan-only | Not running, whatever a frequency sensor says: one sensor is often chosen for every head on an outdoor unit and reads another head's compressor [D025] |
 | 1. Compressor frequency | Running above 0 Hz [Prop] |
 | 2. `hvac_action` | Cooling, heating or drying is running; idle, fan or off is not [D025] |
-| 3. House-load step | Within a minute of a command to that head, with no other unit changing: a rise of at least half the learned draw is a start, the matching fall a stop [Prop] |
-| 4. Unknown | Not learned from; the trace says so [Prop] |
+| 3. House-load step | Within a minute of a command to that head, with no other unit changing (a blind is not a unit): a rise of at least half the learned draw is a start, the matching fall a stop. Judged once a load reading from the end of the minute is in. A state it finds teaches no draw, since it is dated after the change [Prop][D028] |
+| 4. Unknown | Not learned from; the trace says so [Prop]. In a mode that runs the compressor (cool, dry, heat) it counts as running wherever the component decides what to do: the power budget and the Enforced turn-off, the plan, the day's cost, the short-cycle guard and an opening's grace [D028] |
 
 The source that answered is recorded every cycle [D006].
 
@@ -606,7 +606,9 @@ DESIGN VALUES
   only "unavailable" or "unknown" is missing ..................... [D070][D087]
   house-load step counted as a compressor start or stop:
       at least half that outdoor unit's learned draw, within 1 minute
-      of a command to it, with no other unit changing ............. [Prop]
+      of a command to it, with no other unit changing (climate
+      commands only), judged once a load reading from the end of the
+      minute is in; it teaches the draw learner nothing ........... [Prop]
 
 BUILD SNAPSHOT, for one room, from the raw states the coordinator hands over:
 
@@ -771,7 +773,9 @@ EVERY 5 MINUTES:
           weighted as a 3.3-sigma one at most                     [R20]
       v = v + (nu^2 - v) / 288
       Q_air = the larger of 0 and v - (P[T,T] less Q_air, averaged
-          the same way) - R, once a day of learning is done  [R17][R21]
+          the same way) - R, once a day of learning is done, and at
+          once on a step that corrects the state only (a room whose
+          compressor is never known would never get there)  [R17][R21]
       ACTS: T, M, a, b, c, k and the heat pattern always; s and m
           only with sun on the glass this step; the cooling curve only
           if the unit cooled in the last 40 minutes, the heating curve
@@ -842,6 +846,10 @@ A second Kalman filter of the same kind as filter.py:
   MODEL: de/dt = h (e_outdoor - e) + q - drying - cooling x rate
                  + rebound for 15 minutes after the compressor stops
                  cooling or drying                             [D060]
+  each minute by the exact solution, inputs held:
+      e = target + (e - target) exp(-h x 1 min), as the forecast does;
+  the figures' logarithms held in [ln 1e-6, ln 1e3]; a stored one
+  outside is refused and relearned                            [Der]
   each figure moves only on steps where it acts: drying in dry mode,
   cooling response while cooling, rebound in the 15 minutes after a
   stop                                                       [D026][D060]
@@ -871,7 +879,7 @@ DESIGN VALUES                                                     [NYE]
 
 EVERY HOUR:
   REMEMBER this hour's forecast one hour ahead (unit at rest)
-  IF the last hour was resting
+  IF the last hour was resting (every step's compressor known and stopped)
       error = |room now - the forecast made an hour ago|; keep 48
   TRUSTED = their average <= 0.3 C AND there are at least 24
   SIX-HOUR CHECK: from the filter's state six hours ago, forecast to now
@@ -1105,7 +1113,7 @@ window is in force:                                                [I10]
   RECORD the allowance and each ceiling; "no limit" where none bites  [D096]
 
 GRID CHECKS, only with a grid sensor:                             [D038][D043]
-  battery power = house load - solar - grid; published for display  [Der]
+  battery power = house load - solar - grid; not published or used  [Der]
   GRID EVIDENCE: a moment when house load - solar is above 0.2 kW and
         the battery charge has not fallen over the last 5 minutes; the
         house must then be importing, so the reading's sign at that
@@ -1237,7 +1245,9 @@ EVERY CYCLE, per room:
          hold it, no ceiling capped it, not at U_min or the top)
           integral = integral + e x time since the last cycle  [D054][R9]
   WHEN the unit starts            integral = 0                  [Prop][Sim]
-  WHEN the gains change           set the integral so u does not jump [Der]
+  WHEN the gains change           hold the feedback part (last u less the
+                                  old plan's rate); the new plan's rate
+                                  passes straight through            [Der]
   ON A HANDOVER (arbiter.py)      set the integral so u does not jump [Der]
   NOT KEPT across a restart                                         [D031]
 
@@ -1434,7 +1444,7 @@ EVERY CYCLE, per room, given the proposed step; the first that applies wins:
           step = OFF
 
   5. AN OPEN DOOR OR WINDOW                                      [D050][D073]
-      nothing new is started
+      nothing new is started (a unit running, seen or unseen, is not new)
       IF it was opened while free cooling was advised
           step = OFF at once, no grace, no warning
       OTHERWISE
@@ -1641,8 +1651,9 @@ REPAIRS, raised when their cause appears and cleared when it goes:
 LOST AND REGAINED, per room:                                          [R18]
   WHEN a required reading (room temperature or humidity, or a head's
        climate entity) becomes missing:
-      log at INFO once, naming it; the room's sensors that depend on it
-      become unavailable
+      log at INFO once, naming it; a stand-in is used where there is
+      one (the unit's own reading for the room temperature), so the
+      room's sensors stay available
   WHEN it returns: log at INFO once; nothing in between
 ```
 

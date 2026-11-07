@@ -37,7 +37,7 @@ Fix the sensor or its integration; nothing in this component needs changing.
 
 ## Common questions
 
-**The mode sensor says Unavailable.** The room's cycle failed, or a required reading is missing. The log has one ERROR line naming the room, with the cause; it says again at INFO when the room runs again.
+**The mode sensor says Unavailable.** The room's cycle failed. A missing reading does not, on its own, make it unavailable. The log has one ERROR line naming the room, with the cause; it says again at INFO when the room runs again.
 
 **The unit is not doing what I set.** While Automatic control is on, the component re-sends its decision every cycle. Turn Automatic control off to take over.
 

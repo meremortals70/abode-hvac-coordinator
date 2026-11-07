@@ -9,7 +9,7 @@ Entity ids below are for a room named Office; yours follow your room's name.
 | Mode | `sensor.office` | The band rule in force: Locked out, Automatic control off, Left, Unoccupied, Precool, Sleep or Occupied. Its attributes are the full decision trace (below) |
 | Comfort index | `sensor.office_comfort_index` | The room's comfort index now. Attributes: band low, band high, and whether the room is below, in or above the band |
 | Target temperature | `sensor.office_target_temperature` | The centre of the band in force, as a temperature at the room's humidity now. Diagnostic |
-| Commanded setpoint | `sensor.office_commanded_setpoint` | The setpoint last sent; attribute: the setpoint wanted before whole-degree stepping. Diagnostic, disabled by default |
+| Commanded setpoint | `sensor.office_commanded_setpoint` | The setpoint last sent (for a unit that takes only a range, the middle of the range sent); attribute: the setpoint wanted before whole-degree stepping. Diagnostic, disabled by default |
 | Dew point | `sensor.office_dew_point` | The room's dew point. Attributes: outdoor dew point, outdoor apparent temperature, free cooling advised, condensation risk |
 | Settings | `sensor.office_settings` | The number of air conditioners; attributes: every setting of the room (unset ones say so) and what the units can do. Diagnostic, disabled by default |
 | Controller | `sensor.office_controller` | Plan and PID, or the learned controller; attributes: the plan in force and the arbiter's record. Diagnostic |
@@ -26,7 +26,7 @@ Entity ids below are for a room named Office; yours follow your room's name.
 | Vertical vane | `select.office_vertical_vane` | Writable while Automatic vane control is off. Only if the unit has vane positions |
 | Horizontal vane | `select.office_horizontal_vane` | Writable while Automatic vane control is off. Only if the unit has horizontal vane positions |
 | Setpoint | `number.office_setpoint` | The unit's setpoint now, in the unit's range and step. Writable only while Automatic control is off |
-| Leave | `button.office_leave` | Turns the room off at once. With a presence sensor, until someone comes back; without one, until you change Automatic control or Comfort mode, or ask for Precool |
+| Leave | `button.office_leave` | Turns the room off at once. With a presence sensor, until someone comes back; without one, until you change Automatic control or Comfort mode (Precool needs a presence sensor) |
 | Precool | `button.office_precool` | Starts Precool now. Only in rooms with a presence sensor |
 
 The unit controls show the unit's live value as soon as it changes. Changing one while the component runs the room is refused with a message saying so.

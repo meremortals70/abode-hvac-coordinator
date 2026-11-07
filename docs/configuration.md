@@ -19,7 +19,7 @@ Everything is set up from the UI. The house's settings are changed with **Reconf
 | | Reserve margin | Energy always left in the battery, kWh. Shown with the battery charge sensor, as above | None |
 | | Grid power sensor | Power to or from the grid. Checks that no-grid-import windows are kept | None |
 | | Solar forecast sources | Which solar forecasts to use (shown only if an integration offers one, and from 2026.11 only once a solar power sensor is chosen) | None: the Energy dashboard's |
-| Grid direction | A positive reading means | Importing or exporting. Asked only for a new grid sensor; pre-filled from the readings where they show it | — |
+| Grid direction | A positive reading means | Importing or exporting. Asked for a new grid sensor, and on Reconfigure while the grid-direction repair stands; pre-filled from the readings where they show it | — |
 | Announcements | Speech engine | The engine spoken warnings use | None: the only one Home Assistant has |
 
 From Home Assistant 2026.11, a field that has no effect without another is shown only once that other field is filled in, and is not saved while hidden. Before 2026.11 every field is shown.
