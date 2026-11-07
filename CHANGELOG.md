@@ -6,7 +6,7 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
-## 0.10.0 - unreleased
+## 0.10.1 - 2026-11-07
 
 A rewrite of the whole component to the design specification of 23 October
 2026 (revised 27-29 October 2026), built one module at a time. It needs
@@ -293,6 +293,97 @@ Home Assistant 2026.10.4 or later (2026.9.4 until 6 November 2026).
     same minute could be learned as the unit stopping and starting. Neither
     is learned now. (DR-028)
 
+- **From the sweep after the fourteenth review, 7 November (on r21):**
+  Each defect pattern from the last reviews checked across the whole
+  component, not just where it was found (Jason: "yes do the sweep").
+  - One rule now decides whether a unit is running wherever the component
+    acts: seen running, or in cool, dry or heat with its compressor
+    unknown. Two more places took an unknown compressor as stopped:
+    - the short-cycle guard, so a unit run by hand with no frequency
+      sensor or hvac_action (the living room) did not keep its way on a
+      shared outdoor unit, and its run was not held;
+    - an open door or window, so such a unit was stopped at once instead
+      of being given its grace. (D016, D020, D050)
+  - The recorder's own error (a database error, a timeout) while reading a
+    room's history is logged as a history that could not be read; before,
+    only Home Assistant's own error was.
+  - Another integration's energy platform failing leaves the solar
+    forecast choice empty on the Power screen instead of breaking it.
+  - Checked and left as they are: the model and the draw learner use only
+    a known compressor state, by design (D074, D028).
+
+- **From the fourteenth independent review, 7 November (on r20):**
+  - A solar forecast integration timing out (or raising anything else) at
+    start-up raises the forecast repair; before, setup stopped with an
+    error until the integration was reloaded by hand. (D061)
+  - On a shared outdoor unit, a reversal after a restart still gets its
+    5-minute rest; before, a unit running since start-up could go from
+    cooling to heating in one cycle. (D016)
+  - Yesterday's cost reads unknown for a day the unit ran unseen with its
+    draw not yet learned; it read 0.00. (D097)
+  - The lost-reading log line says a stand-in is used, not that the
+    room's sensors go unavailable (they do not).
+  - The PID example in the design adds the actuation interval as the code
+    does: θ 8.75 min, K_p 4.16 per hour, T_i 85 min, T_d 12.4 min.
+
+- **From the thirteenth independent review, 7 November (on r19):**
+  - An Enforced room whose draw is not yet learned is turned off at the
+    battery's reserve even after its unit has run for 15 minutes. Before,
+    the budget stopped at "the rest of the house is not yet measured" and
+    the room ran on below the reserve. (D063, D067)
+  - A start or stop found by the house-load step no longer teaches the
+    draw learner: it is dated a minute or more after the change, so the
+    load either side of it was not either side of the change. Before, the
+    learned draw fell (0.10 kW where 1.5 kW was true). (D028)
+  - The house-load step waits for a load reading from the end of its
+    minute. Before, it read one from 30 seconds after the command, so a
+    compressor starting 31 to 60 seconds after it was never seen.
+  - A blind moved in the same cycle as a start no longer counts as another
+    unit changing: only climate commands are kept for the load step and
+    the draw learner. (D028)
+  - A head in a running mode with its compressor unknown counts as running
+    for the power budget and the plan, so its draw is not counted as the
+    rest of the house; an Enforced room in that state is turned off at the
+    reserve. (D028)
+  - A door or window opened on free-cooling advice stops the unit at once,
+    as D073 says; the short-cycle guard held it for up to 10 minutes.
+  - The humidity filter steps each minute by the exact solution and holds
+    its figures in the heat filter's range; a stored figure outside is
+    relearned. The straight-line minute diverged above 120 per hour.
+  - The grid repairs and their counts are kept across a restart or reload.
+  - A failed Energy-dashboard solar forecast now raises the repair, as a
+    chosen one's does. (D061)
+  - Documents: the PID keeps only its feedback part on a gain change;
+    battery power is not published; the grid direction is asked on
+    Reconfigure while its repair stands; Leave without a presence sensor
+    ends on Automatic control or Comfort mode (Precool needs a sensor).
+
+- **From the twelfth independent review, 7 November (on r18):**
+  - On a shared outdoor unit, a stop that was not the user's (the room
+    empty, an Enforced turn-off) is held to the 10-minute run while
+    another room wants the other way, as it is without one. Before, the
+    cooling run was stopped 3 minutes in. (D016)
+  - The house-load step (4.8, source 3) can now answer whether a
+    compressor runs: Observe is given each outdoor unit's learned draw
+    whatever its compressor is seen to do. Before, it was given only the
+    draw of units already seen running, so a unit no other source answers
+    (the living room) stayed unknown for good. (D028)
+  - An hour is scored as resting for the trust check and the Learning
+    sensor only when every step knew the compressor and found it stopped.
+    Before, hours the unit cooled unseen were scored as rest forecasts:
+    60 of 287 such hours in the living room's history, 34 in the office's.
+  - The grid-direction repair: Reconfigure shows the Grid direction screen
+    while the repair stands, and ten readings in a row agreeing clear it.
+    Before, the screen was shown only for a new grid sensor, so the repair
+    could not be cleared as it said. (D038)
+  - The Commanded setpoint sensor shows the middle of the range sent to a
+    unit that takes only a range; it showed nothing. (D024)
+  - An unknown input widens the room's uncertainty whether or not there
+    is a reading that step, as the design says.
+  - Documents: Q_air is learned at once on a state-only step; an unlearned
+    draw sets no ceiling (the 0.10.0 entry below); a missing reading does
+    not make the mode sensor unavailable.
+
 - **From the eleventh independent review, 6 November (on r17):**
   - The humidity estimate drifted from the room. Its filter took every
     miss as sensor noise (6.5 hPa^2 learned in the house's history) and
@@ -391,7 +482,7 @@ Home Assistant 2026.10.4 or later (2026.9.4 until 6 November 2026).
     memory, so it rose without its 10-minute hold when the reading came
     back. The hold now stands. (DR-062)
   - Leave in a room without a presence sensor stays until you change
-    Automatic control or Comfort mode or ask for Precool; the docs said
+    Automatic control or Comfort mode; the docs said
     "until someone comes back". The behaviour is right (Jason) and the docs
     now say so. (DR-088)
   - Home Assistant 2026.10.4 is now the oldest release supported, in
@@ -574,8 +665,10 @@ Home Assistant 2026.10.4 or later (2026.9.4 until 6 November 2026).
   its lowest rate cannot last to the end of a no-grid-import window, the
   room cools at its lowest rate instead of being turned off after 10
   minutes. It is turned off only when the battery is down to its reserve,
-  cannot supply the lowest rate's draw, or that draw is not yet known, and
-  runs again when the battery can supply it (decision of 29 October 2026).
+  or cannot supply the lowest rate's draw, and runs again when the battery
+  can supply it (decision of 29 October 2026). A unit whose draw is not yet
+  learned has no ceiling until the battery reaches its reserve or the
+  window ends (Jason, 6 November 2026).
 - **The demand forecast runs to the next tariff change**, not 8 hours: the
   energy the rooms' plans will use until the rate, price or rules next
   change, what it is priced at, and when that is. Where the change is
