@@ -6,6 +6,65 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.3 - 2026-11-08
+
+From the house's first night on 0.10.2 and its recorder export of 7-8
+November 2026.
+
+### Fixed
+
+- **The compressor of a unit that does not report it is now watched.** Off
+  or fan-only is not running; in any other mode a rise in the house power is
+  the compressor starting and a fall back is it stopping. Before, the house
+  power was looked at only within a minute of the component's own command,
+  and only once the unit's draw was learned, so on units that report neither
+  frequency nor `hvac_action` (the house's Intesis units) the compressor
+  stayed unknown, and the cooling and heating curve, the unit's delay and
+  lag, the lowest steady rate and the humidity model's drying and cooling
+  terms could never be learned [D025]. A slowing inverter is not taken as a
+  stop. What counts as a step is three times the house power's own noise,
+  learned from its readings (0.03 kW on the house's record), not a figure
+  set by judgement. On the house's record: the office's three runs read as
+  three starts.
+- **Power draw is learned from starts, and from stops at a whole-degree
+  setpoint.** A start was learned only when the unit reported its compressor
+  running, which these units never do, and a stop only when the unit's
+  reading was 0.5 C or more above its setpoint; a unit reading 24 at a 24
+  setpoint was still drawing 0.23 kW. Starts and stops are now read from the
+  head's mode, and the step is looked for up to 4 minutes after, since a
+  compressor starts up to 3.3 minutes after its head is put in cool. On the
+  house's record the office's changes teach a draw at every cycle timing
+  (0.16-0.45 kW, by effort; a 0.10 kW stop within the house's noise does not), and the living room's night 31 against 10 [D028].
+- **Never heat after a cooling cycle; never cool after a heating cycle**
+  (decision of 8 November 2026) [D102]. A hard limit, as the compressor's
+  minimum run and rest are, held while the room is inside its band; a room
+  that has left the band on the other side may be turned that way. On the
+  night of 7-8 November the living room was asked to heat 10 times just
+  under the centre of its band after cooling; each became a rest and a
+  restart.
+- **Decisions D101 and D102** are written into `docs/decisions/`.
+- **The sun is measured by the house's solar power** where the forecast
+  gives no cloud cover or UV (`weather.oxley_hourly` gives neither, so the
+  sun was never measured and no sunlit step taught the model anything). The
+  share of a clear sky now is the solar power over the most the panels have
+  made with the sun in the same place, learned from the house's own readings
+  and fading 1 % a day; used once three days have taught it, and carried
+  forward over the plan's hours.
+- **The day's scorecard survives a restart.** Only yesterday's result was
+  stored, so a restart dropped the day so far; a day stored before a restart
+  that crossed midnight becomes yesterday's.
+- **Each plan's decision is kept in history:** its first step, its actions,
+  and its forecast index and uncertainty every half-hour, so a night can be
+  read back. The full trace still is not.
+- **Each setpoint stands 10 minutes.** The hold covered only a move within
+  the same pair of whole degrees, so the living room went 20, 21, 19 in two
+  minutes. A rest, off or leaving the unit alone ends the hold.
+- **A turn between cooling and heating is a stop and a start everywhere.**
+  The plan counted none, so with starts dear it swapped cool and heat nine
+  times and called it one start; it no longer turns a running unit the other
+  way in its first step. The PID's integral restarts on a turn; the day's
+  starts count it; and the minimum run counts from it [D016].
+
 ## 0.10.2 - 2026-11-07
 
 ### Fixed

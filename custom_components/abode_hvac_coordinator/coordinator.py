@@ -107,7 +107,13 @@ from .memory import (
 from .model import RoomModel
 from .model.forecast import ForecastInput, drift_now
 from .model.physics import Figures, figures
-from .model.unit import effort_for_rate, head_effort, seen_running, top_rate
+from .model.unit import (
+    effort_for_rate,
+    head_direction,
+    head_effort,
+    seen_running,
+    top_rate,
+)
 from .models import (
     CapabilityProfile,
     ComfortResult,
@@ -133,6 +139,7 @@ from .models import (
 )
 from .observe import LoadHistory, RoomObserver
 from .psychro import dew_point
+from .sun import sun_position
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -275,6 +282,9 @@ class RoomRun:
         self.limits = RoomLimits(room)
         self.act = RoomAct(room)
         self.scorecard = RoomScorecard(yesterday=self.state.yesterday)
+        local_today = dt_util.as_local(dt_util.utcnow()).date()
+        self.scorecard.restore_today(self.state.today, local_today.isoformat(),
+                                     (local_today - timedelta(days=1)).isoformat())
         self.availability = Availability(room)
         self.replan = True
 
@@ -537,6 +547,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         self._last_cycle: datetime | None = None
         self._running_since: dict[str, datetime] = {}
         self._stopped_since: dict[str, datetime] = {}
+        self._unit_way: dict[str, int] = {}
+        self._clear_now: float | None = None  # the sky as the solar power measures it
         self._unit_running: dict[str, bool] = {}
         self._issues: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {}
         self._gone_since: dict[str, datetime] = {}  # room sensors seen gone, and since when
@@ -620,6 +632,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         for rid, r in self.rooms.items():
             r.state.occupied = r.comfort.occupied
             r.state.yesterday = r.scorecard.yesterday
+            r.state.today = r.scorecard.today_dict(dt_util.as_local(dt_util.utcnow()).date().isoformat())
             r.state.arbiter = r.control.arbiter
             rooms[rid] = r.state
         self.house_state.grid = self.grid.as_dict() if self.grid is not None else {}
@@ -904,6 +917,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             draw_kw=draw_now,
             head_outdoor_units=head_units,
             system_temperature_unit=system_unit,
+            measured_clear=self._clear_now,
         )
         run.snapshot = snap
         model = run.model
@@ -915,7 +929,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             if model.heat is not None:
                 self.memory.learned()
         run.conditions = conditions_ahead(snap, room, location, _local_hour, now,
-                                          model.heat.last_outdoor if model.heat is not None else None)
+                                          model.heat.last_outdoor if model.heat is not None else None,
+                                          self._clear_now)
         if hour:
             await self._hour(run, now)
         outdoor = snap.outdoor_temperature.value
@@ -1032,17 +1047,34 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         solar = first.solar_kw.value
         charge = first.battery_charge_pct.value
         self.load_history.add(now, load)
+        # the sky as the house's solar panels measure it, for the next cycle [Prop]
+        position = sun_position(self.hass.config.latitude, self.hass.config.longitude, now) \
+            if self.hass.config.latitude is not None and self.hass.config.longitude is not None else None
+        self.house_state.solar.observe(dt_util.as_local(now).date().isoformat(), position, solar)
+        self._clear_now = self.house_state.solar.clear_fraction(position, solar)
         running = frozenset(
             h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads
             if seen_running(h)
         )
         self.budget.loads.add(now, load, solar, running)
+        ways: dict[str, set[int]] = {}
+        for r in runs:
+            for h in r.snapshot.heads if r.snapshot is not None else ():
+                if seen_running(h) and head_direction(h.mode) != 0:
+                    ways.setdefault(h.outdoor_unit, set()).add(head_direction(h.mode))
         for unit in {h.outdoor_unit for r in runs if r.snapshot is not None for h in r.snapshot.heads}:
             on = unit in running
+            way = next(iter(ways[unit])) if len(ways.get(unit, ())) == 1 else 0
             if self._unit_running.get(unit) is not on:
                 if unit in self._unit_running:
                     (self._running_since if on else self._stopped_since)[unit] = now
                 self._unit_running[unit] = on
+            elif on and way * self._unit_way.get(unit, 0) < 0:
+                # turned the other way while running: a stop and a start, so
+                # the run the plan's minimum run counts begins now [D016]
+                self._stopped_since[unit] = self._running_since[unit] = now
+            if on and way != 0:
+                self._unit_way[unit] = way
         if charge is not None:
             self._charges.append((now, charge))
         while len(self._charges) > 1 and now - self._charges[1][0] >= _CHARGE_WINDOW:
@@ -1221,6 +1253,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             free_cooling_advised_at=run.free_cooling_since,
             rebound_steps=rebound,
             last_kind=last_kind,
+            last_way=next(iter(ways)) if len(ways := {self._unit_way[u] for u in units if u in self._unit_way}) == 1
+            else 0,
             t_now=_estimate_now(run, now)[0],
         )
 
@@ -1270,9 +1304,11 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         draw = sum(learned) if running and own and len(learned) == len(own) else None
         band = (comfort.band_low, comfort.band_high) if comfort.band_low is not None and comfort.band_high is not None \
             else None
+        ways = {head_direction(h.mode) for h in snap.heads if seen_running(h)} - {0}
         run.scorecard.observe(dt_s=dt_s, occupied=comfort.occupied, index=comfort.room_index, band=band,
                               running=running, draw_kw=draw,
-                              price=snap.tariff_now.price if snap.tariff_now is not None else None)
+                              price=snap.tariff_now.price if snap.tariff_now is not None else None,
+                              way=next(iter(ways)) if len(ways) == 1 else 0)
         weekly = run.model.trust.weekly_errors
         run.scorecard.learning = weekly[-1][1] if weekly else None
         # a sensor is present only when it was read: a unit's own reading

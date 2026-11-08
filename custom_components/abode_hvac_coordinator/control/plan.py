@@ -98,6 +98,9 @@ class PlanInputs:
     free_cooling_advised_at: datetime | None = None  # [D073]
     rebound_steps: int = 0  # coil rebound left from a stop before now [D060]
     last_kind: StepKind = StepKind.REST
+    # the way the unit last ran: 1 cooling or drying, -1 heating, 0 not known
+    # [D102]
+    last_way: int = 0
     # the room estimate now: the filter's, carried forward on the model's
     # rate since its last step (control/pid.py estimate_now), so a plan made
     # between filter steps starts where the PID will measure it [Der]
@@ -111,13 +114,15 @@ def conditions_ahead(
     local_hour: Callable[[datetime], float],
     now: datetime,
     last_outdoor: float | None = None,
+    measured_clear: float | None = None,
 ) -> list[Conditions] | None:
     """The weather and sun at each 5-minute point of the next six hours.
 
     Outdoor temperature and humidity from the forecast hour each point falls
     in, or the readings now where the forecast has none [Prop]; the
-    clear-sky fraction from that hour's cloud cover or UV index, 1 without
-    either [Set]; the sun on the glass from the sun's position and the
+    clear-sky fraction from that hour's cloud cover or UV index; without
+    either, the sky as the house's solar power measures it now; 1 without
+    any [Set]; the sun on the glass from the sun's position and the
     window [D023], counted as not on the glass where that cannot be said.
     Without any outdoor temperature, now, forecast or last known (the
     filter's), there is nothing to plan with: None.
@@ -134,6 +139,8 @@ def conditions_ahead(
         t = hour.temperature if hour is not None and hour.temperature is not None else out_now
         rh = hour.humidity if hour is not None and hour.humidity is not None else rh_now
         f = clear_sky_fraction(hour.cloud_coverage, hour.uv_index) if hour is not None else None
+        if f is None:
+            f = measured_clear  # the sky as the solar power measures it now, carried forward [Prop]
         position = sun_position(location[0], location[1], when) if location is not None else None
         answer = sun_on_window(position, facing, room.overhang_projection_m, room.overhang_height_m)
         if t is None:
@@ -188,6 +195,21 @@ def _runs(kind: StepKind) -> bool:
     return kind in (StepKind.COOL, StepKind.HEAT, StepKind.DRY)
 
 
+def _way(kind: StepKind) -> int:
+    """The way a running kind moves the room: cool and dry 1, heat -1."""
+    if kind in (StepKind.COOL, StepKind.DRY):
+        return 1
+    if kind is StepKind.HEAT:
+        return -1
+    return 0
+
+
+def _reverses(running: bool, last_kind: StepKind, kind: StepKind) -> bool:
+    """A running unit turned the other way: a stop and a start, not a
+    carry-on (decision of 6 November 2026) [D016]."""
+    return running and _runs(kind) and _way(last_kind) * _way(kind) < 0
+
+
 @dataclass(slots=True)
 class _Node:
     t: float
@@ -202,6 +224,7 @@ class _Node:
     rebound: int
     c_start: float
     u: float = 0.0  # the unit's rate now, through its delay and lag
+    way: int = 0  # the way the unit last ran in this plan, from last_way
     actions: list[PlanAction] = field(default_factory=list)
     points: list[PlanPoint] = field(default_factory=list)
 
@@ -280,6 +303,22 @@ def _vp(t: float, rh: float) -> float:
     return rh / 100.0 * 6.105 * math.exp(17.27 * t / (237.7 + t))
 
 
+def _locked(node: _Node, action: PlanAction, inp: PlanInputs, j: int, index_now: float) -> bool:
+    """Never heat after a cooling cycle, never cool after a heating cycle
+    [D102]: a hard limit, as the compressor's minimum
+    run and rest are. It holds while the room is inside its band; a room
+    that has left it on the other side may be turned that way, so the last
+    run of one season never blocks the next. Inside the band the plan
+    rests, and its calculation decides the rest."""
+    way = _way(action.kind)
+    if way == 0 or node.way == 0 or way == node.way:
+        return False
+    index = node.points[-1].hci if node.points else index_now
+    band = inp.bands[max(j * PLAN_POINTS_PER_STEP - 1, 0)]
+    left = index < band.low if way < 0 else index > band.high
+    return not left
+
+
 def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -> bool:
     """What step 0 may not do, from the state now [D016][D073]. Later steps
     are half an hour apart, longer than the shortest run and rest.
@@ -290,6 +329,10 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
     stop and keeps the unit on its last running command [D016], and the
     plan never turns a heating room to cooling to stay running."""
     runs = _runs(action.kind)
+    # turning a running unit the other way is a stop and a start: it rests
+    # first, so a plan that reverses begins by resting [D016]
+    if _reverses(inp.compressor_running, inp.last_kind, action.kind):
+        return False
     if runs and not inp.compressor_running:
         if inp.stopped_since is not None and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S:
             return False
@@ -349,7 +392,9 @@ def make_plan(inp: PlanInputs) -> Plan:
         rebound=inp.rebound_steps,
         c_start=c_start,
         u=inp.heat.u,
+        way=inp.last_way,
     )
+    index_now = start.t + _E_COEFF * start.e - _OFFSET
     beam = [start]
     best_by_first: dict[PlanAction, _Node] = {}
     for j in range(PLAN_STEPS):
@@ -361,6 +406,8 @@ def make_plan(inp: PlanInputs) -> Plan:
                 if j == 0 and not _allowed_first(inp, action, can_carry_on):
                     continue
                 if inp.blind_control and (action.blinds_closed is not None) != sunny:
+                    continue
+                if _locked(node, action, inp, j, index_now):
                     continue
                 grown.append(_extend(node, action, j, inp, fx, w, draws[action.rate]))
         grown.sort(key=lambda n: n.key)
@@ -387,7 +434,8 @@ def _extend(
 ) -> _Node:
     n = node.copy()
     runs = _runs(action.kind)
-    if runs and not n.running:
+    if runs and (not n.running or _reverses(n.running, n.last_kind, action.kind)):
+        # a reversal is a stop and a start: it costs a start [D016]
         n.starts += 1
     wet_before = n.last_kind in (StepKind.COOL, StepKind.DRY) and n.running
     wet = action.kind in (StepKind.COOL, StepKind.DRY)
@@ -395,6 +443,8 @@ def _extend(
         n.rebound = _REBOUND_STEPS
     n.running = runs
     n.last_kind = action.kind
+    if runs:
+        n.way = _way(action.kind)
     u_target = action.rate if runs else 0.0  # dry removes heat at U_min
     if action.blinds_closed is None:
         tau = inp.transmission_now

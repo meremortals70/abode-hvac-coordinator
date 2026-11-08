@@ -216,7 +216,78 @@ class CeilingEachWay(unittest.TestCase):
         self.assertLessEqual(max(-a.rate for a in same if a.kind is SK.HEAT), 2.0)  # none given: the ceiling
 
 
+def starts_in(actions: Any) -> int:
+    """Starts in a plan from rest: each run begun from rest, and each turn
+    between cooling (cool, dry) and heating while running."""
+    n, way = 0, 0
+    for a in actions:
+        w = 1 if a.kind in (SK.COOL, SK.DRY) else -1 if a.kind is SK.HEAT else 0
+        if w != 0 and (way == 0 or w != way):
+            n += 1
+        way = w
+    return n
+
+
+class NoTurnInsideTheBand(unittest.TestCase):
+    """Never heat after a cooling cycle, never cool after a heating cycle,
+    while the room is inside its band [D102]."""
+
+    def assert_turns_only_outside(self, p: Any, way: int, low: float, high: float) -> None:
+        """Every turn the other way comes only where the plan's own forecast
+        has the room outside its band on that side."""
+        index = None
+        for j, a in enumerate(p.actions):
+            w = 1 if a.kind in (SK.COOL, SK.DRY) else -1 if a.kind is SK.HEAT else 0
+            if w == -way and w != 0:
+                before = p.points[j * 6 - 1].hci if j > 0 else index
+                self.assertIsNotNone(before, "turned in the first step")
+                self.assertTrue(before < low if w < 0 else before > high,
+                                f"step {j}: {a.kind.value} with the room at {before:.2f}, band {low}-{high}")
+            if w != 0:
+                way = w
+
+    def test_after_cooling_a_cool_night_rests_and_never_heats(self) -> None:
+        # the living room at 04:20 on 8 November: just under the centre after
+        # cooling, a 19.5 C night; heating was asked for 10 times that night
+        f = heat(22.6)
+        for running in (False, True):
+            kw = {"compressor_running": running, "last_kind": SK.COOL if running else SK.REST,
+                  "running_since": NOW - timedelta(minutes=30) if running else None}
+            p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=19.5),
+                                      last_way=1, **kw))
+            self.assertIsNot(p.first.kind, SK.HEAT)
+            self.assert_turns_only_outside(p, 1, 23.0, 25.5)
+
+    def test_after_heating_a_warm_day_never_cools(self) -> None:
+        f = heat(25.0)
+        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 26.0), conditions=conds(outdoor=27.0), last_way=-1))
+        self.assertNotIn(p.first.kind, (SK.COOL, SK.DRY))
+        self.assert_turns_only_outside(p, -1, 23.0, 26.0)
+
+    def test_the_same_night_without_a_cooling_cycle_may_heat(self) -> None:
+        f = heat(22.6)
+        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=19.5), last_way=0))
+        self.assertIn(SK.HEAT, {a.kind for a in p.actions})
+
+    def test_a_room_that_has_left_the_band_may_be_turned(self) -> None:
+        # the last cooling of summer never blocks the first heating of winter
+        f = heat(17.0)
+        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=10.0), last_way=1))
+        self.assertIn(SK.HEAT, {a.kind for a in p.actions})
+
+
 class FirstStep(unittest.TestCase):
+    def test_no_reversal_while_running(self) -> None:
+        """A running unit is not turned the other way in the first step: it
+        rests first [D016]."""
+        heat_a = models.PlanAction(SK.HEAT, -1.0, None)
+        cool = models.PlanAction(SK.COOL, 2.0, None)
+        running = {"compressor_running": True, "last_kind": SK.COOL,
+                   "running_since": NOW - timedelta(minutes=30)}
+        self.assertFalse(plan._allowed_first(inputs(**running), heat_a))
+        self.assertTrue(plan._allowed_first(inputs(**running), cool))
+        self.assertTrue(plan._allowed_first(inputs(**{**running, "last_kind": SK.DRY}), cool))
+
     def test_minimum_rest_and_run(self) -> None:
         cool = models.PlanAction(SK.COOL, 2.0, None)
         rest = models.PlanAction(SK.REST, 0.0, None)
@@ -408,7 +479,19 @@ class Plans(unittest.TestCase):
                                      r != 1.0 else 30.0))
         self.assertLessEqual(dear.starts, cheap.starts + 12)
         self.assertAlmostEqual(dear.c_start, 0.5 * 30.0)
-        self.assertLessEqual(dear.starts, 1)
+        self.assertEqual(dear.starts, starts_in(dear.actions))
+        self.assertLessEqual(dear.starts, 2)
+
+    def test_a_reversal_is_a_start(self) -> None:
+        """Cooling turned to heating, or back, is a stop and a start
+        (decision of 6 November 2026) [D016]. The released plan counted
+        none: with starts dear it swapped cool and heat 9 times and called
+        it 1 start (8 November 2026)."""
+        f = heat(26.0)
+        for draw in (None, lambda r: 0.3 * abs(r) if r != 1.0 else 30.0):
+            kw = {"draw_for_rate": draw} if draw is not None else {}
+            p = plan.make_plan(inputs(heat=f, conditions=conds(outdoor=29.0), **kw))
+            self.assertEqual(p.starts, starts_in(p.actions), [(a.kind.value, a.rate) for a in p.actions])
 
     def test_index_follows_the_forecast(self) -> None:
         # sun on the glass changes the forecast temperature, never the index's
@@ -665,6 +748,24 @@ class RoomControlTests(unittest.TestCase):
         r = rc.cycle(now=NOW + timedelta(minutes=6), t_est=23.0, slope_est=0.0, u_min=1.0, top=6.0, delivered=True)
         self.assertEqual((r.kind, r.pid), (SK.REST, None))
         self.assertFalse(rc.pid.running)
+
+    def test_reversal_restarts_the_integral(self) -> None:
+        """Cooling turned to heating is a stop and a start: the integral
+        built while cooling is not carried into heating [D016]."""
+        rc = control.RoomControl()
+        f = heat(26.5)
+        g = pid.gains(physics.figures(f.z), 6.0, 15.0, 0.5)
+        rc.replan(inputs(heat=f, conditions=conds(outdoor=33.0)), g)
+        for m in range(1, 30):
+            rc.cycle(now=NOW + timedelta(minutes=m), t_est=26.0, slope_est=0.0, u_min=1.0, top=6.0, delivered=True)
+        self.assertNotEqual(rc.pid.integral, 0.0)
+        assert rc.plan is not None
+        first = rc.plan.first
+        rc.plan = dataclasses.replace(rc.plan, actions=(dataclasses.replace(first, kind=SK.HEAT, rate=-1.0),
+                                                        *rc.plan.actions[1:]))
+        r = rc.cycle(now=NOW + timedelta(minutes=30), t_est=21.0, slope_est=0.0, u_min=1.0, top=6.0, delivered=True)
+        self.assertIs(r.kind, SK.HEAT)
+        self.assertEqual(rc.pid.integral, 0.0)
 
 
 if __name__ == "__main__":

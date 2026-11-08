@@ -697,16 +697,34 @@ def hsnap(climate: str, ou: str, mode: str, comp: Any, setpoint: float = 22.0) -
                                models.Reading(None, VT.MISSING), comp, models.CompressorSource.MODE)
 
 
+def noisy_history(level: float, until: Any = None) -> Any:
+    """A house load that has moved by about 0.03 kW reading to reading for
+    the half-hour before, so its noise is learned (3 sigma about 0.1 kW)."""
+    hist = observe.LoadHistory()
+    end = until if until is not None else NOW - timedelta(minutes=4)
+    wobble = (0.03, -0.02, 0.01, -0.03, 0.02, -0.01)
+    for k in range(40):
+        hist.add(end - timedelta(seconds=30 * (40 - k)), level + wobble[k % len(wobble)])
+    return hist
+
+
 class Draw(unittest.TestCase):
     def run_event(self, before: list[Any], after: list[Any], load_before: float, load_after: float,
-                  commands: dict[str, datetime] | None = None) -> Any:
+                  commands: dict[str, datetime] | None = None, rise_after_s: float = 30.0) -> Any:
+        """The head changes at NOW; the load stands at load_before for the
+        3 minutes before and moves to load_after rise_after_s later."""
         d = unit.DrawLearner()
-        hist = observe.LoadHistory()
-        hist.add(NOW - timedelta(minutes=2), load_before)
-        hist.add(NOW + timedelta(seconds=30), load_after)
-        d.observe(NOW - timedelta(minutes=1), before, {}, hist)
-        d.observe(NOW, after, commands or {}, hist)
-        d.observe(NOW + timedelta(minutes=2), after, commands or {}, hist)
+        hist = noisy_history(load_before)
+        t = NOW - timedelta(minutes=4)
+        while t <= NOW + timedelta(minutes=6):
+            hist.add(t, load_before if t < NOW + timedelta(seconds=rise_after_s) else load_after)
+            if t == NOW - timedelta(minutes=1):
+                d.observe(t, before, {}, hist)
+            elif t == NOW:
+                d.observe(t, after, commands or {}, hist)
+            elif t > NOW and (t - NOW).total_seconds() % 60 == 0:
+                d.observe(t, after, {}, hist)
+            t += timedelta(seconds=30)
         return d
 
     def test_start(self) -> None:
@@ -714,14 +732,35 @@ class Draw(unittest.TestCase):
                            0.5, 1.7)
         self.assertAlmostEqual(d.draw_at("ou1", 2.0), 1.2)
 
+    def test_start_from_the_mode_alone(self) -> None:
+        """A unit that never reports its compressor: put in cool from off,
+        and the load rises 3 minutes later, as the office's did on 7
+        November 2026. The released learner learned no start at all."""
+        d = self.run_event([hsnap("c1", "ou1", "off", CS.STOPPED)], [hsnap("c1", "ou1", "cool", CS.UNKNOWN)],
+                           0.6, 1.1, rise_after_s=190.0)
+        self.assertAlmostEqual(d.draw_at("ou1", 2.0), 0.5)
+
+    def test_start_with_no_rise_is_not_learned(self) -> None:
+        d = self.run_event([hsnap("c1", "ou1", "off", CS.STOPPED)], [hsnap("c1", "ou1", "cool", CS.UNKNOWN)],
+                           0.6, 0.65)
+        self.assertIsNone(d.draw_at("ou1", 2.0))
+
     def test_stop_into_fan_only(self) -> None:
         d = self.run_event([hsnap("c1", "ou1", "cool", CS.UNKNOWN)], [hsnap("c1", "ou1", "fan_only", CS.STOPPED)],
                            1.9, 0.6)
         self.assertAlmostEqual(d.draw_at("ou1", 2.0), 1.3)
 
-    def test_stop_from_idle_effort_not_counted(self) -> None:
-        d = self.run_event([hsnap("c1", "ou1", "cool", CS.UNKNOWN, setpoint=23.8)],
-                           [hsnap("c1", "ou1", "fan_only", CS.STOPPED)], 1.9, 0.6)
+    def test_stop_at_a_whole_degree_setpoint_is_learned(self) -> None:
+        """The unit reads its setpoint in whole degrees yet is drawing: the
+        office at 18:05 on 7 November 2026 read 24 at a 24 setpoint and the
+        load fell 0.23 kW. The released learner refused it."""
+        d = self.run_event([hsnap("c1", "ou1", "cool", CS.UNKNOWN, setpoint=24.0)],
+                           [hsnap("c1", "ou1", "off", CS.STOPPED, setpoint=24.0)], 0.85, 0.62)
+        self.assertAlmostEqual(d.draw_at("ou1", 0.5), 0.23)
+
+    def test_stop_with_no_fall_is_not_learned(self) -> None:
+        d = self.run_event([hsnap("c1", "ou1", "cool", CS.UNKNOWN, setpoint=24.0)],
+                           [hsnap("c1", "ou1", "fan_only", CS.STOPPED)], 0.70, 0.66)
         self.assertIsNone(d.draw_at("ou1", 2.0))
 
     def test_another_unit_changing_spoils_it(self) -> None:
@@ -743,6 +782,25 @@ class Draw(unittest.TestCase):
         self.assertEqual(unit.DrawLearner(has_load_sensor=False).draw_at("ou1", 1.0), 1.2)
         e = unit.DrawLearner.from_dict(d.as_dict(), True)
         self.assertEqual(e.table, d.table)
+
+    def test_nothing_is_learned_before_the_houses_noise_is(self) -> None:
+        d = unit.DrawLearner()
+        hist = observe.LoadHistory()
+        t = NOW - timedelta(minutes=4)
+        while t <= NOW + timedelta(minutes=6):
+            hist.add(t, 0.5 if t < NOW else 1.7)
+            if t >= NOW - timedelta(minutes=1) and (t - NOW).total_seconds() % 60 == 0:
+                state = CS.STOPPED if t < NOW else CS.RUNNING
+                d.observe(t, [hsnap("c1", "ou1", "cool", state)], {}, hist)
+            t += timedelta(seconds=30)
+        self.assertIsNone(d.draw_at("ou1", 2.0))
+        self.assertIsNone(hist.step_kw())
+
+    def test_the_step_is_three_times_the_learned_noise(self) -> None:
+        hist = noisy_history(0.6)
+        self.assertIsNotNone(hist.step_kw())
+        self.assertGreater(hist.step_kw(), 0.03)
+        self.assertLess(hist.step_kw(), 0.2)
 
     def test_running_average(self) -> None:
         d = unit.DrawLearner()
@@ -1067,7 +1125,7 @@ class DrawSwap(unittest.TestCase):
 
         def run(a_on: Any, b_on: Any) -> dict[str, Any]:
             learner = unit.DrawLearner(has_load_sensor=True)
-            hist = load("observe").LoadHistory()
+            hist = noisy_history(1.5, until=t0)
             for i in range(12):
                 now = t0 + timedelta(minutes=i)
                 # the house load rises 0.6 kW at minute 2 in every case

@@ -105,3 +105,5 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D098](D098.md) | An edit keeps what each of the room's modules remembers between cycles, and makes the room's entities again from the new settings |
 | [D099](D099.md) | The forecast's value for the hour now stands in for a missing or too-old outdoor temperature or humidity, and the model learns from it |
 | [D100](D100.md) | The unit's lowest steady rate is learned only from a 30-minute run held at or below the lowest rate offered then |
+| [D101](D101.md) | Off or fan-only is not running. In any other mode the component watches the house power: a rise is the compressor starting, a fall back is it stopping |
+| [D102](D102.md) | Never heat after a cooling cycle; never cool after a heating cycle. The limit holds while the room is inside its band |

@@ -27,6 +27,7 @@ class RoomControl:
     rl: RlController = field(default_factory=RlController)
     arbiter: Arbiter = field(default_factory=Arbiter)
     gains: Gains | None = None
+    last_kind: StepKind | None = None  # the kind the PID last held
 
     def replan(self, inputs: PlanInputs, gains: Gains) -> Plan:
         """Every 5 minutes: the plan, and the PID's gains with it."""
@@ -54,8 +55,14 @@ class RoomControl:
         in_charge = self.arbiter.in_charge
         if first.kind not in (StepKind.COOL, StepKind.HEAT):
             self.pid.rest()
+            self.last_kind = None
             return ControlResult(first.kind, first.rate, first.blinds_closed, in_charge, plan, None,
                                  f"the plan's first step: {first.kind.value}")
+        if self.last_kind is not None and self.last_kind is not first.kind:
+            # cooling turned to heating, or back: a stop and a start, so the
+            # integral starts again from zero [D016][Prop]
+            self.pid.rest()
+        self.last_kind = first.kind
         t_path, slope_path = path_now(plan, now, self.plan_t0)
         terms = self.pid.step(
             now=now,

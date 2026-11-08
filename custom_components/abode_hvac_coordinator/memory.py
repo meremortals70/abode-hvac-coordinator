@@ -37,6 +37,7 @@ from .models import (
     RoomConfig,
 )
 from .observe import LoadHistory, RoomObserver
+from .sun import SolarReference
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, State
@@ -60,6 +61,7 @@ class RoomState:
     occupied: bool | None = None  # [D068]
     profile: CapabilityProfile | None = None  # [D048]
     yesterday: DayScore | None = None  # the scorecard, so its sensors show yesterday after a restart
+    today: dict[str, Any] | None = None  # the scorecard's day so far, so a restart does not drop it
 
 
 def _finite(value: Any) -> float | None:
@@ -170,6 +172,7 @@ def room_to_dict(s: RoomState) -> dict[str, Any]:
         "occupied": s.occupied,
         "profile": profile_to_dict(s.profile) if s.profile is not None else None,
         "yesterday": score_to_dict(s.yesterday) if s.yesterday is not None else None,
+        "today": dict(s.today) if s.today is not None else None,
     }
 
 
@@ -198,6 +201,7 @@ def room_from_dict(data: Mapping[str, Any]) -> RoomState:
         occupied=occupied if isinstance(occupied, bool) else None,
         profile=profile_from_dict(p) if (p := part("profile")) is not None else None,
         yesterday=score_from_dict(y) if (y := part("yesterday")) is not None else None,
+        today=dict(t) if (t := part("today")) is not None else None,
     )
 
 
@@ -209,12 +213,13 @@ class HouseState:
 
     draw: DrawLearner = field(default_factory=DrawLearner)
     grid: dict[str, Any] = field(default_factory=dict)
+    solar: SolarReference = field(default_factory=SolarReference)
 
 
 def to_data(rooms: Mapping[str, RoomState], house: HouseState) -> dict[str, Any]:
     """The whole stored file's data."""
     return {"rooms": {rid: room_to_dict(s) for rid, s in rooms.items()}, "draw": house.draw.as_dict(),
-            "grid": dict(house.grid)}
+            "grid": dict(house.grid), "solar": house.solar.as_dict()}
 
 
 def from_data(data: Mapping[str, Any] | None, *, has_load_sensor: bool) -> tuple[dict[str, RoomState], HouseState]:
@@ -232,7 +237,9 @@ def from_data(data: Mapping[str, Any] | None, *, has_load_sensor: bool) -> tuple
     except (TypeError, ValueError):
         draw = DrawLearner(has_load_sensor=has_load_sensor)
     grid_raw = data.get("grid")
-    return rooms, HouseState(draw, dict(grid_raw) if isinstance(grid_raw, Mapping) else {})
+    solar_raw = data.get("solar")
+    solar = SolarReference.from_dict(solar_raw) if isinstance(solar_raw, Mapping) else SolarReference()
+    return rooms, HouseState(draw, dict(grid_raw) if isinstance(grid_raw, Mapping) else {}, solar)
 
 
 def migrate(old_major: int, old_minor: int, data: Mapping[str, Any]) -> dict[str, Any]:

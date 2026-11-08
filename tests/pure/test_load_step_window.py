@@ -1,7 +1,6 @@
-"""The house-load step (4.8, source 3) judges the minute after a command
-only once a load reading from the end of that minute is in, run in the
-coordinator's order: Observe builds the snapshot before the cycle's own
-house-load reading is added."""
+"""The house power (4.8, source 3): a compressor starting 40 seconds after
+its head is put in cool is seen, run in the coordinator's order: Observe
+builds the snapshot before the cycle's own house-load reading is added."""
 
 from __future__ import annotations
 
@@ -35,6 +34,8 @@ class LoadStepWindow(unittest.TestCase):
     def test_a_start_40_seconds_after_the_command_is_seen(self) -> None:
         observer = observe.RoomObserver(_room())
         lh = observe.LoadHistory()
+        for k in range(40):  # the house's noise, learned over the half-hour before
+            lh.add(T0 - timedelta(seconds=30 * (40 - k)), 1.0 + (0.03, -0.02, 0.01, -0.03)[k % 4])
         commands: dict[str, datetime] = {}
         command_at = T0 + timedelta(minutes=1)  # Act sends cool in this cycle
         start_at = command_at + timedelta(seconds=40)  # the compressor starts 40 s later

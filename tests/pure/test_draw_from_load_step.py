@@ -42,10 +42,12 @@ class DrawFromLoadStep(unittest.TestCase):
         room = _room()
         observer = observe.RoomObserver(room)
         # the compressor was seen starting by an earlier load step
-        observer._load_steps[CLIMATE] = observe._LoadStepMemory(models.CompressorState.RUNNING, None)
+        observer._load_steps[CLIMATE] = observe._LoadStepMemory(models.CompressorState.RUNNING, 1.5)
         draw = unit.DrawLearner(has_load_sensor=True)
         draw.table[UNIT] = {3: (TRUE_DRAW, 5)}  # 1.5 kW learned at effort 2
         lh = observe.LoadHistory()
+        for k in range(40):  # the house's noise, learned over the half-hour before
+            lh.add(T0 - timedelta(seconds=30 * (40 - k)), 3.0 + (0.03, -0.02, 0.01, -0.03)[k % 4])
         commands: dict[str, datetime] = {}
         command_at = T0 + timedelta(minutes=2, seconds=30)  # Act raises the setpoint
         stop_at = command_at + timedelta(seconds=10)  # the compressor stops 10 s later

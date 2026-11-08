@@ -128,7 +128,7 @@ S = [\text{sun on the glass}] \times f_{clear} \times \tau_{blind}
 ```
 
 - **Sun on the glass** comes from the sun's position, the window's compass direction and any overhang [D023]. A configured sun-on-window sensor replaces the geometry [Set].
-- **f\_clear** is the weather forecast's clear-sky fraction for that hour, worked out from the forecast's cloud cover c in %: f\_clear = 0.2 + 0.8 × (1 − c/90) below 90%, and 0.2 at or above it. Without cloud cover it is the UV index ÷ 8, at most 1 [Set]. With neither, f\_clear = 1, the sun is marked assumed, and that step teaches the sun's figures nothing; the air and mass are still corrected, with the assumed sun's possible effect added to their uncertainty (4.3) [Prop][Der].
+- **f\_clear** is the weather forecast's clear-sky fraction for that hour, worked out from the forecast's cloud cover c in %: f\_clear = 0.2 + 0.8 × (1 − c/90) below 90%, and 0.2 at or above it. Without cloud cover it is the UV index ÷ 8, at most 1 [Set]. With neither, f\_clear is the house's solar power now over the most its panels have made with the sun in the same place (5° of elevation by 15° of azimuth), learned from the house's own readings, fading 1 % a day and used once three days have taught it; the plan carries it forward over its hours [Prop]. With none of these, f\_clear = 1, the sun is marked assumed, and that step teaches the sun's figures nothing; the air and mass are still corrected, with the assumed sun's possible effect added to their uncertainty (4.3) [Prop][Der].
 - **τ\_blind** is the blinds' transmission: 1 with no blind, or a blind whose position is unknown; 0.15 at or below 5% open; and 0.15 + 0.85 × the open fraction otherwise. With several blinds it is their average [Set].
 
 **The unit.** What the unit removes depends on how hard it is working, its effort x [Prop]:
@@ -232,7 +232,7 @@ The same test is applied to six-hour forecasts over 14 days. Trust is published,
 **Learning the unit outside the filter** [Prop]:
 
 - **Lowest continuous rate.** U\_min, one for cooling (and dry) and one for heating, each on its own curve, is the rate of a 30-minute run without a stop held at or below the lowest rate offered at the time, with an effort asked in every minute; it replaces the last, up or down. The lowest rate offered is never below the curve's first point, which is used until a run is learned [D100].
-- **Draw.** When exactly one outdoor unit starts or stops and nothing else changes within a minute, the step in house load is its draw at that effort [D028]. Between such efforts it is joined by straight lines; beyond them the nearest known value is used [Prop].
+- **Draw.** A start is a head put in cool, dry or heat from off or fan-only, or a compressor reported starting; a stop is a head put in off or fan-only from cool, dry or heat, or a compressor reported stopping. Neither needs the unit to report its compressor: the house load says whether it moved. When exactly one outdoor unit starts or stops and no other changes from 3 minutes before to 4 minutes after, the step in house load is its draw at that effort [D028]. The load before is its average over the 3 minutes before, after this unit's own last change; after a start, the average from the first reading that rose, since a compressor starts up to 3.3 minutes after its head is put in cool [Sim: the house's recorder, 7 November 2026]; after a stop, the average of what follows; each cut at this unit's next change. A step under three times the house power's own noise is its own movement, not a draw. That noise is learned from the house power's readings as the room sensor's is: from their second differences, taking the median, which a few real steps do not move (0.03 kW on the house's record) [Der]. No effort threshold applies: a unit reading its setpoint in whole degrees was still drawing 0.23 kW (decision of 8 November 2026). Between such efforts it is joined by straight lines; beyond them the nearest known value is used [Prop].
 
 **Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
 
@@ -369,7 +369,7 @@ The unit's own thermostat is the fast inner loop; the component tells it what to
 s_{lo} = \text{step}\left\lfloor \frac{s^*}{\text{step}}\right\rfloor, \quad s_{hi} = s_{lo} + \text{step}, \quad f = \frac{s^* - s_{lo}}{\text{step}}, \quad \text{time at } s_{hi} = f \times 30\,\text{min}
 ```
 
-Each value is held at least 10 minutes [Prop]; where f × 30 or (1 − f) × 30 minutes would be shorter, the nearer value is held for the whole 30 minutes [Prop]. Values stay within the unit's advertised range [D051].
+Each value is held at least 10 minutes, whichever pair the wanted setpoint has moved to; resting, off or leaving the unit alone ends the hold, so the next run sends its own value at once (decision of 8 November 2026) [Prop]; where f × 30 or (1 − f) × 30 minutes would be shorter, the nearer value is held for the whole 30 minutes [Prop]. Values stay within the unit's advertised range [D051].
 
 **The other actions:**
 
@@ -449,7 +449,7 @@ Whether the compressor ran decides which rate the filter is told the unit delive
 | 0. The head is off or in fan-only | Not running, whatever a frequency sensor says: one sensor is often chosen for every head on an outdoor unit and reads another head's compressor [D025] |
 | 1. Compressor frequency | Running above 0 Hz [Prop] |
 | 2. `hvac_action` | Cooling, heating or drying is running; idle, fan or off is not [D025] |
-| 3. House-load step | Within a minute of a command to that head, with no other unit changing (a blind is not a unit): a rise of at least half the learned draw is a start, the matching fall a stop. Judged once a load reading from the end of the minute is in. A state it finds teaches no draw, since it is dated after the change [Prop][D028] |
+| 3. House power | Off or fan-only is not running (row 0). In any other mode the house power is watched: a rise of the step (half the unit's learned draw, never under three times the house power's learned noise; that alone before any draw is learned [Der]) in its average over the last minute against its median over the 3 minutes before is the compressor starting, and that median is where the power stands with it stopped; a fall to within half a step of that is it stopping. A fall that stays above it is an inverter slowing near its setpoint, not a stop. A head put to work from off or fan-only starts stopped. A state it finds teaches no draw, since it is dated after the change [D101][D028] |
 | 4. Unknown | Not learned from; the trace says so [Prop]. In a mode that runs the compressor (cool, dry, heat) it counts as running wherever the component decides what to do: the power budget and the Enforced turn-off, the plan, the day's cost, the short-cycle guard and an opening's grace [D028] |
 
 The source that answered is recorded every cycle [D006].
@@ -604,11 +604,15 @@ DESIGN VALUES
   room temperature and humidity, presence,
   door and window contacts: no age limit;
   only "unavailable" or "unknown" is missing ..................... [D070][D087]
-  house-load step counted as a compressor start or stop:
-      at least half that outdoor unit's learned draw, within 1 minute
-      of a command to it, with no other unit changing (climate
-      commands only), judged once a load reading from the end of the
-      minute is in; it teaches the draw learner nothing ........... [Prop]
+  house power, while a head is in a working mode: a start is a rise
+      in its last minute's average over the 3 minutes' median before
+      of half the learned draw, never under three times the house
+      power's learned noise (that alone before a draw is learned);
+      a stop is a fall to within half that of where it stood stopped;
+      it teaches the draw learner nothing ..................... [Prop][Der]
+  the house power's noise: from the last 120 readings' second
+      differences, (y_k - 2y_k-1 + y_k-2)^2 / 6, their median / 0.455;
+      nothing is judged before 20 readings ........................ [Der]
 
 BUILD SNAPSHOT, for one room, from the raw states the coordinator hands over:
 
@@ -637,7 +641,9 @@ BUILD SNAPSHOT, for one room, from the raw states the coordinator hands over:
       1. frequency sensor MEASURED     running if above 0 Hz          [Prop]
       2. hvac_action reported          running if cooling, heating or
                                        drying; not if idle, fan or off [D025]
-      3. house-load step (above)       started or stopped             [Prop]
+      3. house power (above)           started or stopped; a head put
+                                       to work from off or fan-only
+                                       starts stopped                 [Prop]
       4. otherwise                     UNKNOWN                        [Prop]
       RECORD which source answered                                    [D006]
 
@@ -821,11 +827,21 @@ WHEN a head has run 30 minutes or more without the compressor stopping,
   lowest rate offered = the larger of U_min and the curve's first point
   (until then, the curve's first point)
 
-WHEN exactly one outdoor unit starts or stops, and nothing else changes
-     within a minute (a head joining or leaving an outdoor unit another
-     head kept running is not its start or stop, nor is one head stopping
-     as another starts on it in the same minute):               [D028]
-  draw at that effort = the step in house load (running average)
+A START: a head put in cool, dry or heat from off or fan-only, or a
+     compressor reported starting; A STOP: a head put in off or fan-only
+     from cool, dry or heat, or a compressor reported stopping   [D028]
+WHEN exactly one outdoor unit starts or stops, and no other changes from
+     3 minutes before to 4 minutes after (a head joining or leaving an
+     outdoor unit another head kept running is not its start or stop, nor
+     is one head stopping as another starts on it in the same minute):
+  before = the load's average over the 3 minutes before, after this
+           unit's own last change
+  after  = a start: the average from the first reading three times the
+           house power's learned noise or more above before, up to 4
+           minutes on; a stop: the average of the 4 minutes after; each
+           cut at this unit's next change
+  draw at that effort = the step, kept if three times that noise or more
+           (running average)                                [D028][Der]
   between known efforts: straight lines; beyond them: the nearest
 WITHOUT a house-load sensor: draw = 1.2 kW at every effort         [D028]
 
@@ -1179,6 +1195,10 @@ EVERY 5 MINUTES, per room, unless Comfort said OFF:
   NOT ALLOWED in any plan:
       a start within 5 minutes of the last stop, a stop within 10
       minutes of the start (per outdoor unit)               [D016][D020]
+      the first step turning a running unit the other way: it rests
+      first                                                         [D016]
+      heating after a cooling cycle, or cooling after a heating cycle,
+      while the plan's forecast has the room inside its band        [D102]
       (the stop rule binds only where the running kind can carry on;
       where it cannot, heating a waking room or a mode or rate no
       longer offered, the plan may rest and Limits holds the stop)  [D016]
@@ -1207,7 +1227,9 @@ EVERY 5 MINUTES, per room, unless Comfort said OFF:
                    x 1/12 hour                                 [I4][Der]
           J += price in step j x energy in step j (learned draw x time)
                                                              [D035][D028]
-          J += c_start for each start
+          J += c_start for each start; cooling or drying turned to
+               heating, or back, while running is a stop and a start
+                                                                   [D016]
       keep the 50 plans with the least outside, then the least J  [D008]
   best = least outside; among equals, least J                [D008][Der]
   GIVE BACK: best's first-step action and rate, the room temperature it
@@ -1244,7 +1266,8 @@ EVERY CYCLE, per room:
       IF the last cycle's output was delivered as asked (Limits did not
          hold it, no ceiling capped it, not at U_min or the top)
           integral = integral + e x time since the last cycle  [D054][R9]
-  WHEN the unit starts            integral = 0                  [Prop][Sim]
+  WHEN the unit starts, or is turned from cooling to heating or back
+                                  integral = 0                  [Prop][Sim]
   WHEN the gains change           hold the feedback part (last u less the
                                   old plan's rate); the new plan's rate
                                   passes straight through            [Der]
@@ -1360,6 +1383,8 @@ EVERY CYCLE, per room, given the action, the rate u and the plan's blinds:
       step = the unit's setpoint step (capabilities.py)
       low = the step at or below the wanted setpoint; high = low + step
       f = (wanted - low) / step
+      a value sent stands 10 minutes, whichever pair the wanted value
+      moves to; resting, off or left alone ends the hold
       IF f x 30 min < 10 min         send low for the whole 30 minutes
       IF (1 - f) x 30 min < 10 min   send high for the whole 30 minutes
       OTHERWISE send high for f x 30 min of each 30, low for the rest
@@ -1605,7 +1630,8 @@ SCORECARD, per room:                                                  [Prop]
   learning   EVERY WEEK: the week's average one-hour forecast error
   comfort    EVERY DAY: minutes the index was in band while occupied /
              minutes occupied
-  starts     EVERY DAY: compressor starts / hours the compressor ran
+  starts     EVERY DAY: compressor starts (a turn between cooling and
+             heating counts as one) / hours the compressor ran
   centre     EVERY DAY: share of occupied time within 0.3 of the centre
   cost       EVERY DAY: the sum over intervals of (learned draw x time
              running) x the interval's price

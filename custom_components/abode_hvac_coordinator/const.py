@@ -154,6 +154,16 @@ FREE_COOLING_WIND_SHARE: Final = 0.3  # [Set]
 FREE_COOLING_WAIT_S: Final = 600.0  # [D073]
 CONDENSATION_MARGIN_C: Final = 2.5  # [Set]
 SUN_MIN_ELEVATION_DEG: Final = 5.0  # [Set]
+# The sun measured by the house's solar power, where the forecast gives no
+# cloud cover or UV (decision of 8 November 2026). The clear-sky fraction is
+# the solar power now over the most the panels have made with the sun in the
+# same place: 5 degrees of elevation by 15 of azimuth. That most is learned
+# from the house's own readings; it fades by 1 % a day, so a dusty panel or
+# a season's change is followed, and is used once three days have taught it.
+SOLAR_REFERENCE_ELEVATION_BIN_DEG: Final = 5.0  # [Prop]
+SOLAR_REFERENCE_AZIMUTH_BIN_DEG: Final = 15.0  # [Prop]
+SOLAR_REFERENCE_DAILY_KEEP: Final = 0.99  # [Prop]
+SOLAR_REFERENCE_MIN_DAYS: Final = 3  # [Prop]
 SUN_MAX_OFF_SQUARE_DEG: Final = 90.0  # [Der]
 CLEAR_SKY_FLOOR: Final = 0.2  # [Set]
 CLEAR_SKY_CLOUD_LIMIT: Final = 90.0  # % [Set]
@@ -168,6 +178,24 @@ OUTDOOR_TOO_OLD_S: Final = 3 * 3600.0  # [D030]
 POWER_TOO_OLD_S: Final = 15 * 60.0  # [D030]
 LOAD_STEP_WINDOW_S: Final = 60.0  # [Prop]
 LOAD_STEP_SHARE_OF_DRAW: Final = 0.5  # [Prop]
+# Draw learning [D028]. A compressor starts up to 3.3 minutes after its head
+# is put in cool (the house's recorder, 7 November 2026: 1.8, 3.2 and 3.3
+# minutes), so the step is looked for over 4 minutes after a start or stop,
+# against the load over the 3 minutes before it.
+DRAW_STEP_WINDOW_S: Final = 4 * 60.0  # [Sim: the house's recorder]
+DRAW_BASELINE_S: Final = 3 * 60.0  # [Prop]
+# The house power's own noise is learned from its readings, as the room
+# sensor's is (4.3): from second differences, (y_k - 2y_k-1 + y_k-2)^2 / 6,
+# whose median is 0.455 of the noise's variance for Gaussian noise (the
+# median of chi-square with one degree of freedom), so a real step in a few
+# of them does not move it [Der]. Over the last 120 readings, about two
+# hours; nothing is judged before 20. A step is a change three times that
+# noise: one the house's own movement makes 0.13 % of the time [Der].
+LOAD_NOISE_READINGS: Final = 120  # [Prop]
+LOAD_NOISE_MIN_READINGS: Final = 20  # [Prop]
+LOAD_STEP_SIGMAS: Final = 3.0  # [Der]
+CHI2_1_MEDIAN: Final = 0.4549364231195724  # [Der]
+LOAD_WATCH_RECENT_S: Final = 60.0  # [Prop]
 
 # --------------------------------------------------------------------------
 # Model (Module 2, Section 4.2-4.3)

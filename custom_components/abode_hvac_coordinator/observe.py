@@ -13,6 +13,7 @@ not know is treated as missing rather than guessed at.
 from __future__ import annotations
 
 import math
+import statistics
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,11 +22,16 @@ from typing import Any
 
 from .capabilities import TO_C
 from .const import (
+    CHI2_1_MEDIAN,
     CLEAR_SKY_CLOUD_LIMIT,
     CLEAR_SKY_FLOOR,
     CLEAR_SKY_UV_DIVISOR,
+    DRAW_BASELINE_S,
+    LOAD_NOISE_MIN_READINGS,
+    LOAD_NOISE_READINGS,
     LOAD_STEP_SHARE_OF_DRAW,
-    LOAD_STEP_WINDOW_S,
+    LOAD_STEP_SIGMAS,
+    LOAD_WATCH_RECENT_S,
     OUTDOOR_TOO_OLD_S,
     POWER_TOO_OLD_S,
     WINDOW_FACINGS,
@@ -165,14 +171,33 @@ class LoadHistory:
 
     keep_s: float = 10 * 60.0
     samples: deque[tuple[datetime, float]] = field(default_factory=deque)
+    _readings: deque[float] = field(default_factory=lambda: deque(maxlen=3))
+    _d2: deque[float] = field(default_factory=lambda: deque(maxlen=LOAD_NOISE_READINGS))
 
     def add(self, when: datetime, kw: float | None) -> None:
-        """Record a house-load reading in kW (None is not recorded)."""
+        """Record a house-load reading in kW (None is not recorded). Each new
+        value the sensor reports also teaches the house's noise."""
         if kw is None:
             return
+        if not self._readings or kw != self._readings[-1]:
+            self._readings.append(kw)
+            if len(self._readings) == 3:
+                a, b, c = self._readings
+                self._d2.append((c - 2.0 * b + a) ** 2 / 6.0)
         self.samples.append((when, kw))
         while self.samples and (when - self.samples[0][0]).total_seconds() > self.keep_s:
             self.samples.popleft()
+
+    def step_kw(self) -> float | None:
+        """A step the house's own movement cannot explain: three times its
+        learned noise (const.py); None until 20 readings are seen [Der]."""
+        if len(self._d2) < LOAD_NOISE_MIN_READINGS:
+            return None
+        return LOAD_STEP_SIGMAS * math.sqrt(statistics.median(self._d2) / CHI2_1_MEDIAN)
+
+    def between(self, start: datetime, end: datetime) -> list[tuple[datetime, float]]:
+        """The readings recorded after start and at or before end."""
+        return [(t, kw) for t, kw in self.samples if start < t <= end]
 
     def at_or_before(self, when: datetime) -> float | None:
         """The latest reading at or before a moment."""
@@ -186,8 +211,10 @@ class LoadHistory:
 
 @dataclass(slots=True)
 class _LoadStepMemory:
+    """One head's watch on the house power while it is in a working mode."""
+
     state: CompressorState = CompressorState.UNKNOWN
-    evaluated_command: datetime | None = None
+    base: float | None = None  # the house power with this compressor stopped
 
 
 def _outdoor_unit(climate: str, name: str | None) -> str:
@@ -220,6 +247,7 @@ class RoomObserver:
         draw_kw: Mapping[str, float | None],
         head_outdoor_units: Mapping[str, str],
         system_temperature_unit: str = "°C",
+        measured_clear: float | None = None,
     ) -> Snapshot:
         """BUILD SNAPSHOT for this room from the raw states handed over.
 
@@ -261,7 +289,7 @@ class RoomObserver:
         grid = r.number(house.grid_power, _POWER_KW, POWER_TOO_OLD_S)
 
         blinds = tuple(_blind_position(r, b) for b in room.blinds)
-        sun = _sun(r, room, location, now, hours, blinds)
+        sun = _sun(r, room, location, now, hours, blinds, measured_clear)
 
         tariff_now = next((i for i in tariff if i.start <= now < i.end), None)
         tariff_ahead = tuple(sorted((i for i in tariff if i.start > now), key=lambda i: i.start))
@@ -358,9 +386,10 @@ class RoomObserver:
         # every head on an outdoor unit, and reads another head's compressor
         # (decision of 27 October 2026; never "running" from the mode [D025])
         if mode in _MODES_NOT_RUNNING:
-            # the next mode's state is not carried from this one: only a
-            # measured rise after the next command counts as a start
-            self._load_steps.setdefault(climate, _LoadStepMemory()).state = CompressorState.UNKNOWN
+            # known stopped: when the head is put to work, its compressor
+            # starts stopped, and the power now is where it stands stopped
+            memory = self._load_steps.setdefault(climate, _LoadStepMemory())
+            memory.state, memory.base = CompressorState.STOPPED, None
             return CompressorState.STOPPED, CompressorSource.MODE
         # 1. frequency sensor MEASURED: running if above 0 Hz [Prop]
         if frequency.tag is ValueTag.MEASURED and frequency.value is not None:
@@ -372,58 +401,51 @@ class RoomObserver:
         if action in _ACTION_NOT_RUNNING:
             return CompressorState.STOPPED, CompressorSource.HVAC_ACTION
         memory = self._load_steps.setdefault(climate, _LoadStepMemory())
-        # 3. house-load step [Prop]
-        self._evaluate_load_step(memory, climate, outdoor_unit, load_history, commands, draw_kw, head_outdoor_units,
-                                 now)
+        # 3. the house power, watched while the head is in a working mode
+        _watch_power(memory, load_history, draw_kw.get(outdoor_unit), now)
         if memory.state is not CompressorState.UNKNOWN:
             return memory.state, CompressorSource.LOAD_STEP
         # 4. otherwise UNKNOWN [Prop]
         return CompressorState.UNKNOWN, CompressorSource.UNKNOWN
 
-    @staticmethod
-    def _evaluate_load_step(
-        memory: _LoadStepMemory,
-        climate: str,
-        outdoor_unit: str,
-        load_history: LoadHistory,
-        commands: Mapping[str, datetime],
-        draw_kw: Mapping[str, float | None],
-        head_outdoor_units: Mapping[str, str],
-        now: datetime,
-    ) -> None:
-        """Within a minute of a command to this head, with no other unit
-        changing: a rise of at least half the outdoor unit's learned draw
-        is a start, the matching fall a stop [Prop]. Judged once the
-        minute has passed; the answer stands until the next one."""
-        commanded = commands.get(climate)
-        if commanded is None or commanded == memory.evaluated_command:
-            return
-        window = timedelta(seconds=LOAD_STEP_WINDOW_S)
-        if now - commanded < window:
-            return
-        # judged once a load reading from the end of the minute is in: this
-        # cycle's reading is added after Observe runs, so the newest one
-        # held can be from 30 seconds before now [Prop]
-        if not load_history.samples or load_history.samples[-1][0] < commanded + window:
-            return
-        memory.evaluated_command = commanded
-        draw = draw_kw.get(outdoor_unit)
-        if draw is None or draw <= 0.0:
-            return
-        for other, when in commands.items():
-            if other == climate or head_outdoor_units.get(other, f"own:{other}") == outdoor_unit:
-                continue
-            if abs((when - commanded).total_seconds()) <= LOAD_STEP_WINDOW_S:
-                return  # another unit changed within the minute
-        before = load_history.at_or_before(commanded - timedelta(microseconds=1))
-        after = load_history.at_or_before(commanded + window)
-        if before is None or after is None:
-            return
-        step = after - before
-        if step >= LOAD_STEP_SHARE_OF_DRAW * draw:
-            memory.state = CompressorState.RUNNING
-        elif step <= -LOAD_STEP_SHARE_OF_DRAW * draw:
+
+def _watch_power(memory: _LoadStepMemory, load_history: LoadHistory, draw: float | None, now: datetime) -> None:
+    """HOUSE POWER (4.8) [D101]. Off or fan-only is not
+    running. In any other mode a rise in the house power is the compressor
+    starting, and a fall back to where it stood before is it stopping.
+
+    The power now is its average over the last minute; where it stood is
+    its median over the 3 minutes before that. A rise of the step (half
+    the unit's learned draw, never less than three times the house's own
+    learned noise; that alone before any draw is learned) is a start, and where it stood is kept as the power with this
+    compressor stopped. A fall to within half a step of that is a stop.
+    An inverter slows as the room nears its setpoint, so a fall that stays
+    above it is the unit slowing, not stopping [Prop]."""
+    noise_step = load_history.step_kw()
+    if noise_step is None:
+        return  # the house's noise is not yet known
+    step = max(LOAD_STEP_SHARE_OF_DRAW * draw, noise_step) if draw else noise_step
+    recent_start = now - timedelta(seconds=LOAD_WATCH_RECENT_S)
+    recent = [kw for _, kw in load_history.between(recent_start, now)]
+    earlier = [kw for _, kw in load_history.between(recent_start - timedelta(seconds=DRAW_BASELINE_S), recent_start)]
+    if not recent or not earlier:
+        return
+    level = statistics.fmean(recent)
+    # the median: the first reading of a rise falls in these 3 minutes as
+    # often as not, and must not lift where the power stood stopped
+    before = statistics.median(earlier)
+    if memory.state is CompressorState.RUNNING:
+        if memory.base is not None and level < memory.base + step / 2.0:
             memory.state = CompressorState.STOPPED
+            memory.base = level
+        return
+    # stopped, or not yet known: a rise over the 3 minutes before is a
+    # start, and those 3 minutes are where the power stands with it stopped
+    if level - before >= step:
+        memory.state, memory.base = CompressorState.RUNNING, before
+    elif memory.state is CompressorState.UNKNOWN and before - level >= step:
+        # seen falling before it was seen rising: it was running and stopped
+        memory.state, memory.base = CompressorState.STOPPED, level
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -498,8 +520,11 @@ def _sun(
     now: datetime,
     hours: Sequence[ForecastHour],
     blinds: Sequence[Reading],
+    measured_clear: float | None = None,
 ) -> SunSnapshot:
-    """SUN ON THE GLASS, 0 to 1 [D023]."""
+    """SUN ON THE GLASS, 0 to 1 [D023]. f_clear from the forecast's cloud
+    cover or UV; where it has neither, from the house's solar power against
+    its learned clear-sky most (sun.py SolarReference) [Prop]."""
     transmission = (
         sum(blind_transmission(b.value) for b in blinds) / len(blinds) if blinds else 1.0
     )
@@ -521,6 +546,8 @@ def _sun(
     hour = _hour_for(hours, now)
     f_clear = clear_sky_fraction(hour.cloud_coverage, hour.uv_index) if hour is not None else None
     tag = ValueTag.MEASURED
+    if f_clear is None and measured_clear is not None:
+        f_clear, source = measured_clear, source + ", solar power"
     if f_clear is None:
         f_clear, tag = 1.0, ValueTag.ESTIMATED  # the filter does not correct on it [Prop]
     return SunSnapshot(True, source, f_clear, transmission, f_clear * transmission, tag)

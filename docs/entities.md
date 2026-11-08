@@ -51,7 +51,7 @@ The mode sensor's attributes say what the room is doing and why, every 30 second
 | `compressors` | Each head's compressor state, and which source said so |
 | `stale` | Feeds too old to use |
 
-`plan`, `pid`, `model`, `power`, `delivery`, `limits`, `compressors` and `stale` are not kept in the recorder's history, because they change every 30 seconds.
+`plan`, `pid`, `model`, `power`, `delivery`, `limits`, `compressors` and `stale` are not kept in the recorder's history, because they change every 30 seconds. `decision` is kept: each plan's first step, its actions, and its forecast index and uncertainty every half-hour, so a night can be read back.
 
 ## The house
 

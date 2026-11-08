@@ -245,20 +245,6 @@ class Compressor(unittest.TestCase):
             states["climate.office"] = raw("climate.office", mode)
             self.assertEqual(build(states=states).heads[0].compressor, CS.UNKNOWN, mode)
 
-    def test_a_stop_from_the_mode_is_not_carried_into_cool(self) -> None:
-        obs = observe.RoomObserver(room())
-        states = base_states()
-        states["climate.office"] = raw("climate.office", "fan_only")
-        self.assertEqual(build(observer=obs, states=states).heads[0].compressor, CS.STOPPED)
-        commanded = NOW + timedelta(seconds=10)
-        h = build(observer=obs, now=NOW + timedelta(seconds=30), commands={"climate.office": commanded},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
-        self.assertEqual(h.compressor, CS.UNKNOWN)
-        h = build(observer=obs, now=commanded + timedelta(seconds=61),
-                  load_history=self._history(0.4, 1.4, commanded), commands={"climate.office": commanded},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
-        self.assertEqual((h.compressor, h.compressor_source), (CS.RUNNING, SRC.LOAD_STEP))
-
     def test_an_off_or_fan_head_is_stopped_whatever_a_shared_sensor_says(self) -> None:
         """One frequency sensor is often chosen for every head on an outdoor
         unit; it reads another head's compressor, so a head that is off or
@@ -275,70 +261,96 @@ class Compressor(unittest.TestCase):
         states["climate.office"] = raw("climate.office", "heat", hvac_action="defrosting")
         self.assertEqual(build(states=states).heads[0].compressor_source, SRC.UNKNOWN)
 
-    def _history(self, before: float, after: float, commanded: datetime) -> Any:
+    def _power(self, levels: list[float], end: datetime = NOW) -> Any:
+        """The house power every 30 seconds, the last reading 30 seconds
+        before end (this cycle's own reading is added after Observe)."""
         hist = observe.LoadHistory()
-        hist.add(commanded - timedelta(seconds=30), before)
-        hist.add(commanded + timedelta(seconds=40), after)
-        # the step is judged once a reading from the end of the minute is in
-        hist.add(commanded + timedelta(seconds=60), after)
+        start = end - timedelta(seconds=30 * len(levels))
+        wobble = (0.03, -0.02, 0.01, -0.03, 0.02, -0.01)
+        for k in range(40):  # the half-hour before: the house's noise, learned
+            hist.add(start - timedelta(seconds=30 * (40 - k)), levels[0] + wobble[k % len(wobble)])
+        for k, kw in enumerate(levels):
+            hist.add(end - timedelta(seconds=30 * (len(levels) - k)), kw)
         return hist
 
-    def test_load_step_start_and_stop(self) -> None:
-        commanded = NOW - timedelta(seconds=61)
+    def _put_to_work(self, obs: Any) -> None:
+        states = base_states()
+        states["climate.office"] = raw("climate.office", "fan_only")
+        self.assertEqual(build(observer=obs, states=states).heads[0].compressor, CS.STOPPED)
+
+    def test_a_rise_in_the_power_is_the_compressor_starting(self) -> None:
+        """Settled: off or fan-only is not running; in any other mode a rise
+        in the house power is the compressor starting. The office on 7
+        November 2026: 0.55 kW, then 1.02 kW about 2 minutes after cool."""
         obs = observe.RoomObserver(room())
-        unit = "own:climate.office"
-        h = build(observer=obs, load_history=self._history(0.5, 1.2, commanded),
-                  commands={"climate.office": commanded}, draw_kw={unit: 1.2}).heads[0]
+        self._put_to_work(obs)
+        h = build(observer=obs, load_history=self._power([0.6] * 8)).heads[0]
+        self.assertEqual((h.compressor, h.compressor_source), (CS.STOPPED, SRC.LOAD_STEP))
+        h = build(observer=obs, load_history=self._power([0.6] * 8 + [1.02, 1.02])).heads[0]
         self.assertEqual((h.compressor, h.compressor_source), (CS.RUNNING, SRC.LOAD_STEP))
-        # the answer stands on the next cycle
-        h = build(observer=obs, now=NOW + timedelta(seconds=30), commands={"climate.office": commanded},
-                  draw_kw={unit: 1.2}).heads[0]
+
+    def test_the_inverter_slowing_is_not_a_stop(self) -> None:
+        """An inverter slows near its setpoint: 1.31 kW falling to 0.79 kW
+        while running (the office, 18:00 to 18:03 on 7 November 2026). Only
+        a fall back to where the power stood stopped is a stop."""
+        obs = observe.RoomObserver(room())
+        self._put_to_work(obs)
+        build(observer=obs, load_history=self._power([0.65] * 8 + [1.31, 1.31]))
+        h = build(observer=obs, load_history=self._power([0.65] * 6 + [1.31, 1.31, 0.79, 0.79])).heads[0]
         self.assertEqual(h.compressor, CS.RUNNING)
-        later = NOW + timedelta(seconds=200)
-        h = build(observer=obs, now=later + timedelta(seconds=61),
-                  load_history=self._history(1.6, 0.9, later), commands={"climate.office": later},
-                  draw_kw={unit: 1.2}).heads[0]
+        h = build(observer=obs, load_history=self._power([0.65] * 4 + [1.31, 0.79, 0.79, 0.79, 0.66, 0.66])).heads[0]
         self.assertEqual(h.compressor, CS.STOPPED)
 
-    def test_rise_below_half_the_draw_is_no_answer(self) -> None:
-        commanded = NOW - timedelta(seconds=61)
-        h = build(load_history=self._history(0.5, 1.09, commanded), commands={"climate.office": commanded},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
-        self.assertEqual(h.compressor, CS.UNKNOWN)
-        h = build(load_history=self._history(0.5, 1.1, commanded), commands={"climate.office": commanded},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
+    def test_a_learned_draw_sets_the_step(self) -> None:
+        """Half the learned draw is a start: 1.2 kW learned, 0.5 kW is not,
+        0.7 kW is."""
+        draw = {"own:climate.office": 1.2}
+        obs = observe.RoomObserver(room())
+        self._put_to_work(obs)
+        h = build(observer=obs, load_history=self._power([0.6] * 8 + [1.1, 1.1]), draw_kw=draw).heads[0]
+        self.assertEqual(h.compressor, CS.STOPPED)
+        obs = observe.RoomObserver(room())
+        self._put_to_work(obs)
+        h = build(observer=obs, load_history=self._power([0.6] * 8 + [1.3, 1.3]), draw_kw=draw).heads[0]
         self.assertEqual(h.compressor, CS.RUNNING)
 
-    def test_judged_only_after_the_minute(self) -> None:
-        commanded = NOW - timedelta(seconds=59)
-        h = build(load_history=self._history(0.5, 1.5, commanded), commands={"climate.office": commanded},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
-        self.assertEqual(h.compressor, CS.UNKNOWN)
+    def test_a_small_movement_is_not_a_start(self) -> None:
+        obs = observe.RoomObserver(room())
+        self._put_to_work(obs)
+        h = build(observer=obs, load_history=self._power([0.6] * 8 + [0.65, 0.65])).heads[0]
+        self.assertEqual(h.compressor, CS.STOPPED)
 
-    def test_another_unit_changing_spoils_it(self) -> None:
-        commanded = NOW - timedelta(seconds=61)
-        h = build(load_history=self._history(0.5, 1.5, commanded),
-                  commands={"climate.office": commanded, "climate.living": commanded + timedelta(seconds=20)},
-                  draw_kw={"own:climate.office": 1.2}).heads[0]
-        self.assertEqual(h.compressor, CS.UNKNOWN)
+    def test_nothing_is_judged_before_the_houses_noise_is_learned(self) -> None:
+        obs = observe.RoomObserver(room())
+        self._put_to_work(obs)
+        hist = observe.LoadHistory()
+        for k, kw in enumerate([0.6] * 8 + [1.3, 1.3]):
+            hist.add(NOW - timedelta(seconds=30 * (10 - k)), kw)
+        h = build(observer=obs, load_history=hist).heads[0]
+        self.assertEqual(h.compressor, CS.STOPPED)  # still as the mode left it
 
-    def test_another_head_on_the_same_outdoor_unit_does_not(self) -> None:
-        commanded = NOW - timedelta(seconds=61)
-        r = room(heads=(models.HeadConfig("climate.study", "shared"),))
-        states = base_states()
-        states["climate.study"] = raw("climate.study", "cool")
-        h = build(r, states=states, load_history=self._history(0.5, 1.5, commanded),
-                  commands={"climate.study": commanded, "climate.guest": commanded + timedelta(seconds=20)},
-                  draw_kw={"shared": 1.2}, head_outdoor_units={"climate.guest": "shared"}).heads[0]
-        self.assertEqual(h.compressor, CS.RUNNING)
-
-    def test_no_learned_draw_is_no_answer(self) -> None:
-        commanded = NOW - timedelta(seconds=61)
-        h = build(load_history=self._history(0.5, 3.0, commanded), commands={"climate.office": commanded}).heads[0]
+    def test_seen_falling_first_it_was_running(self) -> None:
+        """After a restart a head already in cool is not known; a fall in
+        the power before any rise says it was running and stopped."""
+        obs = observe.RoomObserver(room())
+        h = build(observer=obs, load_history=self._power([1.2] * 8)).heads[0]
         self.assertEqual(h.compressor, CS.UNKNOWN)
+        h = build(observer=obs, load_history=self._power([1.2] * 8 + [0.6, 0.6])).heads[0]
+        self.assertEqual((h.compressor, h.compressor_source), (CS.STOPPED, SRC.LOAD_STEP))
 
 
 class Sun(unittest.TestCase):
+    def test_the_solar_power_measures_the_sun_where_the_forecast_cannot(self) -> None:
+        """No cloud cover and no UV in the forecast: the sky as the house's
+        solar power measures it stands in, and the sun counts as measured."""
+        s = build(self.west(), forecast=self.forecast(), measured_clear=0.4).sun
+        self.assertTrue(s.on_glass)
+        self.assertEqual((s.f_clear, s.tag), (0.4, VT.MEASURED))
+        s = build(self.west(), forecast=self.forecast()).sun
+        self.assertEqual((s.f_clear, s.tag), (1.0, VT.ESTIMATED))
+        s = build(self.west(), forecast=self.forecast(cloud_coverage=45), measured_clear=0.4).sun
+        self.assertAlmostEqual(s.f_clear, 0.2 + 0.8 * 0.5)  # the forecast's own, where it has one
+
     def west(self, **kw: Any) -> Any:
         return room(window_facing="W", **kw)
 

@@ -184,3 +184,41 @@ async def test_the_guard_sees_a_unit_running_unseen(
     unit = snap.heads[0].outdoor_unit
     assert seen and seen[-1].observed_running[unit] is True
     assert [h.climate for h in seen[-1].observed_heads] == ["climate.office"]
+
+
+async def test_a_reversal_by_hand_restarts_the_run(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory,
+) -> None:
+    """A running unit turned from cooling to heating is a stop and a start
+    (decision of 6 November 2026) [D016]: the plan's minimum run and rest
+    count from the turn, not from the first start."""
+    set_house_states(hass)  # cool, running unseen
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data.coordinator
+    await _tick(hass, freezer, timedelta(seconds=30))
+    await _tick(hass, freezer, timedelta(seconds=30))
+    snap = coordinator.rooms[ROOM_ID].snapshot
+    assert snap is not None
+    unit = snap.heads[0].outdoor_unit
+    assert coordinator._unit_running[unit] is True
+    first = coordinator._running_since.get(unit)
+    await _tick(hass, freezer, timedelta(minutes=20))
+    set_house_states(hass, mode="heat")  # turned to heating by hand
+    await _tick(hass, freezer, timedelta(seconds=30))
+    turned = dt_util.utcnow()
+    assert coordinator._unit_running[unit] is True
+    assert coordinator._running_since[unit] != first
+    assert abs((coordinator._running_since[unit] - turned).total_seconds()) <= 30
+    assert coordinator._stopped_since[unit] == coordinator._running_since[unit]
+
+
+async def test_the_decision_is_kept_in_the_recorder(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory,
+) -> None:
+    """Each plan's first step, its forecast every half-hour and its
+    uncertainty are recorded, so a night can be read back; the full plan
+    and the rest of the trace are not (decision of 8 November 2026)."""
+    from custom_components.abode_hvac_coordinator.sensor import ModeSensor
+
+    assert "decision" not in ModeSensor._unrecorded_attributes
+    assert "plan" in ModeSensor._unrecorded_attributes

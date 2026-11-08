@@ -84,9 +84,9 @@ def whole_degree_value(
     low for the rest, so the average is the setpoint wanted. Each value is
     held at least 10 minutes: where f x 30 or (1 - f) x 30 minutes would be
     shorter, the nearer value is sent for the whole 30 minutes. A value
-    already being held from this pair is kept until it has stood 10
-    minutes, so a wanted setpoint that moves within the pair never makes a
-    shorter hold. Never outside the unit's range [D051].
+    sent is kept until it has stood 10 minutes, whichever pair the wanted
+    setpoint moves to, so no value is ever held for less. Never outside
+    the unit's range [D051].
     """
     low = step * math.floor(wanted / step + _EPS)
     high = low + step
@@ -102,17 +102,16 @@ def whole_degree_value(
             state.cycle_start += _CYCLE
         into = (now - state.cycle_start).total_seconds() / 60.0
         target = high if into < f * cycle_min else low
-    low_sent = round_to_step(low, profile)
-    high_sent = round_to_step(high, profile)
     target = round_to_step(target, profile)
-    pair = (low_sent, high_sent)
     if (
         state.last is not None
         and state.since is not None
-        and any(abs(state.last - v) < _EPS for v in pair)
         and abs(target - state.last) >= _EPS
         and now - state.since < _HOLD
     ):
+        # every value sent stands 10 minutes, whichever pair the wanted
+        # setpoint has moved to (decision of 8 November 2026: a hold only
+        # within the pair let the living room go 20, 21, 19 in two minutes)
         return state.last
     if state.last is None or abs(target - state.last) >= _EPS:
         state.last, state.since = target, now
@@ -159,6 +158,9 @@ class RoomDelivery:
         reasons: list[str] = []
         profile = self.room.profile
 
+        if comfort.off or control.kind not in (StepKind.COOL, StepKind.HEAT, StepKind.DRY):
+            # no setpoint goes out: the next run starts its own hold and cycle
+            self._alternation.clear()
         if comfort.off:
             return self._only(StepKind.OFF, control.rate, f"Comfort said off: {comfort.reason}.")
         if control.kind in (StepKind.OFF, StepKind.NONE):

@@ -21,6 +21,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..const import (
+    DRAW_BASELINE_S,
+    DRAW_STEP_WINDOW_S,
     DRAW_WITHOUT_LOAD_SENSOR_KW,
     LOAD_STEP_WINDOW_S,
     UNIT_CURVE_EFFORTS_C,
@@ -176,12 +178,28 @@ class UnitModel:
 # --------------------------------------------------------------------------
 
 
+def _working(head: HeadSnapshot) -> bool:
+    """Whether a head is working, for draw learning: its compressor reported
+    running or stopped by its frequency or hvac_action, and otherwise a
+    mode that runs it. A state the house-load step judged comes a minute or
+    more after the change, so the mode decides there too [D028]."""
+    if head.mode in RESTING_MODES:
+        return False
+    if head.compressor_source is not CompressorSource.LOAD_STEP:
+        if head.compressor is CompressorState.RUNNING:
+            return True
+        if head.compressor is CompressorState.STOPPED:
+            return False
+    return head.mode in COOLING_MODES | HEATING_MODES
+
+
 @dataclass(slots=True)
 class _HeadWatch:
     outdoor_unit: str
     mode: str | None
     compressor: CompressorState
     effort: float | None
+    working: bool = False
 
 
 @dataclass(slots=True)
@@ -196,12 +214,21 @@ class _DrawEvent:
 class DrawLearner:
     """Each outdoor unit's draw at each effort, from house-load steps [D028].
 
-    WHEN exactly one outdoor unit starts or stops, and nothing else changes
-    within a minute, the step in house load is its draw at that effort, kept
-    as a running average at the nearest of the curve's efforts. A head
-    going from cool, heat or dry to off or fan-only has stopped its
-    compressor; that counts as a stop when its effort before was at least
-    the curve's first effort (decision of 27 October 2026).
+    A start is a head put in cool, dry or heat from off or fan-only, or a
+    compressor reported starting. A stop
+    is a head put in off or fan-only from cool, dry or heat, or a compressor
+    reported stopping. Neither needs the unit to report its compressor: the
+    house load says whether it moved. WHEN exactly one outdoor unit starts
+    or stops and no other changes from 3 minutes before to 4 minutes after,
+    the step in house load is its draw at that effort, kept as a running
+    average at the nearest of the curve's efforts. The load before is its
+    average over the 3 minutes before, after this unit's own last change;
+    after a start it is the average from the first reading that rose, since
+    the compressor starts up to minutes after its head; after a stop, the
+    average of what follows. Each is cut at this unit's next change. A step
+    under three times the house power's learned noise is its own movement,
+    not a draw (decision of 8 November 2026; the whole-degree effort test it replaces refused real
+    stops: a unit reading 24 at a 24 setpoint was still drawing 0.23 kW).
     """
 
     has_load_sensor: bool = True
@@ -226,36 +253,25 @@ class DrawLearner:
         # head on it, and a head off or on its fan reads stopped) [D028]
         kept_running = {
             h.outdoor_unit for h in heads
-            if h.compressor is CompressorState.RUNNING
-            and (p := before.get(h.climate)) is not None and p.compressor is CompressorState.RUNNING
+            if _working(h) and (p := before.get(h.climate)) is not None and p.working
         }
         fresh: list[_DrawEvent] = []
         for h in heads:
             effort = head_effort(h)
             prev = self._watch.get(h.climate)
-            self._watch[h.climate] = _HeadWatch(h.outdoor_unit, h.mode, h.compressor, effort)
+            now_on = _working(h)
+            self._watch[h.climate] = _HeadWatch(h.outdoor_unit, h.mode, h.compressor, effort, now_on)
             if prev is None:
                 continue
+            was = prev.working
             sign = 0
             at_effort: float | None = None
-            # a state the house-load step judged is dated a minute or more
-            # after the change it found, so it teaches no draw: the load
-            # either side of it is not either side of the change [D028]
-            timely = h.compressor_source is not CompressorSource.LOAD_STEP
-            if timely and prev.compressor is CompressorState.STOPPED and h.compressor is CompressorState.RUNNING:
-                sign = 1
-                at_effort = effort
-            elif (timely and prev.compressor is CompressorState.RUNNING
-                  and h.compressor is CompressorState.STOPPED) or (
-                # or the mode stopped the compressor (decision of 27 October 2026)
-                prev.mode in COOLING_MODES | HEATING_MODES
-                and h.mode in RESTING_MODES
-                and prev.compressor is not CompressorState.STOPPED
-                and prev.effort is not None
-                and prev.effort >= curve_efforts()[0]
-            ):
-                sign = -1
-                at_effort = prev.effort
+            if now_on and not was and effort is not None:
+                # the unit's own reading is often whole degrees, so an effort
+                # of 0 can still start the compressor: the load decides
+                sign, at_effort = 1, max(effort, 0.0)
+            elif was and not now_on and prev.effort is not None:
+                sign, at_effort = -1, prev.effort
             if sign != 0 or prev.compressor is not h.compressor or prev.mode != h.mode:
                 self._changes.append((h.outdoor_unit, now))
             if sign != 0 and at_effort is not None and h.outdoor_unit not in kept_running:
@@ -275,25 +291,47 @@ class DrawLearner:
         self._judge(now, load)
 
     def _judge(self, now: datetime, load: LoadHistory) -> None:
-        window = timedelta(seconds=LOAD_STEP_WINDOW_S)
+        window = timedelta(seconds=DRAW_STEP_WINDOW_S)
+        base = timedelta(seconds=DRAW_BASELINE_S)
+        # a change is seen up to a minute after it was made: the minute
+        # before a stop is seen may already be after it
+        late = timedelta(seconds=LOAD_STEP_WINDOW_S)
         keep: list[_DrawEvent] = []
+        # a step the house's own movement cannot explain; until its noise is
+        # learned, events wait (and lapse once their load has gone) [Der]
+        min_step = load.step_kw()
         for ev in self._events:
-            if now - ev.when < window:
-                keep.append(ev)
+            if now - ev.when < window or min_step is None:
+                if now - ev.when < 2 * window:
+                    keep.append(ev)
                 continue
             others = any(
-                unit != ev.outdoor_unit and abs((when - ev.when).total_seconds()) <= LOAD_STEP_WINDOW_S
+                unit != ev.outdoor_unit and ev.when - base <= when <= ev.when + window
                 for unit, when in self._changes
             )
             if others:
                 continue
-            # the minute before the change, against the minute after it
-            before = load.at_or_before(ev.when - window)
-            after = load.at_or_before(ev.when + window)
-            if before is None or after is None:
+            own = [when for unit, when in self._changes if unit == ev.outdoor_unit and when != ev.when]
+            last_own = max((w for w in own if w < ev.when), default=ev.when - base - late)
+            next_own = min((w for w in own if w > ev.when), default=ev.when + window)
+            start_from = max(ev.when - base - late, last_own)
+            before_samples = load.between(start_from, ev.when - late if ev.sign < 0 else ev.when)
+            if before_samples:
+                before = statistics.fmean(kw for _, kw in before_samples)
+            else:
+                at = load.at_or_before(ev.when - late if ev.sign < 0 else ev.when)
+                if at is None:
+                    continue
+                before = at
+            after_samples = [kw for _, kw in load.between(ev.when, min(next_own, ev.when + window))]
+            if ev.sign > 0:
+                # the compressor starts after its head: from the first rise
+                first = next((i for i, kw in enumerate(after_samples) if kw - before >= min_step), None)
+                after_samples = after_samples[first:] if first is not None else []
+            if not after_samples:
                 continue
-            draw = (after - before) * ev.sign
-            if draw > 0.0:
+            draw = (statistics.fmean(after_samples) - before) * ev.sign
+            if draw >= min_step:
                 self._add(ev.outdoor_unit, ev.effort, draw)
         self._events = keep
 

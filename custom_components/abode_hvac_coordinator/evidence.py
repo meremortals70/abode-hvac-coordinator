@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .const import NEAR_CENTRE, SILENT_FILTER_REPAIR_S
+from .const import NEAR_CENTRE, PLAN_POINTS_PER_STEP, SILENT_FILTER_REPAIR_S
 from .models import (
     BandRule,
     ComfortResult,
@@ -115,6 +115,18 @@ def trace(
                 "c_start": round(p.c_start, 4),
                 "not_taken": [[a.kind.value, round(a.rate, 2), why] for a, why in p.alternatives],
             }
+            # kept in the recorder, unlike the full plan: why each decision
+            # was made, every half-hour of the plan, so a night can be read
+            # back from history (decision of 8 November 2026) [D006]
+            out["decision"] = {
+                "made_at": p.made_at.isoformat(),
+                "first": [p.first.kind.value, round(p.first.rate, 2)],
+                "actions": [a.kind.value for a in p.actions],
+                "index": [round(pt.hci, 2) for pt in p.points[PLAN_POINTS_PER_STEP - 1::PLAN_POINTS_PER_STEP]],
+                "sigma": [round(pt.sigma_hci, 2) for pt in p.points[PLAN_POINTS_PER_STEP - 1::PLAN_POINTS_PER_STEP]],
+                "minutes_outside": round(p.minutes_outside, 1),
+                "costs": [round(p.comfort_cost, 4), round(p.energy_cost, 4), round(p.start_cost, 4)],
+            }
         if control.pid is not None:
             d = control.pid
             out["pid"] = {"u": round(d.u, 3), "e": round(d.error, 3), "p": round(d.p, 3), "i": round(d.i, 3),
@@ -189,6 +201,7 @@ class RoomScorecard:
     _cost: float = 0.0
     _priced: bool = True
     _running: bool | None = None
+    _way: int = 0
 
     def observe(
         self,
@@ -200,8 +213,11 @@ class RoomScorecard:
         running: bool,
         draw_kw: float | None,
         price: float | None,
+        way: int = 0,
     ) -> None:
-        """One cycle of dt_s seconds."""
+        """One cycle of dt_s seconds. way: 1 cooling or drying, -1 heating,
+        0 not running or not known; a running unit turned the other way is a
+        stop and a start, so it counts as a start [D016]."""
         if occupied and index is not None and band is not None:
             lo, hi = band
             self._occupied_s += dt_s
@@ -209,15 +225,45 @@ class RoomScorecard:
                 self._in_band_s += dt_s
             if abs(index - (lo + hi) / 2.0) <= NEAR_CENTRE + _EPS:
                 self._near_s += dt_s
-        if running and self._running is False:
+        if running and (self._running is False or (self._running and way * self._way < 0)):
             self._starts += 1
         self._running = running
+        if running and way != 0:
+            self._way = way
         if running:
             self._run_s += dt_s
             if draw_kw is None or price is None:
                 self._priced = False
             else:
                 self._cost += draw_kw * dt_s / 3600.0 * price
+
+    def today_dict(self, day: str) -> dict[str, Any]:
+        """The day so far, for Memory, so a restart does not drop it."""
+        return {"day": day, "occupied_s": self._occupied_s, "in_band_s": self._in_band_s, "near_s": self._near_s,
+                "run_s": self._run_s, "starts": self._starts, "cost": self._cost, "priced": self._priced,
+                "running": self._running, "way": self._way}
+
+    def restore_today(self, data: Mapping[str, Any] | None, today: str, yesterday: str) -> None:
+        """Restore the day so far. A day stored before a restart that crossed
+        midnight is finished as yesterday's; an older one is dropped."""
+        if not data or data.get("day") not in (today, yesterday):
+            return
+        try:
+            nums = {k: float(data[k]) for k in ("occupied_s", "in_band_s", "near_s", "run_s", "cost")}
+            starts = int(data["starts"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if not all(math.isfinite(v) and v >= 0.0 for v in nums.values()) or starts < 0:
+            return
+        self._occupied_s, self._in_band_s, self._near_s = nums["occupied_s"], nums["in_band_s"], nums["near_s"]
+        self._run_s, self._cost, self._starts = nums["run_s"], nums["cost"], starts
+        self._priced = bool(data.get("priced", True))
+        running = data.get("running")
+        self._running = running if isinstance(running, bool) else None
+        way = data.get("way")
+        self._way = way if isinstance(way, int) and way in (-1, 0, 1) else 0
+        if data.get("day") == yesterday:
+            self.end_of_day()
 
     def end_of_day(self) -> DayScore:
         """At midnight: the day's scores, kept as yesterday's; a new day starts."""

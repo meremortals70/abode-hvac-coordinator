@@ -215,9 +215,22 @@ class WholeDegrees(unittest.TestCase):
         self.assertEqual(self.at(20, 25.8).setpoint, 24.0)
         self.assertEqual(self.at(22, 25.8).setpoint, 25.0)
 
-    def test_a_new_pair_is_not_held(self) -> None:
+    def test_a_new_pair_is_held_too(self) -> None:
+        """Every value sent stands 10 minutes, whichever pair the wanted
+        setpoint moves to. The released hold covered only the same pair, so
+        the living room went 20, 21, 19 within two minutes (8 November
+        2026)."""
         self.assertEqual(self.at(0, 25.4).setpoint, 25.0)
-        self.assertEqual(self.at(3, 27.5).setpoint, 27.0)  # 26.5: high of 26/27
+        self.assertEqual(self.at(3, 27.5).setpoint, 25.0)
+        self.assertEqual(self.at(9, 21.2).setpoint, 25.0)
+        self.assertNotEqual(self.at(10, 27.5).setpoint, 25.0)
+
+    def test_a_rest_starts_a_new_hold(self) -> None:
+        """No setpoint goes out while the unit rests, so the next run sends
+        its own value at once."""
+        self.assertEqual(self.at(0, 25.4).setpoint, 25.0)
+        go(ctl(SK.REST, 0.0), rd=self.rd, s=snap((head(own=27.0),)), now=T0 + timedelta(minutes=2))
+        self.assertEqual(self.at(4, 23.0).setpoint, 22.0)
 
     def test_never_outside_the_range(self) -> None:
         rd = delivery.RoomDelivery(room(profile=profile(setpoint_step=1.0, max_setpoint=29.0)))

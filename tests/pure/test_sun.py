@@ -99,3 +99,36 @@ class OnWindow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SolarReferenceTests(unittest.TestCase):
+    """The sun as the house's solar panels measure it, where the forecast
+    gives no cloud cover or UV (8 November 2026: weather.oxley_hourly has
+    neither, so the sun was never measured and no sunlit step taught the
+    model anything) [Prop]."""
+
+    def test_learned_over_three_days_then_measured(self) -> None:
+        ref = sun.SolarReference()
+        pos = sun.SunPosition(azimuth=30.0, elevation=60.0)
+        for day, kw in (("2026-11-08", 5.0), ("2026-11-09", 4.0)):
+            ref.observe(day, pos, kw)
+        self.assertIsNone(ref.clear_fraction(pos, 2.5))  # two days: not yet
+        ref.observe("2026-11-10", pos, 4.8)
+        self.assertAlmostEqual(ref.clear_fraction(pos, 2.5), 2.5 / (5.0 * 0.99 * 0.99))
+        self.assertEqual(ref.clear_fraction(pos, 9.0), 1.0)
+
+    def test_low_sun_and_no_reading_say_nothing(self) -> None:
+        ref = sun.SolarReference()
+        low = sun.SunPosition(azimuth=80.0, elevation=3.0)
+        for day in ("2026-11-08", "2026-11-09", "2026-11-10"):
+            ref.observe(day, low, 0.5)
+        self.assertIsNone(ref.clear_fraction(low, 0.5))
+        self.assertIsNone(ref.clear_fraction(sun.SunPosition(30.0, 60.0), None))
+
+    def test_round_trip_drops_the_unreadable(self) -> None:
+        ref = sun.SolarReference()
+        ref.observe("2026-11-08", sun.SunPosition(30.0, 60.0), 5.0)
+        back = sun.SolarReference.from_dict(ref.as_dict())
+        self.assertEqual(back.bins, ref.bins)
+        bad = sun.SolarReference.from_dict({"bins": [[1, 2, float("nan"), "d", 3], ["x"], [1, 2, 3.0, "d", 2]]})
+        self.assertEqual(list(bad.bins), [(1, 2)])

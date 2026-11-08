@@ -91,6 +91,12 @@ class Trace(unittest.TestCase):
         self.assertEqual(t["plan"]["index"][0], 24.12)
         self.assertEqual(len(t["plan"]["actions"]), 12)
         self.assertEqual(t["plan"]["not_taken"], [["rest", 0.0, "leaves the band"]])  # [D006]
+        # the decision is kept in the recorder: every half-hour of the plan
+        d = t["decision"]
+        self.assertEqual(d["first"][0], "cool")
+        self.assertEqual(len(d["actions"]), 12)
+        self.assertEqual(len(d["index"]), len(t["plan"]["index"]) // 6)
+        self.assertEqual(len(d["sigma"]), len(d["index"]))
         self.assertEqual(t["pid"]["ti_min"], 63.0)
         self.assertEqual(t["model"]["figures"], {"a": 0.1235})
         self.assertEqual(t["model"]["room"], 24.12)
@@ -122,6 +128,46 @@ class Trace(unittest.TestCase):
 
 
 class Scorecard(unittest.TestCase):
+    def test_the_day_so_far_survives_a_restart(self) -> None:
+        """Home Assistant restarted at 07:51 on 8 November 2026; the day so
+        far was dropped. It is now stored and restored."""
+        s = ev.RoomScorecard()
+        s.observe(dt_s=3600, occupied=True, index=24.0, band=(23.0, 26.0), running=True, draw_kw=1.0, price=0.3)
+        stored = s.today_dict("2026-11-08")
+        t = ev.RoomScorecard()
+        t.restore_today(stored, "2026-11-08", "2026-11-07")
+        t.observe(dt_s=3600, occupied=True, index=27.0, band=(23.0, 26.0), running=False, draw_kw=None, price=None)
+        d = t.end_of_day()
+        self.assertEqual(d.comfort_in_band, 50.0)  # an hour in, an hour out: both hours counted
+        self.assertAlmostEqual(d.cost, 0.3)
+
+    def test_a_day_stored_before_midnight_becomes_yesterday(self) -> None:
+        s = ev.RoomScorecard()
+        s.observe(dt_s=3600, occupied=True, index=24.0, band=(23.0, 26.0), running=False, draw_kw=None, price=None)
+        t = ev.RoomScorecard()
+        t.restore_today(s.today_dict("2026-11-07"), "2026-11-08", "2026-11-07")
+        self.assertIsNotNone(t.yesterday)
+        self.assertEqual(t.yesterday.comfort_in_band, 100.0)
+        u = ev.RoomScorecard()
+        u.restore_today(s.today_dict("2026-11-05"), "2026-11-08", "2026-11-07")  # too old: dropped
+        self.assertIsNone(u.yesterday)
+        u.restore_today({"day": "2026-11-08", "occupied_s": "x"}, "2026-11-08", "2026-11-07")  # unreadable
+        self.assertIsNone(u.end_of_day().comfort_in_band)
+
+    def test_a_reversal_counts_as_a_start(self) -> None:
+        """A running unit turned from cooling to heating is a stop and a
+        start [D016]: one run, then a second start."""
+        s = ev.RoomScorecard()
+        s.observe(dt_s=30, occupied=True, index=24.0, band=(23.0, 26.0), running=False, draw_kw=None, price=None)
+        s.observe(dt_s=3600, occupied=True, index=24.0, band=(23.0, 26.0), running=True, draw_kw=None,
+                  price=None, way=1)
+        s.observe(dt_s=3600, occupied=True, index=24.0, band=(23.0, 26.0), running=True, draw_kw=None,
+                  price=None, way=-1)
+        s.observe(dt_s=30, occupied=True, index=24.0, band=(23.0, 26.0), running=True, draw_kw=None,
+                  price=None, way=0)
+        d = s.end_of_day()
+        self.assertAlmostEqual(d.starts_per_hour, 2 / (7230 / 3600))  # 2 starts in 2 hours
+
     def test_a_day(self) -> None:
         s = ev.RoomScorecard()
         band = (23.0, 26.0)

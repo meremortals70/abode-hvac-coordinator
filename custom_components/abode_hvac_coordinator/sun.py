@@ -10,11 +10,20 @@ NREL's solar position algorithm.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
-from .const import SUN_MAX_OFF_SQUARE_DEG, SUN_MIN_ELEVATION_DEG
+from .const import (
+    SOLAR_REFERENCE_AZIMUTH_BIN_DEG,
+    SOLAR_REFERENCE_DAILY_KEEP,
+    SOLAR_REFERENCE_ELEVATION_BIN_DEG,
+    SOLAR_REFERENCE_MIN_DAYS,
+    SUN_MAX_OFF_SQUARE_DEG,
+    SUN_MIN_ELEVATION_DEG,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,3 +154,59 @@ def sun_on_window(
         if profile >= cutoff:
             return SunOnWindow.OFF
     return SunOnWindow.ON
+
+
+@dataclass(slots=True)
+class SolarReference:
+    """The sun as the house's solar panels measure it [Prop].
+
+    For each place of the sun in the sky, the most the panels have made
+    there, learned from the house's own readings and fading by 1 % a day.
+    The solar power now over that most is the share of a clear sky the sun
+    gives now: what the forecast's cloud cover gives where it has one."""
+
+    bins: dict[tuple[int, int], tuple[float, str, int]] = field(default_factory=dict)
+
+    @staticmethod
+    def _key(position: SunPosition) -> tuple[int, int]:
+        return (round(position.elevation / SOLAR_REFERENCE_ELEVATION_BIN_DEG),
+                round(position.azimuth / SOLAR_REFERENCE_AZIMUTH_BIN_DEG) % round(360 / SOLAR_REFERENCE_AZIMUTH_BIN_DEG))
+
+    def observe(self, day: str, position: SunPosition | None, solar_kw: float | None) -> None:
+        """Every cycle: learn the most made with the sun where it is."""
+        if position is None or solar_kw is None or position.elevation < SUN_MIN_ELEVATION_DEG:
+            return
+        key = self._key(position)
+        peak, last, days = self.bins.get(key, (0.0, "", 0))
+        if last != day:
+            peak, days = peak * SOLAR_REFERENCE_DAILY_KEEP, days + 1
+        self.bins[key] = (max(peak, max(solar_kw, 0.0)), day, days)
+
+    def clear_fraction(self, position: SunPosition | None, solar_kw: float | None) -> float | None:
+        """The share of a clear sky now, 0 to 1; None where it cannot be
+        told: the sun low or down, no solar reading, or fewer than three
+        days learned with the sun in this place."""
+        if position is None or solar_kw is None or position.elevation < SUN_MIN_ELEVATION_DEG:
+            return None
+        peak, _, days = self.bins.get(self._key(position), (0.0, "", 0))
+        if days < SOLAR_REFERENCE_MIN_DAYS or peak <= 0.0:
+            return None
+        return min(max(solar_kw / peak, 0.0), 1.0)
+
+    def as_dict(self) -> dict[str, Any]:
+        """What Memory keeps."""
+        return {"bins": [[e, a, peak, day, days] for (e, a), (peak, day, days) in self.bins.items()]}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> SolarReference:
+        """Restore; anything not readable or not finite is dropped [D031]."""
+        out = cls()
+        for row in data.get("bins", []) if isinstance(data.get("bins"), list) else []:
+            try:
+                e, a, peak, day, days = row
+                peak = float(peak)
+                if math.isfinite(peak) and peak >= 0.0 and int(days) > 0:
+                    out.bins[(int(e), int(a))] = (peak, str(day), int(days))
+            except (TypeError, ValueError):
+                continue
+        return out
