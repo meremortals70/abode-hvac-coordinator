@@ -1,0 +1,74 @@
+name: Bug report
+description: Something isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please remove addresses, tokens and personal
+        details from logs and diagnostics before pasting them.
+  - type: input
+    id: integration-version
+    attributes:
+      label: Integration version
+      description: Settings → Devices & services → Abode HVAC Coordinator, or `manifest.json`.
+      placeholder: "0.10.2"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      description: Settings → About.
+      placeholder: "2026.11.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the room did, and what the mode sensor or trace said at the time.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest sequence that shows it, and how often it happens.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        Integration page → three-dot menu → Download diagnostics. Paste the JSON,
+        or attach the file.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Settings → System → Logs, filtered to `abode_hvac_coordinator`.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked `docs/known-limitations.md` and this is not listed there.
+          required: true
+        - label: I removed personal details, addresses and tokens from what I pasted.
+          required: true

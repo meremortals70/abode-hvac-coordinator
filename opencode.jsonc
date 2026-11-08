@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Product limits and deliberate behaviour. Keeps "that's a bug" reports honest.
+  "instructions": ["docs/known-limitations.md"],
+  "watcher": {
+    "ignore": ["**/__pycache__/**", ".venv/**", "coverage.json", ".pytest_cache/**"]
+  }
+}
