@@ -129,9 +129,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: AbodeHvacConfigEntry) -
     Memory writes everything [D064][R18]."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        coordinator = entry.runtime_data.coordinator
-        await coordinator.async_shutdown_rooms()
-        coordinator.clear_repairs()
+        try:
+            coordinator = entry.runtime_data.coordinator
+        except AttributeError:
+            # setup never reached the point of setting runtime_data
+            coordinator = None
+        if coordinator is not None:
+            await coordinator.async_shutdown_rooms()
+            coordinator.clear_repairs()
     return unloaded
 
 

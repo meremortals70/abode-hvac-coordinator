@@ -17,6 +17,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
+from custom_components.abode_hvac_coordinator import async_unload_entry
+
 from .conftest import DOMAIN, HOUSE, ROOM_ID, set_house_states, setup_entry, stored_room
 from .harness import (
     MockConfigEntry,
@@ -184,3 +186,13 @@ async def test_a_choice_is_saved_within_five_seconds(
     async_fire_time_changed(hass)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass_storage[DOMAIN]["data"]["rooms"][ROOM_ID]["choices"]["comfort_mode"] == "sleep"  # [D064]
+
+
+async def test_unload_before_runtime_data_is_set_does_not_crash(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]
+) -> None:
+    """If setup fails before runtime_data is set, unload still returns cleanly."""
+    set_house_states(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=HOUSE, options={"rooms": [stored_room()]})
+    entry.add_to_hass(hass)
+    assert await async_unload_entry(hass, entry) is False

@@ -13,11 +13,13 @@ from collections.abc import Iterable
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import AbodeHvacConfigEntry
 from .act import UserCommand
 from .comfort import UserAction
+from .const import DOMAIN
 from .coordinator import AbodeHvacCoordinator
 from .entity import RoomControlEntity, RoomEntity, add_room_entities
 from .models import ComfortMode
@@ -48,8 +50,15 @@ class ComfortModeSelect(RoomEntity, SelectEntity):
         return self.room.state.choices.comfort_mode.value
 
     async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_set_choices(self.room_id, UserAction.COMFORT_MODE,
-                                                 comfort_mode=ComfortMode(option))
+        try:
+            mode = ComfortMode(option)
+        except ValueError as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_comfort_mode",
+                translation_placeholders={"option": option},
+            ) from err
+        await self.coordinator.async_set_choices(self.room_id, UserAction.COMFORT_MODE, comfort_mode=mode)
 
 
 class UnitSelect(RoomControlEntity, SelectEntity):
