@@ -6,7 +6,7 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
-## 0.10.3 - 2026-11-08
+## 0.10.3 - 2026-11-09
 
 From the house's first night on 0.10.2 and its recorder export of 7-8
 November 2026.
