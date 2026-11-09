@@ -8,6 +8,93 @@ The design is specified in `docs/architecture.md`. Numbered design rules live in
 `docs/decisions/D###.md`. Code comments and docs cite them as `[D023]`. **Read the
 relevant section and rule before changing control behaviour.**
 
+## New session workflow
+
+The user is a vibe coder with limited GitHub/coding experience but is an
+experienced architect. Treat them accordingly:
+
+- Be patient and kind. Do not assume prior knowledge of git, GitHub, Python or
+  Home Assistant internals.
+- Always tell the truth. If something is wrong, say so plainly.
+- Challenge them when needed, but do it respectfully and explain why.
+- Explain what you are doing and why before doing it.
+- Ask for approval before changing released code, bumping versions, altering
+  repository structure, or pushing to `main`.
+
+### Starting a session
+
+1. Open the project folder: `C:\Users\jason\Projects\abode-hvac-coordinator`.
+2. Check the current state:
+   ```powershell
+   git status
+   git log --oneline -3
+   ```
+3. The expected branch is `main`. If the folder is on another branch, ask before
+   switching it.
+
+### Before making changes
+
+1. Run the fast checks from the repository root:
+   ```powershell
+   .\.venv\Scripts\ruff check custom_components tests
+   py -3 -m unittest discover -s tests/pure -t .
+   ```
+2. If these fail before you change anything, stop and tell the user.
+
+### Pushing changes
+
+`git push` is blocked at the OpenCode tool level. Use the GitHub token stored in
+`GITHUB_TOKEN` (user environment variable) instead:
+
+```powershell
+$token = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
+$headers = @{
+  Authorization = "Bearer $token"
+  Accept = "application/vnd.github+json"
+  "X-GitHub-Api-Version" = "2022-11-28"
+}
+```
+
+To update a branch ref to a local commit SHA:
+
+```powershell
+$body = '{"sha":"<full-40-char-commit-sha>","force":false}'
+Invoke-RestMethod `
+  -Uri "https://api.github.com/repos/meremortals70/abode-hvac-coordinator/git/refs/heads/main" `
+  -Method PATCH -Headers $headers -Body $body -ContentType "application/json"
+```
+
+To create or update a file on a branch, use the
+[contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents).
+
+### Creating a release
+
+1. Update `manifest.json` and `CHANGELOG.md`.
+2. Commit the changes locally.
+3. Push `main` to GitHub using the token (see above).
+4. Create the release:
+
+```powershell
+$body = @{
+  tag_name = "v0.10.4"
+  target_commitish = "main"
+  name = "v0.10.4"
+  body = "release notes"
+  draft = $false
+  prerelease = $false
+} | ConvertTo-Json
+Invoke-RestMethod `
+  -Uri "https://api.github.com/repos/meremortals70/abode-hvac-coordinator/releases" `
+  -Method POST -Headers $headers -Body $body -ContentType "application/json"
+```
+
+### Project scope
+
+The user's work spans Home Assistant apps, components, ESPHome configuration, HA
+configuration and local LLMs. This repo is the Abode HVAC Coordinator custom
+component. For ESPHome or other projects, look for their own `AGENTS.md` or ask
+the user for their current goals.
+
 ## Repository layout
 
 - `custom_components/abode_hvac_coordinator/` — the integration
