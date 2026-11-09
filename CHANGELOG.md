@@ -13,6 +13,18 @@ November 2026.
 
 ### Fixed
 
+- **Short cycling on a whole-degree unit: a reversal now waits for a rest
+  forecast.** The limit had been held across the whole six-hour plan, so
+  after a cooling run the plan could not heat until the room had fallen
+  below its band, and after a heating run it could not cool until the room
+  had risen above. The room overshot both edges; on the settled days the
+  compressor started 10-13 times a day against 5-9 on 0.10.2. A running
+  unit is still never turned the other way, but after it rests the plan now
+  forecasts the room with the unit resting: if that rest brings the room
+  back inside its band, it rests; it reverses only when resting would not.
+  An overshoot is left to the room's own drift, never answered with the
+  opposite run. On the settled days starts fall to 3-5 a day with 90-100 %
+  of the day inside the band [D102] (#1).
 - **The compressor of a unit that does not report it is now watched.** Off
   or fan-only is not running; in any other mode a rise in the house power is
   the compressor starting and a fall back is it stopping. Before, the house
@@ -36,12 +48,16 @@ November 2026.
   house's record the office's changes teach a draw at every cycle timing
   (0.16-0.45 kW, by effort; a 0.10 kW stop within the house's noise does not), and the living room's night 31 against 10 [D028].
 - **Never heat after a cooling cycle; never cool after a heating cycle**
-  (decision of 8 November 2026) [D102]. A hard limit, as the compressor's
-  minimum run and rest are, held while the room is inside its band; a room
-  that has left the band on the other side may be turned that way. On the
-  night of 7-8 November the living room was asked to heat 10 times just
-  under the centre of its band after cooling; each became a rest and a
-  restart.
+  (decision of 8 November 2026, refined 9 November 2026) [D102]. The cycle
+  is the run: a running unit is not turned the other way; it runs its
+  minimum, rests its minimum, and the reversal counts as a stop and a start.
+  After the run the plan forecasts the room with the unit resting, and turns
+  it the other way only when that rest forecast does not bring the room back
+  inside its band. On the night of 7-8 November the living room was asked to
+  heat 10 times just under the centre of its band after cooling; each became
+  a rest and a restart. The rest forecast keeps that protection without
+  forcing the room to cross its band, and without answering an overshoot
+  with the opposite run.
 - **Decisions D101 and D102** are written into `docs/decisions/`.
 - **The sun is measured by the house's solar power** where the forecast
   gives no cloud cover or UV (`weather.oxley_hourly` gives neither, so the

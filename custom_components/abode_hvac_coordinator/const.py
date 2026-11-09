@@ -312,6 +312,11 @@ PLAN_STEPS: Final = 12  # [Prop][Sim]
 PLAN_POINTS_PER_STEP: Final = 6  # 5-minute points [Prop]
 PLAN_BEAM_WIDTH: Final = 50  # [Prop][Sim][NYE]
 PLAN_MARGIN_SIGMA: Final = 1.0  # margin inside the band, in forecast sigmas [Prop][Sim]
+# A reversal is decided only after the room has had a rest cycle: the plan
+# first forecasts the same room with the unit resting, and turns the unit the
+# other way only if that forecast does not come back inside the band within
+# this many half-hour steps [D102].
+REVERSAL_REST_STEPS: Final = 2  # one hour
 PLAN_START_COST_SHARE: Final = 0.5  # c_start = 0.5 p_max D1 x 1 h [Prop][Sim][NYE]
 ARBITER_HAND_UP_TRUST_DAYS: Final = 14  # [Prop][NYE]
 ARBITER_HAND_UP_WINS: Final = 11  # of the last 14 [Prop][Der]

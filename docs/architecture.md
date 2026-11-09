@@ -1195,10 +1195,11 @@ EVERY 5 MINUTES, per room, unless Comfort said OFF:
   NOT ALLOWED in any plan:
       a start within 5 minutes of the last stop, a stop within 10
       minutes of the start (per outdoor unit)               [D016][D020]
-      the first step turning a running unit the other way: it rests
-      first                                                         [D016]
-      heating after a cooling cycle, or cooling after a heating cycle,
-      while the plan's forecast has the room inside its band        [D102]
+      the first step turning a running unit the other way: it runs its
+      minimum, rests its minimum, then starts the other way    [D016][D102]
+      the first step turning the unit the other way after a run while an
+      hour of rest would bring the room back inside its band: it rests
+      and lets the room drift back                            [D016][D102]
       (the stop rule binds only where the running kind can carry on;
       where it cannot, heating a waking room or a mode or rate no
       longer offered, the plan may rest and Limits holds the stop)  [D016]

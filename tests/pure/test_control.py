@@ -229,51 +229,55 @@ def starts_in(actions: Any) -> int:
 
 
 class NoTurnInsideTheBand(unittest.TestCase):
-    """Never heat after a cooling cycle, never cool after a heating cycle,
-    while the room is inside its band [D102]."""
+    """Never heat after a cooling cycle, never cool after a heating cycle
+    [D102]. The cycle is the run: a running unit is not turned the other way.
+    Once it has rested, the plan first forecasts the room with the unit
+    resting, and turns it the other way only if that rest forecast does not
+    bring the room back inside its band. An overshoot the room's own drift
+    will undo is never answered with a reversal."""
 
-    def assert_turns_only_outside(self, p: Any, way: int, low: float, high: float) -> None:
-        """Every turn the other way comes only where the plan's own forecast
-        has the room outside its band on that side."""
-        index = None
-        for j, a in enumerate(p.actions):
-            w = 1 if a.kind in (SK.COOL, SK.DRY) else -1 if a.kind is SK.HEAT else 0
-            if w == -way and w != 0:
-                before = p.points[j * 6 - 1].hci if j > 0 else index
-                self.assertIsNotNone(before, "turned in the first step")
-                self.assertTrue(before < low if w < 0 else before > high,
-                                f"step {j}: {a.kind.value} with the room at {before:.2f}, band {low}-{high}")
-            if w != 0:
-                way = w
-
-    def test_after_cooling_a_cool_night_rests_and_never_heats(self) -> None:
+    def test_a_running_cooling_unit_is_not_turned_to_heating(self) -> None:
         # the living room at 04:20 on 8 November: just under the centre after
-        # cooling, a 19.5 C night; heating was asked for 10 times that night
+        # cooling, a 19.5 C night
         f = heat(22.6)
-        for running in (False, True):
-            kw = {"compressor_running": running, "last_kind": SK.COOL if running else SK.REST,
-                  "running_since": NOW - timedelta(minutes=30) if running else None}
-            p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=19.5),
-                                      last_way=1, **kw))
-            self.assertIsNot(p.first.kind, SK.HEAT)
-            self.assert_turns_only_outside(p, 1, 23.0, 25.5)
+        running = {"compressor_running": True, "last_kind": SK.COOL,
+                   "running_since": NOW - timedelta(minutes=30)}
+        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=19.5), **running))
+        self.assertIsNot(p.first.kind, SK.HEAT)
 
-    def test_after_heating_a_warm_day_never_cools(self) -> None:
+    def test_a_running_heating_unit_is_not_turned_to_cooling(self) -> None:
         f = heat(25.0)
-        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 26.0), conditions=conds(outdoor=27.0), last_way=-1))
+        running = {"compressor_running": True, "last_kind": SK.HEAT,
+                   "running_since": NOW - timedelta(minutes=30)}
+        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 26.0), conditions=conds(outdoor=27.0), **running))
         self.assertNotIn(p.first.kind, (SK.COOL, SK.DRY))
-        self.assert_turns_only_outside(p, -1, 23.0, 26.0)
 
-    def test_the_same_night_without_a_cooling_cycle_may_heat(self) -> None:
-        f = heat(22.6)
-        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=19.5), last_way=0))
-        self.assertIn(SK.HEAT, {a.kind for a in p.actions})
+    def test_a_cool_room_inside_its_band_is_not_heated(self) -> None:
+        # 0.65 under the centre after cooling, but still inside the band: rest
+        # would keep it there, so the plan rests rather than reversing. Before
+        # this rule it heated on the first step.
+        p = plan.make_plan(inputs(heat=heat(23.2), bands=bands(23.0, 25.5), conditions=conds(outdoor=18.0),
+                                  compressor_running=False, last_kind=SK.REST, last_way=1))
+        self.assertIsNot(p.first.kind, SK.HEAT)
 
-    def test_a_room_that_has_left_the_band_may_be_turned(self) -> None:
-        # the last cooling of summer never blocks the first heating of winter
-        f = heat(17.0)
-        p = plan.make_plan(inputs(heat=f, bands=bands(23.0, 25.5), conditions=conds(outdoor=10.0), last_way=1))
-        self.assertIn(SK.HEAT, {a.kind for a in p.actions})
+    def test_a_warm_room_inside_its_band_is_not_cooled(self) -> None:
+        # the other way: 0.35 over the centre after heating, still inside the
+        # band, and rest would keep it there
+        p = plan.make_plan(inputs(heat=heat(24.6), bands=bands(23.0, 25.5), conditions=conds(outdoor=24.5),
+                                  compressor_running=False, last_kind=SK.REST, last_way=-1))
+        self.assertNotIn(p.first.kind, (SK.COOL, SK.DRY))
+
+    def test_a_cold_room_the_rest_forecast_does_not_recover_may_be_heated(self) -> None:
+        # under the band and a cold night: resting would leave it outside, so
+        # the plan may turn the unit to heating even though it last cooled
+        p = plan.make_plan(inputs(heat=heat(22.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=10.0),
+                                  compressor_running=False, last_kind=SK.REST, last_way=1))
+        self.assertIs(p.first.kind, SK.HEAT)
+
+    def test_a_hot_room_the_rest_forecast_does_not_recover_may_be_cooled(self) -> None:
+        p = plan.make_plan(inputs(heat=heat(26.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=35.0),
+                                  compressor_running=False, last_kind=SK.REST, last_way=-1))
+        self.assertIs(p.first.kind, SK.COOL)
 
 
 class FirstStep(unittest.TestCase):

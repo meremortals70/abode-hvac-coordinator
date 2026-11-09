@@ -35,6 +35,7 @@ from ..const import (
     PLAN_START_COST_SHARE,
     PLAN_STEP_H,
     PLAN_STEPS,
+    REVERSAL_REST_STEPS,
     WINDOW_FACINGS,
 )
 from ..linalg import add, diagonal, sandwich
@@ -303,22 +304,6 @@ def _vp(t: float, rh: float) -> float:
     return rh / 100.0 * 6.105 * math.exp(17.27 * t / (237.7 + t))
 
 
-def _locked(node: _Node, action: PlanAction, inp: PlanInputs, j: int, index_now: float) -> bool:
-    """Never heat after a cooling cycle, never cool after a heating cycle
-    [D102]: a hard limit, as the compressor's minimum
-    run and rest are. It holds while the room is inside its band; a room
-    that has left it on the other side may be turned that way, so the last
-    run of one season never blocks the next. Inside the band the plan
-    rests, and its calculation decides the rest."""
-    way = _way(action.kind)
-    if way == 0 or node.way == 0 or way == node.way:
-        return False
-    index = node.points[-1].hci if node.points else index_now
-    band = inp.bands[max(j * PLAN_POINTS_PER_STEP - 1, 0)]
-    left = index < band.low if way < 0 else index > band.high
-    return not left
-
-
 def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -> bool:
     """What step 0 may not do, from the state now [D016][D073]. Later steps
     are half an hour apart, longer than the shortest run and rest.
@@ -330,7 +315,7 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
     plan never turns a heating room to cooling to stay running."""
     runs = _runs(action.kind)
     # turning a running unit the other way is a stop and a start: it rests
-    # first, so a plan that reverses begins by resting [D016]
+    # first, so a plan that reverses begins by resting [D016][D102]
     if _reverses(inp.compressor_running, inp.last_kind, action.kind):
         return False
     if runs and not inp.compressor_running:
@@ -351,6 +336,29 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
         and inp.running_since is not None
         and (inp.now - inp.running_since).total_seconds() < MIN_RUN_S
     )
+
+
+def _reversal(last_way: int, kind: StepKind) -> bool:
+    """A running kind the other way from the way the unit last ran [D102]."""
+    way = _way(kind)
+    return way != 0 and last_way != 0 and way != last_way
+
+
+def _rest_recovers(start: _Node, inp: PlanInputs, fx: _Fixed, w: float) -> bool:
+    """Whether the room comes back inside its band with the unit resting,
+    within REVERSAL_REST_STEPS half-hours [D102].
+
+    A reversal waits for this rest forecast: an overshoot the room's own
+    drift will undo is left to drift back, and the unit is turned the other
+    way only when resting does not return the room to its band."""
+    node = start
+    for j in range(REVERSAL_REST_STEPS):
+        node = _extend(node, PlanAction(StepKind.REST, 0.0, None), j, inp, fx, w, 0.0)
+    for j, pt in enumerate(node.points):
+        band = inp.bands[j]
+        if not band.required or band.low <= pt.hci <= band.high:
+            return True
+    return False
 
 
 def make_plan(inp: PlanInputs) -> Plan:
@@ -394,7 +402,10 @@ def make_plan(inp: PlanInputs) -> Plan:
         u=inp.heat.u,
         way=inp.last_way,
     )
-    index_now = start.t + _E_COEFF * start.e - _OFFSET
+    # turn the unit the other way only when resting it would not bring the
+    # room back into its band: an overshoot inside the band is left to the
+    # room's own drift, never answered with a reversal [D102]
+    reversal_ok = not _rest_recovers(start, inp, fx, w)
     beam = [start]
     best_by_first: dict[PlanAction, _Node] = {}
     for j in range(PLAN_STEPS):
@@ -405,9 +416,9 @@ def make_plan(inp: PlanInputs) -> Plan:
             for action in actions:
                 if j == 0 and not _allowed_first(inp, action, can_carry_on):
                     continue
-                if inp.blind_control and (action.blinds_closed is not None) != sunny:
+                if j == 0 and not reversal_ok and _reversal(inp.last_way, action.kind):
                     continue
-                if _locked(node, action, inp, j, index_now):
+                if inp.blind_control and (action.blinds_closed is not None) != sunny:
                     continue
                 grown.append(_extend(node, action, j, inp, fx, w, draws[action.rate]))
         grown.sort(key=lambda n: n.key)
@@ -435,7 +446,7 @@ def _extend(
     n = node.copy()
     runs = _runs(action.kind)
     if runs and (not n.running or _reverses(n.running, n.last_kind, action.kind)):
-        # a reversal is a stop and a start: it costs a start [D016]
+        # a reversal is a stop and a start: it costs a start [D016][D102]
         n.starts += 1
     wet_before = n.last_kind in (StepKind.COOL, StepKind.DRY) and n.running
     wet = action.kind in (StepKind.COOL, StepKind.DRY)
