@@ -194,17 +194,6 @@ async def test_comfort_mode_and_leave(hass: HomeAssistant, climate_calls: dict[s
     assert _state(hass, "sensor.office") == "occupied"  # changing Comfort mode undoes Leave [D088]
 
 
-async def test_an_invalid_comfort_mode_option_is_refused(hass: HomeAssistant,
-                                                         climate_calls: dict[str, list[ServiceCall]]) -> None:
-    set_house_states(hass)
-    await setup_entry(hass)
-    with pytest.raises(ServiceValidationError) as err:
-        await hass.services.async_call("select", "select_option",
-                                       {"entity_id": "select.office_comfort_mode", "option": "party"},
-                                       blocking=True)
-    assert err.value.translation_key == "invalid_comfort_mode"
-
-
 async def test_the_precool_button(hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]],
                                   freezer: FrozenDateTimeFactory) -> None:
     set_house_states(hass)

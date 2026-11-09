@@ -18,8 +18,6 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
 ### Fixed
 
-- **Invalid comfort-mode options are rejected with a translated error**
-  instead of an unhandled `ValueError`.
 - **Unloading before setup finishes no longer crashes** when `runtime_data`
   was never set.
 

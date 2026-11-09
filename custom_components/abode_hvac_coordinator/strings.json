@@ -576,9 +576,6 @@
     "command_failed": {
       "message": "{entity} did not accept the command: {error}"
     },
-    "invalid_comfort_mode": {
-      "message": "{option} is not a valid comfort mode."
-    },
     "spoken_empty_room": {
       "message": "{room} is empty. The air conditioner turns off in {minutes} minutes."
     },
