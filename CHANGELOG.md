@@ -81,6 +81,13 @@ November 2026.
   way in its first step. The PID's integral restarts on a turn; the day's
   starts count it; and the minimum run counts from it [D016].
 
+### Changed
+
+- **The README and install guide lead with the 2026.11 Marketplace.** They
+  carry buttons that open this repository in the reader's own Home Assistant
+  as a custom repository and start the integration's setup. HACS stays
+  documented for 2026.10, which this build still supports.
+
 ## 0.10.2 - 2026-11-07
 
 ### Fixed

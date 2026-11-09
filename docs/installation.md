@@ -16,12 +16,18 @@
 
 From 2026.11, HACS is built into Home Assistant as the **Marketplace**, under **Settings**. An existing HACS install, with its custom repositories, is moved into it on the first start after upgrading.
 
+The quickest way is the first button in the [README](../README.md#install): it opens this repository in your own Home Assistant and offers to add it as a custom repository.
+
+By hand:
+
 1. Open **Settings → Marketplace** and accept its warning about community content.
-2. Connect GitHub in the Marketplace when it asks: adding a repository by its link needs a GitHub connection.
-3. Add `https://github.com/meremortals70/abode-hvac-coordinator` as an **Integration**.
-4. Install **Abode HVAC Coordinator**, then restart Home Assistant.
+2. Connect GitHub when the Marketplace asks: adding a custom repository needs a GitHub connection.
+3. Select **Add from link**, enter `https://github.com/meremortals70/abode-hvac-coordinator`, and choose the type **Integration** if it asks.
+4. Open **Abode HVAC Coordinator** and select **Install**. A first install of a config-flow integration opens its setup page straight away, and a repair offers the restart after an update.
 
 ## Install through HACS (before 2026.11)
+
+The button in the [README](../README.md#install) opens the same repository in HACS on these versions.
 
 1. In HACS, open the menu (three dots, top right) and choose **Custom repositories**.
 2. Add `https://github.com/meremortals70/abode-hvac-coordinator` with the type **Integration**.
