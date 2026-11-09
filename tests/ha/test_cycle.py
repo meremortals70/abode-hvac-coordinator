@@ -96,6 +96,23 @@ async def _tick(hass: HomeAssistant, freezer: FrozenDateTimeFactory, delta: time
     await hass.async_block_till_done(wait_background_tasks=True)  # the cycle runs as a background task
 
 
+async def test_the_cycle_uses_targeted_state_lookups(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """The 30-second cycle reads only the entities it needs; it does not
+    call hass.states.async_all() and so does not scale with the whole Home
+    Assistant instance [D002][Prop]."""
+    set_house_states(hass)
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data.coordinator
+    with patch.object(coordinator.hass.states, "async_all",
+                      side_effect=AssertionError("cycle should not call async_all()")):
+        await _tick(hass, freezer, timedelta(seconds=30))
+    run = coordinator.rooms[ROOM_ID]
+    assert not run.failed
+    assert coordinator.data is not None
+
+
 async def test_the_tariff_prices_the_plan(hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]) -> None:
     set_house_states(hass)
     tariff = Tariff(hass, _intervals(["no_grid_import"]))
