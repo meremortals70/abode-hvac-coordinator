@@ -96,6 +96,24 @@ async def _tick(hass: HomeAssistant, freezer: FrozenDateTimeFactory, delta: time
     await hass.async_block_till_done(wait_background_tasks=True)  # the cycle runs as a background task
 
 
+async def test_the_cycle_reads_only_configured_entities(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]
+) -> None:
+    """_states() returns only the entities this integration is configured
+    to read; it does not copy every state in Home Assistant [D002][Prop]."""
+    set_house_states(hass)
+    # an entity the integration is not configured to read
+    hass.states.async_set("sensor.unrelated", "123")
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data.coordinator
+    states = coordinator._states()
+    assert "sensor.unrelated" not in states
+    assert "climate.office" in states
+    assert "sensor.office_t" in states
+    assert "sensor.office_rh" in states
+    assert "sensor.outdoor_t" in states
+
+
 async def test_the_tariff_prices_the_plan(hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]]) -> None:
     set_house_states(hass)
     tariff = Tariff(hass, _intervals(["no_grid_import"]))

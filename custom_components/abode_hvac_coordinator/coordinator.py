@@ -796,10 +796,52 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         self._due["day"] = mark
         return (today - timedelta(days=1)).isoformat()
 
+    def _entity_ids(self) -> set[str]:
+        """Every entity state the cycle needs to read [D002]."""
+        out: set[str] = set()
+        house = self.house
+        for entity_id in (
+            house.outdoor_temperature,
+            house.outdoor_humidity,
+            house.outdoor_wind,
+            house.house_load,
+            house.solar_power,
+            house.battery_charge,
+            house.grid_power,
+        ):
+            if entity_id:
+                out.add(entity_id)
+        for run in self.rooms.values():
+            room = run.config
+            for entity_id in (
+                room.temperature_sensor,
+                room.humidity_sensor,
+                room.presence_sensor,
+                room.sleep_schedule,
+                room.sun_sensor,
+            ):
+                if entity_id:
+                    out.add(entity_id)
+            out.update(room.openings)
+            out.update(room.blinds)
+            for head in room.heads:
+                out.add(head.climate)
+                if head.frequency_sensor:
+                    out.add(head.frequency_sensor)
+        return out
+
     def _states(self) -> dict[str, RawState]:
-        """The current state of every entity, in the shape Observe reads
-        (D002: each decision in a cycle sees the same moment)."""
-        return {s.entity_id: raw_from_state(s) for s in self.hass.states.async_all()}
+        """The current state of every entity this cycle reads, in the shape
+        Observe reads (D002: each decision in a cycle sees the same moment).
+        Targeted lookups replace async_all() so the 30-second PID path does
+        not scale with the whole Home Assistant instance."""
+        states = self.hass.states
+        out: dict[str, RawState] = {}
+        for entity_id in self._entity_ids():
+            st = states.get(entity_id)
+            if st is not None:
+                out[entity_id] = raw_from_state(st)
+        return out
 
     async def _async_update_data(self) -> CycleData:
         async with self._lock:

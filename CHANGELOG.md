@@ -6,6 +6,21 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## Unreleased
+
+### Changed
+
+- **The 30-second cycle reads only the entity states it needs.** Previously
+  it copied every Home Assistant state each cycle; now it looks up only the
+  house sensors, room sensors, climate heads, blinds, and openings configured
+  for this integration. This keeps the PID path from scaling with the whole
+  instance [D002].
+
+### Fixed
+
+- **Unloading before setup finishes no longer crashes** when `runtime_data`
+  was never set.
+
 ## 0.10.3 - 2026-11-09
 
 From the house's first night on 0.10.2 and its recorder export of 7-8
