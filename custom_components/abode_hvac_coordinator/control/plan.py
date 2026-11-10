@@ -39,7 +39,7 @@ from ..const import (
     WINDOW_FACINGS,
 )
 from ..linalg import add, diagonal, sandwich
-from ..model.filter import HeatFilter
+from ..model.filter import FilterStep, HeatFilter
 from ..model.humidity import H_E, HumidityFilter, moisture_figures
 from ..model.physics import I_M, I_T, STEP_H, curve_values, exact_step, figures
 from ..model.unit import UnitModel
@@ -344,13 +344,56 @@ def _reversal(last_way: int, kind: StepKind) -> bool:
     return way != 0 and last_way != 0 and way != last_way
 
 
+def _gap(index: float, band: BandPoint) -> float:
+    """How far an index is outside its band, 0 when inside [D102]."""
+    if not band.required:
+        return 0.0
+    return max(band.low - index, index - band.high, 0.0)
+
+
+def _observed_gap_change(inp: PlanInputs, band: BandPoint) -> float | None:
+    """How the room's outside-band gap changed over the last half hour, from
+    what the filter actually read rather than what the model forecasts [D102].
+
+    Negative means the room is heading back into its band. None when there
+    are not yet six five-minute steps to compare.
+    """
+    steps = list(inp.heat.recent)[-6:]
+    if len(steps) < 6:
+        return None
+
+    def index(step: FilterStep) -> float:
+        reading = step.predicted_t + (step.innovation or 0.0)
+        return reading + _E_COEFF * inp.e_now - _OFFSET
+
+    return _gap(index(steps[-1]), band) - _gap(index(steps[0]), band)
+
+
 def _rest_recovers(start: _Node, inp: PlanInputs, fx: _Fixed, w: float) -> bool:
     """Whether the room comes back inside its band with the unit resting,
     within REVERSAL_REST_STEPS half-hours [D102].
 
     A reversal waits for this rest forecast: an overshoot the room's own
     drift will undo is left to drift back, and the unit is turned the other
-    way only when resting does not return the room to its band."""
+    way only when resting does not return the room to its band.
+
+    A room that is inside its band now is never reversed: it has not left
+    the band, so there is nothing to answer (Jason, 8 November 2026: the
+    office at 27.0 in a 26.0-28.5 band was heated after a cooling run). A
+    room that is outside but whose rest forecast narrows the gap is also
+    left to rest, even when it does not reach the band inside the hour: it
+    is heading back, which is what D102 asks (Jason, 9 November 2026:
+    "if after a rest cycle it is not heading back into band then decide").
+    """
+    index_now = start.t + _E_COEFF * start.e - _OFFSET
+    band_now = inp.bands[0]
+    if _gap(index_now, band_now) == 0.0:
+        return True
+    observed = _observed_gap_change(inp, band_now)
+    if observed is not None and observed < 0.0:
+        # the readings themselves show the room heading back: rest, even if
+        # the model's forecast cannot see the recovery [D102]
+        return True
     node = start
     for j in range(REVERSAL_REST_STEPS):
         node = _extend(node, PlanAction(StepKind.REST, 0.0, None), j, inp, fx, w, 0.0)
@@ -358,7 +401,8 @@ def _rest_recovers(start: _Node, inp: PlanInputs, fx: _Fixed, w: float) -> bool:
         band = inp.bands[j]
         if not band.required or band.low <= pt.hci <= band.high:
             return True
-    return False
+    last = node.points[-1]
+    return _gap(last.hci, inp.bands[len(node.points) - 1]) < _gap(index_now, band_now)
 
 
 def make_plan(inp: PlanInputs) -> Plan:
@@ -404,7 +448,11 @@ def make_plan(inp: PlanInputs) -> Plan:
     )
     # turn the unit the other way only when resting it would not bring the
     # room back into its band: an overshoot inside the band is left to the
-    # room's own drift, never answered with a reversal [D102]
+    # room's own drift, never answered with a reversal [D102]. When the
+    # unit's observed direction is unknown, the plan's last running kind is
+    # the best evidence of the way it ran; otherwise a restart would drop
+    # the guard exactly when it is needed.
+    last_way = inp.last_way or _way(inp.last_kind)
     reversal_ok = not _rest_recovers(start, inp, fx, w)
     beam = [start]
     best_by_first: dict[PlanAction, _Node] = {}
@@ -416,7 +464,7 @@ def make_plan(inp: PlanInputs) -> Plan:
             for action in actions:
                 if j == 0 and not _allowed_first(inp, action, can_carry_on):
                     continue
-                if j == 0 and not reversal_ok and _reversal(inp.last_way, action.kind):
+                if j == 0 and not reversal_ok and _reversal(last_way, action.kind):
                     continue
                 if inp.blind_control and (action.blinds_closed is not None) != sunny:
                     continue

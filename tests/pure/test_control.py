@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -278,6 +279,43 @@ class NoTurnInsideTheBand(unittest.TestCase):
         p = plan.make_plan(inputs(heat=heat(26.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=35.0),
                                   compressor_running=False, last_kind=SK.REST, last_way=-1))
         self.assertIs(p.first.kind, SK.COOL)
+
+    def test_unknown_last_way_falls_back_to_last_kind_to_block_reversal(self) -> None:
+        """When the unit's actual direction cannot be read, the plan's last
+        kind still tells us which way it was commanding. A cool room that rest
+        would bring back inside its band must not be heated just because
+        last_way happened to be unknown [D102]."""
+        p = plan.make_plan(inputs(heat=heat(22.6), bands=bands(23.0, 25.5), conditions=conds(outdoor=24.0),
+                                   compressor_running=False, last_kind=SK.COOL, last_way=0))
+        self.assertIsNot(p.first.kind, SK.HEAT)
+
+    def test_unknown_last_way_falls_back_to_last_kind_to_allow_genuine_need(self) -> None:
+        """The fallback is only there to block unneeded reversals: a cold room
+        on a cold night is still heated when rest would not recover it [D102]."""
+        p = plan.make_plan(inputs(heat=heat(22.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=10.0),
+                                   compressor_running=False, last_kind=SK.COOL, last_way=0))
+        self.assertIs(p.first.kind, SK.HEAT)
+
+    def test_a_room_barely_below_band_and_heading_back_is_not_heated(self) -> None:
+        """The office on 9 November at 01:10: 25.8 in a 26.0-28.5 band, a warm
+        day outside, and the plan heated at -5 C/h. A room whose rest forecast
+        narrows the gap is heading back, and must be left to drift [D102]."""
+        p = plan.make_plan(inputs(heat=heat(25.8), bands=bands(26.0, 28.5), conditions=conds(outdoor=29.0),
+                                   compressor_running=False, last_kind=SK.COOL, last_way=0))
+        self.assertIsNot(p.first.kind, SK.HEAT)
+
+    def test_observed_readings_heading_back_are_trusted_over_a_cool_forecast(self) -> None:
+        """The office on 9 November: the readings rose from 25.3 to 25.95 over
+        half an hour while the model forecast cooling, and the plan heated at
+        -5 C/h. The rest decision must use what the room actually did, not
+        only what the model expected [D102]."""
+        f = heat(24.9)  # about 25.8 HCI at the fixture humidity
+        f.recent.clear()
+        for i in range(6):  # half an hour of rising readings, 24.4 to 24.9 C
+            f.recent.append(types.SimpleNamespace(predicted_t=24.4 + 0.1 * i, innovation=0.0))
+        p = plan.make_plan(inputs(heat=f, bands=bands(26.0, 28.5), conditions=conds(outdoor=24.0),
+                                   compressor_running=False, last_kind=SK.COOL, last_way=1))
+        self.assertIsNot(p.first.kind, SK.HEAT)
 
 
 class FirstStep(unittest.TestCase):

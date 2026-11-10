@@ -6,6 +6,20 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.5 - 2026-11-10
+
+### Fixed
+
+- **The plan no longer reverses from cooling to heating inside the comfort
+  band, or while the room is heading back into it.** On 8 November the
+  office was at index 27.0 inside a 26.0-28.5 band and the plan chose heat
+  at -1.0 C/h after a cooling run; on 9 November it was rising from 25.3 to
+  25.95 over half an hour while the model forecast cooling, and the plan
+  heated at -5.0 C/h throughout. The reversal guard now refuses inside the
+  band, trusts the last half hour of actual readings over a forecast that
+  disagrees, and falls back to the plan's last running kind when the unit's
+  observed direction is unknown after a restart [D102].
+
 ## 0.10.4 - 2026-11-09
 
 ### Changed
