@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import types
 import unittest
@@ -75,11 +76,10 @@ class Actions(unittest.TestCase):
     def test_candidates(self) -> None:
         acts = plan.candidate_actions(inputs(), 1.0)
         kinds = {a.kind for a in acts}
-        self.assertEqual(kinds, {SK.REST, SK.DRY, SK.COOL, SK.HEAT})
+        self.assertEqual(kinds, {SK.REST, SK.COOL, SK.HEAT})  # dry needs a moisture model [D103]
         cool = sorted(a.rate for a in acts if a.kind is SK.COOL)
         self.assertEqual(cool, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])  # ln 1 curve: 1..6 from U_min
         self.assertEqual(sorted(-a.rate for a in acts if a.kind is SK.HEAT), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-        self.assertEqual([a.rate for a in acts if a.kind is SK.DRY], [1.0])
 
     def test_u_min_between_curve_points(self) -> None:
         cool = sorted(a.rate for a in plan.candidate_actions(inputs(), 2.5) if a.kind is SK.COOL)
@@ -217,16 +217,54 @@ class CeilingEachWay(unittest.TestCase):
         self.assertLessEqual(max(-a.rate for a in same if a.kind is SK.HEAT), 2.0)  # none given: the ceiling
 
 
-def starts_in(actions: Any) -> int:
-    """Starts in a plan from rest: each run begun from rest, and each turn
-    between cooling (cool, dry) and heating while running."""
-    n, way = 0, 0
+def starts_in(actions: Any, already_running: bool = False) -> int:
+    """Starts in a plan: each run begun from rest, and each change of running
+    kind while running, since the unit stops its compressor to change mode
+    (cool and dry are different modes) [D016][D103].
+
+    already_running: the unit is running now, so the run it is in did not
+    start within this plan."""
+    n, kind, seen = 0, None, False
     for a in actions:
-        w = 1 if a.kind in (SK.COOL, SK.DRY) else -1 if a.kind is SK.HEAT else 0
-        if w != 0 and (way == 0 or w != way):
-            n += 1
-        way = w
+        if a.kind in (SK.COOL, SK.DRY, SK.HEAT):
+            if kind != a.kind and not (already_running and not seen):
+                n += 1
+            kind, seen = a.kind, True
+        else:
+            kind = None
     return n
+
+
+class DryIsPricedByTheMoistureModel(unittest.TestCase):
+    """Dry is a mode of its own, and its benefit is latent, so it is offered
+    only where the moisture model can price that benefit. No humidity
+    threshold: where the filter is present the optimiser decides [D103]."""
+
+    def test_no_dry_without_a_humidity_model(self) -> None:
+        acts = plan.candidate_actions(inputs(), 1.0)
+        self.assertNotIn(SK.DRY, {a.kind for a in acts})
+
+    def test_dry_is_offered_when_the_model_can_price_it(self) -> None:
+        hum = load("model.humidity").HumidityFilter.start(E_ROOM)
+        acts = plan.candidate_actions(inputs(humidity=hum), 1.0)
+        self.assertIn(SK.DRY, {a.kind for a in acts})
+        self.assertEqual([a.rate for a in acts if a.kind is SK.DRY], [1.0])  # at U_min
+
+    def test_cooling_does_not_alternate_with_dry_while_running(self) -> None:
+        """The living room on 10 November: inside its band, 55-59 % RH, and
+        the plan swapped cool and dry 32 times in nine hours. Each swap is a
+        mode change and a compressor stop [D103]."""
+        hum = load("model.humidity").HumidityFilter.start(E_ROOM)
+        p = plan.make_plan(inputs(
+            heat=heat(26.0), humidity=hum, bands=bands(23.0, 25.5), conditions=conds(outdoor=24.0),
+            compressor_running=True, last_kind=SK.COOL, running_since=NOW - timedelta(minutes=30),
+        ))
+        kinds = [a.kind for a in p.actions]
+        swaps = sum(1 for a, b in itertools.pairwise(kinds)
+                    if a in (SK.COOL, SK.DRY) and b in (SK.COOL, SK.DRY) and a is not b)
+        self.assertEqual(swaps, 0, [(a.kind.value, a.rate) for a in p.actions])
+        self.assertEqual(p.starts, starts_in(p.actions, already_running=True),
+                         [(a.kind.value, a.rate) for a in p.actions])
 
 
 class NoTurnInsideTheBand(unittest.TestCase):
@@ -544,6 +582,21 @@ class Plans(unittest.TestCase):
         for pt in (sunny.points[0], sunny.points[-1], shade.points[0]):
             self.assertAlmostEqual(pt.hci, pt.t + 0.33 * E_ROOM - 4.0, places=9)
         self.assertGreater(sunny.points[-1].t, shade.points[-1].t)
+
+
+class AModeChangeIsAStart(unittest.TestCase):
+    """Cool and dry are different modes, and the unit stops its compressor to
+    change mode, so a change of running kind costs a start [D103]."""
+
+    def test_a_running_unit_of_unknown_kind_is_carried_on(self) -> None:
+        """The unit can be seen running with no kind recorded (a restart, an
+        unread head). Continuing that run is not a start: charging one gave the
+        simulated loop a fourth start in a day [D103]."""
+        p = plan.make_plan(inputs(heat=heat(28.0), conditions=conds(outdoor=33.0),
+                                  compressor_running=True, last_kind=SK.REST,
+                                  running_since=NOW - timedelta(minutes=30)))
+        self.assertIs(p.first.kind, SK.COOL)
+        self.assertEqual(p.starts, starts_in(p.actions, already_running=True))
 
 
 class PathNow(unittest.TestCase):

@@ -107,3 +107,5 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D100](D100.md) | The unit's lowest steady rate is learned only from a 30-minute run held at or below the lowest rate offered then |
 | [D101](D101.md) | Off or fan-only is not running. In any other mode the component watches the house power: a rise is the compressor starting, a fall back is it stopping |
 | [D102](D102.md) | Never heat after a cooling cycle; never cool after a heating cycle. The cycle is the run: a running unit is not reversed, a room inside its band is never reversed, and after rest the plan reverses only when neither the rest forecast nor the observed half-hour trend is bringing the room back inside its band |
+| [D103](D103.md) | A change of running kind is a start, and dry is offered only where the moisture model can price it |
+| [D104](D104.md) | Constraints are facts about the equipment; comfort and economic judgements are priced by the model, never branched on |

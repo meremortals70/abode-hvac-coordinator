@@ -6,6 +6,20 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.6 - 2026-11-11
+
+### Fixed
+
+- **The plan no longer swaps cool and dry while the room is comfortable.** On
+  the night of 10 November 2026 the living room was inside its band from 23:32
+  until morning, at 55-59 % RH, and the plan alternated cool and dry 32 times.
+  Each swap stops the compressor for 2-4 minutes: the house load fell 430-900 W
+  within a minute of twenty of the twenty-three cool-to-dry changes. A change of
+  running kind now costs a start, as a reversal does, and dry is offered only
+  where the moisture model can price its latent benefit [D103]. The room is held
+  at the band's centre by the PID within one mode, not by re-choosing the mode
+  every half hour.
+
 ## 0.10.5 - 2026-11-10
 
 ### Fixed

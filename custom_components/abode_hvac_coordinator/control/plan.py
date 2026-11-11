@@ -159,6 +159,18 @@ def conditions_ahead(
     return points
 
 
+def drying_needed(inp: PlanInputs) -> bool:
+    """Whether the plan can price a dry run at all [D103].
+
+    Dry's benefit is latent, and only the moisture model can price it. With no
+    humidity filter there is nothing to price: dry would be cooling at the
+    lowest rate with an extra mode change, so it is not offered. Where the
+    filter is present the optimiser decides, against the comfort index, the
+    energy and the cost of the mode change. No humidity threshold is used.
+    """
+    return inp.humidity is not None
+
+
 def candidate_actions(inp: PlanInputs, u_min: float, u_min_heat: float | None = None) -> list[PlanAction]:
     """The actions in each step: rest, dry, cool and heat at each rate on
     the learned curve from U_min to the top; only what the unit
@@ -167,13 +179,14 @@ def candidate_actions(inp: PlanInputs, u_min: float, u_min_heat: float | None = 
     closed and open; make_plan offers closed and open only in a step with
     the sun on the glass, and left alone only in one without [D023].
     u_min is the cooling floor, which dry also runs at; heating has its
-    own floor on its own curve (u_min_heat; u_min where not given) [D100]."""
+    own floor on its own curve (u_min_heat; u_min where not given) [D100].
+    Dry is offered only while the room is humid enough to need it [D103]."""
     fig = figures(inp.heat.z)
     blinds: list[bool | None] = [None, True, False] if inp.blind_control else [None]
     out: list[PlanAction] = []
     kinds: list[tuple[StepKind, float]] = [(StepKind.REST, 0.0)]
     top = math.inf if inp.ceiling is None else inp.ceiling
-    if "dry" in inp.modes and u_min <= top:
+    if "dry" in inp.modes and u_min <= top and drying_needed(inp):
         kinds.append((StepKind.DRY, u_min))
     # the allowance is power: as a heating rate it is its own figure, read
     # on the heating curve [D028][D041]
@@ -493,8 +506,10 @@ def _extend(
 ) -> _Node:
     n = node.copy()
     runs = _runs(action.kind)
-    if runs and (not n.running or _reverses(n.running, n.last_kind, action.kind)):
-        # a reversal is a stop and a start: it costs a start [D016][D102]
+    if runs and (not n.running or (n.last_kind is not action.kind and _runs(n.last_kind))):
+        # a change of running kind is a stop and a start: the unit stops its
+        # compressor to change mode, so cool to dry costs one too. A running
+        # unit whose kind is not known is carried on, not charged [D016][D103]
         n.starts += 1
     wet_before = n.last_kind in (StepKind.COOL, StepKind.DRY) and n.running
     wet = action.kind in (StepKind.COOL, StepKind.DRY)
