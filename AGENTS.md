@@ -23,7 +23,9 @@ experienced architect. Treat them accordingly:
 
 ### Starting a session
 
-1. Open the project folder: `C:\Users\jason\Projects\abode-hvac-coordinator`.
+1. Open the project folder: `C:\Users\jason\Nextcloud\abode-hvac-coordinator`.
+   Project files live under `C:\Users\jason\Nextcloud\` and nowhere else — never
+   the OneDrive folder or the stray `C:\Users\jason\Projects\` copies.
 2. Check the current state:
    ```powershell
    git status
@@ -43,8 +45,8 @@ experienced architect. Treat them accordingly:
 
 ### Pushing changes
 
-`git push` is blocked at the OpenCode tool level. Use the GitHub token stored in
-`GITHUB_TOKEN` (user environment variable) instead:
+`git push` is blocked at the OpenCode tool level. Push through the GitHub API
+with the token in `GITHUB_TOKEN` (user environment variable):
 
 ```powershell
 $token = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
@@ -55,31 +57,32 @@ $headers = @{
 }
 ```
 
-To update a branch ref to a local commit SHA:
+A ref cannot be pointed at a commit GitHub has never seen, so a local commit is
+published by rebuilding it there:
 
-```powershell
-$body = '{"sha":"<full-40-char-commit-sha>","force":false}'
-Invoke-RestMethod `
-  -Uri "https://api.github.com/repos/meremortals70/abode-hvac-coordinator/git/refs/heads/main" `
-  -Method PATCH -Headers $headers -Body $body -ContentType "application/json"
-```
+1. `POST /git/blobs` with each changed file's exact bytes (`git cat-file blob
+   HEAD:<path>`, base64). The blob SHAs then match the local ones.
+2. `POST /git/trees` with `base_tree` = the remote head's tree and those entries.
+3. `POST /git/commits` with the local message and the local author and committer
+   dates, `parents` = the remote head.
+4. `PATCH /git/refs/heads/main` with the new SHA and `force: false`.
 
-To create or update a file on a branch, use the
-[contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents).
+When the tree and metadata match, the commit SHA is identical to the local one,
+so the local and remote branches stay in step. Verify `git ls-remote` after.
 
 ### Creating a release
 
 1. Update `manifest.json` and `CHANGELOG.md`.
 2. Commit the changes locally.
-3. Push `main` to GitHub using the token (see above).
+3. Publish with the API (see above).
 4. Create the release:
 
 ```powershell
 $body = @{
-  tag_name = "v0.10.4"
-  target_commitish = "main"
-  name = "v0.10.4"
-  body = "release notes"
+  tag_name = "v0.10.6"
+  target_commitish = "<full-40-char-commit-sha>"
+  name = "v0.10.6"
+  body = "<the changelog section for this version>"
   draft = $false
   prerelease = $false
 } | ConvertTo-Json
@@ -87,6 +90,8 @@ Invoke-RestMethod `
   -Uri "https://api.github.com/repos/meremortals70/abode-hvac-coordinator/releases" `
   -Method POST -Headers $headers -Body $body -ContentType "application/json"
 ```
+
+The tag and `main` must end up on the same commit.
 
 ### Project scope
 
@@ -109,6 +114,7 @@ the user for their current goals.
 - `tests/ha/` — tests through Home Assistant, using `pytest-homeassistant` helpers.
 - `tests/sim/` — whole-loop simulation of a room, about 75 seconds.
 - `docs/decisions/` — one file per design rule. Do not renumber or rewrite old rules.
+- `tools/` — offline diagnostic scripts (recorder export, history dump). Not shipped.
 - `CHANGELOG.md`, `custom_components/abode_hvac_coordinator/manifest.json` — version and release notes.
 
 ## Commands
@@ -145,11 +151,11 @@ Assistant test environment is unavailable.
 
 ## Defect workflow (GitHub Issues)
 
-Issues are the source of truth. Use the `gh` CLI; the repo is
-`meremortals70/abode-hvac-coordinator`.
+Issues are the source of truth. `gh` is not installed on this machine; use the
+REST API with the same headers (`GET /repos/meremortals70/abode-hvac-coordinator/issues`),
+or ask the user to run `gh`.
 
-1. **Pick and read.** `gh issue list --state open` then
-   `gh issue view <number> --comments`.
+1. **Pick and read.** List open issues, then the chosen issue and its comments.
 2. **Restate the defect** in one or two sentences: what should happen, what
    happens, and the smallest reproduction.
 3. **Find the layer.** Search the code and read the relevant part of
@@ -172,11 +178,29 @@ Issues are the source of truth. Use the `gh` CLI; the repo is
    if it cannot be reproduced.
 
 Git: branch `fix/<issue>-<slug>`, commit message `Fix #<issue>: <summary>` so
-GitHub links the commit to the issue. `git push` is denied by policy — ask the
-user to push or approve it.
+GitHub links the commit to the issue. Publish through the API (see above).
 
 Use `/defect <number>` to run this workflow end to end, and `/verify` to run the
 checks.
+
+## Model, not rules
+
+The room and the house are models; the plan optimises within them [D104].
+
+- **A constraint is a fact about the equipment or the world:** a unit's setpoint
+  step and range, the modes it advertises, a compressor's minimum run and rest, a
+  tariff boundary, a sensor that does not exist, a head's delay and lag.
+- **A comfort or economic judgement is priced by the model, never branched on.**
+  `if rh > 60`, `if price < 0.2`, `if index > band + 0.3` in `comfort.py`,
+  `economics.py`, `limits.py`, `delivery.py` or `control/` are defects. The
+  comfort index carries humidity, the economics carry the tariff, `c_start`
+  carries the cycle; the optimiser decides.
+- **If a behaviour needs a threshold, the model is missing a term.** Add the term
+  and let the optimiser choose; a threshold that suppresses the symptom hides the
+  term that should have priced it. The 60 % RH gate on dry mode, added and removed
+  on 11 November 2026, is the worked example [D103][D104].
+- **Record it as a D-record** in `docs/decisions/`, with a test that fails before
+  and passes after.
 
 ## Change rules
 
