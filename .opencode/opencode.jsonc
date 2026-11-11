@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // Project-specific instructions loaded alongside global AGENTS.md.
+  "instructions": [
+    "ARCHITECTURE.md",
+    ".opencode/memory/project.md",
+    ".opencode/memory/conventions.md",
+    ".opencode/memory/session-handoff.md"
+  ]
+}
