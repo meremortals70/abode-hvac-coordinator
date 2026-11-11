@@ -4,6 +4,4 @@ __pycache__/
 .venv/
 coverage.json
 .coverage
-tools/*.csv
-tools/*.tar.gz
-tools/*.log
+tools/
