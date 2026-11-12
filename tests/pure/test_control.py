@@ -33,7 +33,7 @@ def heat(t0: float = 25.0, **figs: float) -> Any:
     f = filt.HeatFilter.start(t0)
     f.noise = 0.003
     for name, value in figs.items():
-        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7}[name]] = math.log(value)
+        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7, "vent": physics.I_LN_VENT}[name]] = math.log(value)
     for i in range(2, physics.STATE_SIZE):  # a settled model
         f.p[i][i] = 1e-4
     f.p[0][0], f.p[1][1] = 0.001, 0.01
@@ -377,13 +377,6 @@ class FirstStep(unittest.TestCase):
         self.assertFalse(plan._allowed_first(inputs(running_since=NOW - timedelta(minutes=9), **running), rest))
         self.assertTrue(plan._allowed_first(inputs(running_since=NOW - timedelta(minutes=10), **running), rest))
 
-    def test_free_cooling_wait(self) -> None:
-        cool = models.PlanAction(SK.COOL, 2.0, None)
-        advised = NOW - timedelta(minutes=9)
-        self.assertFalse(plan._allowed_first(inputs(free_cooling_advised_at=advised), cool))
-        self.assertTrue(plan._allowed_first(inputs(free_cooling_advised_at=advised, occupied=False), cool))
-        self.assertTrue(plan._allowed_first(inputs(free_cooling_advised_at=NOW - timedelta(minutes=10)), cool))
-
 
 class Plans(unittest.TestCase):
     def test_shape_and_costs(self) -> None:
@@ -411,6 +404,30 @@ class Plans(unittest.TestCase):
         p = plan.make_plan(inputs(heat=heat(t_centre + 0.8), conditions=conds(outdoor=t_centre - 3.0)))
         self.assertIs(p.first.kind, SK.REST)
         self.assertLess(p.points[5].t, t_centre + 0.8)
+
+    def plan_for(self, vent: float, **kw: Any) -> Any:
+        return plan.make_plan(inputs(heat=heat(28.5, vent=vent), bands=bands(24.0, 27.0),
+                                     conditions=conds(outdoor=24.5), **kw))
+
+    def test_free_cooling_follows_the_learned_coupling(self) -> None:
+        """FREE COOLING is the model's own counterfactual: the room with an
+        opening open and the unit resting, against the plan, over the same
+        window and by the same cost [D073][D105]."""
+        self.assertTrue(self.plan_for(1.0).free_cooling_advised)
+
+    def test_a_sealed_room_is_not_advised_to_open_up(self) -> None:
+        """A room whose opening changes nothing with outdoors is not advised
+        to open one: the learned vent figure is near zero, so the opening
+        moves the room by less than the forecast's own uncertainty [D105]."""
+        self.assertFalse(self.plan_for(0.001).free_cooling_advised)
+
+    def test_nothing_is_advised_while_an_opening_is_open(self) -> None:
+        self.assertFalse(self.plan_for(1.0, opening=1.0).free_cooling_advised)
+
+    def test_damp_outdoor_air_is_not_advised(self) -> None:
+        """The model has no learned moisture coupling for an opening, so the
+        dew point stays a measured constraint on the advice [D105]."""
+        self.assertFalse(self.plan_for(1.0, outdoor_air_dry=False).free_cooling_advised)
 
     def test_no_heating_while_the_weather_warms_the_room(self) -> None:
         t_centre = 25.5 - (0.33 * E_ROOM - 4.0)
@@ -696,7 +713,8 @@ class EstimateBetweenFilterSteps(unittest.TestCase):
         path shows no error, and the PID asks for the plan's rate; standing
         still, the estimate showed slope x time since the step, and the
         output swung across its range (4.5) [Der]."""
-        z = [0.0] * 27
+        z = [0.0] * physics.STATE_SIZE
+        z[physics.I_LN_VENT] = math.log(3.0)
         for i, v in zip((2, 3, 4, 5, 6, 7), (0.077, 0.414, 6.544, 0.009, 0.4, 0.1), strict=True):
             z[i] = math.log(v)
         g = pid.gains(physics.figures(z), 0.46, 1.87, pid.actuation_minutes(None))

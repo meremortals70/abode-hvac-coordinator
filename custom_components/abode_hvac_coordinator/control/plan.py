@@ -26,7 +26,6 @@ from ..const import (
     DRAW_WITHOUT_LOAD_SENSOR_KW,
     FILTER_NOISE_M_PER_H,
     FILTER_NOISE_T_PER_H,
-    FREE_COOLING_WAIT_S,
     MIN_REST_S,
     MIN_RUN_S,
     PLAN_BEAM_WIDTH,
@@ -96,7 +95,14 @@ class PlanInputs:
     running_since: datetime | None = None
     stopped_since: datetime | None = None
     occupied: bool = True
-    free_cooling_advised_at: datetime | None = None  # [D073]
+    # the share of the room's openings open now: the air's coupling to
+    # outdoors is a + v o, so the forecast carries the opening as it is
+    # [D105]
+    opening: float = 0.0
+    # the outdoor air is dry enough to admit: the model has no learned
+    # moisture coupling for an opening, so the dew point is a measured
+    # constraint on the advice [D105]
+    outdoor_air_dry: bool = True
     rebound_steps: int = 0  # coil rebound left from a stop before now [D060]
     last_kind: StepKind = StepKind.REST
     # the way the unit last ran: 1 cooling or drying, -1 heating, 0 not known
@@ -275,9 +281,10 @@ class _Fixed:
     u_mean: float  # the share of the step's change in rate seen on average over it
 
 
-def _fixed(inp: PlanInputs) -> _Fixed:
+def _fixed(inp: PlanInputs, opening: float | None = None) -> _Fixed:
     fig = figures(inp.heat.z)
-    ex = exact_step(fig)
+    o = inp.opening if opening is None else opening
+    ex = exact_step(fig, opening=o)
     p2 = [[inp.heat.p[0][0], inp.heat.p[0][1]], [inp.heat.p[1][0], inp.heat.p[1][1]]]
     noise = diagonal([FILTER_NOISE_T_PER_H * STEP_H, FILTER_NOISE_M_PER_H * STEP_H])
     # the margin is the room's own uncertainty, not the sensor's: the
@@ -333,12 +340,6 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
         return False
     if runs and not inp.compressor_running:
         if inp.stopped_since is not None and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S:
-            return False
-        if (
-            inp.occupied
-            and inp.free_cooling_advised_at is not None
-            and (inp.now - inp.free_cooling_advised_at).total_seconds() < FREE_COOLING_WAIT_S
-        ):
             return False
     # a stop within the minimum run is not allowed [D016]
     return not (
@@ -418,6 +419,49 @@ def _rest_recovers(start: _Node, inp: PlanInputs, fx: _Fixed, w: float) -> bool:
     return _gap(last.hci, inp.bands[len(node.points) - 1]) < _gap(index_now, band_now)
 
 
+def _opening_advice(inp: PlanInputs, start: _Node, best: _Node, fx: _Fixed, w: float,
+                    draws: dict[float, float]) -> tuple[bool, str | None]:
+    """FREE COOLING [D073][D105]: the plan with an opening open and the unit
+    resting, against the plan itself, over the same window and by the same
+    cost (comfort, energy and starts).
+
+    Both are carried forward half an hour at a time and compared at every
+    half-hour, so the window that suits the opening is the one that speaks.
+    The opening must also move the room's index by more than the forecast's
+    own uncertainty: a room with no opening sensors, or a shut room whose
+    learned coupling is near zero, shows no difference and is never advised
+    to open up [D105].
+    """
+    if inp.opening > 0.0:
+        return False, "An opening is already open: the room is being ventilated."
+    if not inp.outdoor_air_dry:
+        return False, "The outdoor air is too damp to admit: its dew point is not below the room's."
+    fx_open = _fixed(inp, opening=1.0)
+    rest = PlanAction(StepKind.REST, 0.0, None)
+    opened, shut, planned = start, start, start
+    best_saving, longest = 0.0, 0
+    for j in range(PLAN_STEPS):
+        opened = _extend(opened, rest, j, inp, fx_open, w, 0.0)
+        shut = _extend(shut, rest, j, inp, fx, w, 0.0)
+        action = best.actions[j]
+        planned = _extend(planned, action, j, inp, fx, w, draws[action.rate])
+        at = j * PLAN_POINTS_PER_STEP + PLAN_POINTS_PER_STEP - 1
+        # does the opening itself change the room, beyond the forecast's own
+        # uncertainty? a sealed room does not, so it is never advised [D105]
+        if shut.points[at].hci - opened.points[at].hci <= shut.points[at].sigma_hci:
+            continue
+        saving = planned.cost - opened.cost
+        if saving > best_saving:
+            best_saving, longest = saving, j + 1
+    if longest == 0:
+        return False, ("Opening up would not beat the plan over the next six hours, by the "
+                       "plan's own measure.")
+    return True, (
+        f"Opening up and resting for {longest * PLAN_STEP_H * 60:.0f} minutes would cost "
+        f"{best_saving:.2f} less than the plan over the same time, by the plan's own measure."
+    )
+
+
 def make_plan(inp: PlanInputs) -> Plan:
     """EVERY 5 MINUTES, per room: the best plan [Prop][Sim].
 
@@ -492,7 +536,8 @@ def make_plan(inp: PlanInputs) -> Plan:
             ):
                 best_by_first[first] = n
     best = min(beam, key=lambda n: n.key)
-    return _as_plan(inp.now, best, best_by_first, w, c_start)
+    advised, advice = _opening_advice(inp, start, best, fx, w, draws)
+    return _as_plan(inp.now, best, best_by_first, w, c_start, advised, advice)
 
 
 def _extend(
@@ -565,7 +610,8 @@ def _extend(
     return n
 
 
-def _as_plan(now: datetime, best: _Node, by_first: dict[PlanAction, _Node], w: float, c_start: float) -> Plan:
+def _as_plan(now: datetime, best: _Node, by_first: dict[PlanAction, _Node], w: float, c_start: float,
+             advised: bool = False, advice: str | None = None) -> Plan:
     alternatives: list[tuple[PlanAction, str]] = []
     for first, node in by_first.items():
         if first == best.actions[0]:
@@ -590,6 +636,8 @@ def _as_plan(now: datetime, best: _Node, by_first: dict[PlanAction, _Node], w: f
         w=w,
         c_start=c_start,
         alternatives=tuple(alternatives),
+        free_cooling_advised=advised,
+        free_cooling_reason=advice,
     )
 
 

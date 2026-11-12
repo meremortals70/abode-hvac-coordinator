@@ -54,7 +54,7 @@ def head(climate: str = "climate.a", own: float | None = 25.0, available: bool =
 
 
 def snap(heads: tuple[Any, ...] | None = None, *, t: float = 25.0, rh: float = 50.0, out_t: float = 30.0,
-         out_rh: float = 50.0, blinds: tuple[Any, ...] = ()) -> Any:
+         out_rh: float = 50.0, blinds: tuple[Any, ...] = (), openings: tuple[Any, ...] = ()) -> Any:
     return dataclasses.replace(
         SimRoom().snapshot(),
         heads=heads if heads is not None else (head(),),
@@ -64,6 +64,7 @@ def snap(heads: tuple[Any, ...] | None = None, *, t: float = 25.0, rh: float = 5
         outdoor_humidity=models.Reading(out_rh, VT.MEASURED),
         outdoor_wind_ms=models.Reading(0.0, VT.MEASURED),
         blind_positions=blinds,
+        openings=openings,
     )
 
 
@@ -77,13 +78,15 @@ def comf(off: bool = False, occupied: bool = True) -> Any:
 
 
 def go(control: Any, *, rd: Any = None, s: Any = None, c: Any = None, vanes: bool = False,
-       heat: Any = "default", u_min: float = 1.0, now: datetime = T0) -> Any:
+       heat: Any = "default", u_min: float = 1.0, now: datetime = T0,
+       free_cooling: tuple[bool, str | None] = (False, None)) -> Any:
     rd = rd or delivery.RoomDelivery(room())
     hf = filt.HeatFilter.start(25.0) if heat == "default" else heat
     # the starting curve: every step ln 1, so the rate at efforts
     # 0.5, 1, 1.5, 2, 3, 4 C is 1, 2, 3, 4, 5, 6 C/h
     return rd.deliver(now=now, control=control, snapshot=s or snap(), comfort=c or comf(),
-                      choices=models.RoomChoices(automatic_vane_control=vanes), heat=hf, u_min=u_min)
+                      choices=models.RoomChoices(automatic_vane_control=vanes), heat=hf, u_min=u_min,
+                      free_cooling=free_cooling)
 
 
 class Passing(unittest.TestCase):
@@ -278,15 +281,15 @@ class Blinds(unittest.TestCase):
 
 
 class Advice(unittest.TestCase):
-    def test_free_cooling(self) -> None:
-        cool_outside = snap(t=27.0, rh=60.0, out_t=18.0, out_rh=50.0)
-        r = go(ctl(SK.COOL, 2.0), s=cool_outside)
-        self.assertTrue(r.free_cooling_advised)  # [D073]
-        r = go(ctl(SK.COOL, 2.0), s=cool_outside, c=comf(occupied=False))
+    def test_free_cooling_comes_from_the_plan(self) -> None:
+        """The advice is the plan's own counterfactual, carried through
+        untouched: delivery does not judge it again [D073][D105]."""
+        r = go(ctl(SK.COOL, 2.0), free_cooling=(True, "an opening open would help"))
+        self.assertTrue(r.free_cooling_advised)
+        self.assertEqual(r.free_cooling_reason, "an opening open would help")
+        r = go(ctl(SK.REST), free_cooling=(False, "the outdoor air is too damp to admit"))
         self.assertFalse(r.free_cooling_advised)
-        self.assertIn("empty", r.free_cooling_reason)
-        self.assertFalse(go(ctl(SK.REST), s=cool_outside).free_cooling_advised)
-        self.assertFalse(go(ctl(SK.COOL, 2.0), s=snap(t=27.0, rh=60.0, out_t=32.0)).free_cooling_advised)
+        self.assertEqual(r.free_cooling_reason, "the outdoor air is too damp to admit")
 
     def test_condensation(self) -> None:
         humid = snap(t=25.0, rh=90.0)  # dew point 23.2 C

@@ -1,4 +1,4 @@
-"""psychro.py: dew point, free cooling, condensation (Section 4.1)."""
+"""psychro.py: dew point, outdoor air's moisture, condensation (Section 4.1)."""
 
 from __future__ import annotations
 
@@ -37,44 +37,28 @@ class DewPoint(unittest.TestCase):
         self.assertGreater(worst, 0.055)
 
 
-def advice(**kw: float | bool | None) -> object:
-    args: dict[str, float | bool | None] = {
-        "needs_cooling": True,
-        "room_index": 28.0,
+def advice(**kw: float | None) -> object:
+    args: dict[str, float | None] = {
         "room_t": 26.0,
         "room_rh": 60.0,
         "outdoor_t": 20.0,
         "outdoor_rh": 50.0,
-        "outdoor_wind_ms": 0.0,
     }
     args.update(kw)
-    return psychro.free_cooling(**args)
+    return psychro.outdoor_air_dry(**args)
 
 
-class FreeCooling(unittest.TestCase):
-    def test_advised_when_cooler_and_drier(self) -> None:
-        a = advice()
-        self.assertTrue(a.advised)
-        self.assertAlmostEqual(a.outdoors_feels, hci.outdoor_apparent_temperature(20.0, 50.0, 0.0), places=12)
+class OutdoorAirDry(unittest.TestCase):
+    """The one measured constraint left on free cooling [D105]: the model
+    learns the heat an opening brings but not the moisture, so damp outdoor
+    air is refused rather than priced."""
 
-    def test_only_when_cooling_is_the_plan(self) -> None:
-        self.assertFalse(advice(needs_cooling=False).advised)
+    def test_dry_enough_when_the_dew_point_is_1_below(self) -> None:
+        self.assertTrue(advice().ok)
 
     def test_missing_reading_is_no(self) -> None:
-        for key in ("room_index", "room_t", "room_rh", "outdoor_t", "outdoor_rh"):
-            self.assertFalse(advice(**{key: None}).advised, key)
-
-    def test_missing_wind_is_still_air(self) -> None:
-        self.assertEqual(advice(outdoor_wind_ms=None).outdoors_feels, advice(outdoor_wind_ms=0.0).outdoors_feels)
-
-    def test_wind_counts_at_0_3(self) -> None:
-        a = advice(outdoor_wind_ms=10.0)
-        self.assertAlmostEqual(a.outdoors_feels, hci.outdoor_apparent_temperature(20.0, 50.0, 3.0), places=12)
-
-    def test_index_margin_is_at_least_2(self) -> None:
-        feels = hci.outdoor_apparent_temperature(20.0, 50.0, 0.0)
-        self.assertTrue(advice(room_index=feels + 2.0).advised)
-        self.assertFalse(advice(room_index=feels + 1.99).advised)
+        for key in ("room_t", "room_rh", "outdoor_t", "outdoor_rh"):
+            self.assertFalse(advice(**{key: None}).ok, key)
 
     def test_dew_point_margin_is_at_least_1(self) -> None:
         out_dp = psychro.dew_point(20.0, 50.0)
@@ -82,10 +66,16 @@ class FreeCooling(unittest.TestCase):
         rh = 30.0
         while psychro.dew_point(26.0, rh) < out_dp + 0.9:
             rh += 0.01
-        self.assertFalse(advice(room_rh=rh).advised)
+        self.assertFalse(advice(room_rh=rh).ok)
         while psychro.dew_point(26.0, rh) < out_dp + 1.0:
             rh += 0.01
-        self.assertTrue(advice(room_rh=rh).advised)
+        self.assertTrue(advice(room_rh=rh).ok)
+
+    def test_the_two_dew_points_are_reported(self) -> None:
+        a = advice()
+        self.assertAlmostEqual(a.outdoor_dew_point, psychro.dew_point(20.0, 50.0), places=12)
+        self.assertAlmostEqual(a.room_dew_point, psychro.dew_point(26.0, 60.0), places=12)
+        self.assertIn("dew point", a.reason)
 
 
 class Condensation(unittest.TestCase):

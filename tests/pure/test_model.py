@@ -74,6 +74,26 @@ class Physics(unittest.TestCase):
         self.assertAlmostEqual(out[physics.I_T] - 24.0, fig.a * 6.0 * 5 / 60, delta=0.002)
         self.assertGreater(out[physics.I_M], 24.0)
 
+    def test_an_opening_lets_outdoors_in_and_a_shut_room_keeps_it_out(self) -> None:
+        """The opening's coupling is a + v o: with o = 0 the vent figure does
+        nothing, and the room is left with a alone [D105]."""
+        z = filt.start_state(26.0)
+        z[physics.I_LN_VENT] = math.log(10.0)
+        z[physics.I_G0] = 0.0
+        fig = physics.figures(z)
+        shut = physics.step(z, inputs(outdoor=18.0)).z[physics.I_T]
+        opened = physics.step(z, dataclasses.replace(inputs(outdoor=18.0), opening=1.0)).z[physics.I_T]
+        self.assertLess(shut, 26.0)  # a alone still leaks
+        self.assertLess(opened, shut)  # the opening adds to it
+        # a shut room is the same room with no vent figure at all
+        no_vent = [*z]
+        no_vent[physics.I_LN_VENT] = math.log(1e-9)
+        self.assertAlmostEqual(
+            physics.step(z, inputs(outdoor=18.0)).z[physics.I_T],
+            physics.step(no_vent, inputs(outdoor=18.0)).z[physics.I_T], places=6)
+        self.assertAlmostEqual(physics.a_matrix(fig, 1.0)[0][0],
+                               -(fig.a + 10.0 + fig.b), places=12)
+
     def test_step_matches_a_reference_for_every_term(self) -> None:
         z = filt.start_state(22.0)
         z[physics.I_M] = 25.0
@@ -230,7 +250,7 @@ class Filter(unittest.TestCase):
         self.assertEqual([f.p[i][i] for i in range(8)], [0.01, 4.0] + [1.0] * 6)
         self.assertEqual(f.p[physics.I_G0][physics.I_G0], 0.25)
         self.assertEqual(f.p[physics.I_COOL][physics.I_COOL], 0.5)
-        self.assertEqual(len(f.z), 27)
+        self.assertEqual(len(f.z), 28)
         self.assertEqual((f.delay_min, f.lag_min), (6.0, 15.0))
         self.assertEqual((f.p[physics.I_LN_LAG][physics.I_LN_LAG], f.p[physics.I_DELAY][physics.I_DELAY]),
                          (1.0, 25.0))
@@ -501,6 +521,24 @@ class Filter(unittest.TestCase):
         bad["z"][3] = float("nan")
         self.assertIsNone(filt.HeatFilter.from_dict(bad))
         self.assertIsNone(filt.HeatFilter.from_dict({"z": [1.0] * 24, "p": []}))
+
+    def test_a_state_saved_before_the_opening_was_learned_is_carried_over(self) -> None:
+        """A 27-number state keeps what the room taught: the vent figure is
+        appended at its starting value with its starting uncertainty
+        [D031][D105]."""
+        f = self.ready()
+        feed(f, [reading_sample(24.4)] * 5)
+        old = f.as_dict()
+        old["z"] = old["z"][:-1]
+        old["p"] = [row[:-1] for row in old["p"][:-1]]
+        g = filt.HeatFilter.from_dict(old)
+        self.assertIsNotNone(g)
+        self.assertEqual(len(g.z), physics.STATE_SIZE)
+        self.assertEqual(g.z[:-1], old["z"])
+        self.assertAlmostEqual(g.z[-1], filt.start_state(0.0)[physics.I_LN_VENT], places=12)
+        self.assertEqual(len(g.p), physics.STATE_SIZE)
+        self.assertGreater(g.p[-1][-1], 0.0)
+        self.assertTrue(all(row[-1] == 0.0 for row in g.p[:-1]))
 
 
 class MinuteSampleTests(unittest.TestCase):

@@ -63,7 +63,7 @@ from .const import (
 from .control import RoomControl
 from .control.pid import actuation_minutes, estimate_now, gains
 from .control.plan import Conditions, PlanInputs, conditions_ahead
-from .delivery import RoomDelivery, outdoor_air_would_cool
+from .delivery import RoomDelivery
 from .economics import (
     GridChecks,
     HousePower,
@@ -138,7 +138,7 @@ from .models import (
     ValueTag,
 )
 from .observe import LoadHistory, RoomObserver
-from .psychro import dew_point
+from .psychro import dew_point, outdoor_air_dry
 from .sun import sun_position
 
 if TYPE_CHECKING:
@@ -261,7 +261,6 @@ class RoomRun:
     not_delivered: bool = False
     failed: bool = False
     fail_logged: bool = False
-    free_cooling_since: datetime | None = None
     commanded_c: float | None = None
     wanted_c: float | None = None
     conditions: list[Conditions] | None = None
@@ -441,7 +440,10 @@ def _estimate_now(run: RoomRun, now: datetime) -> tuple[float, float]:
     outdoor = snap.outdoor_temperature.value
     if outdoor is None:
         outdoor = heat.last_outdoor
-    slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now)) - heat.u) if outdoor is not None else 0.0
+    # an open opening changes the air's coupling, so the estimate is carried
+    # forward with it open [D105]
+    opening = 1.0 if any(f.value is True for f in snap.openings) else 0.0
+    slope = (drift_now(heat, outdoor, snap.sun.s, _local_hour(now), opening) - heat.u) if outdoor is not None else 0.0
     last = run.model.last_step
     since_h = (now - last.time).total_seconds() / 3600.0 if last is not None else 0.0
     return estimate_now(heat.z[0], slope, since_h), slope
@@ -1185,10 +1187,6 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         _note_ceiling(run, econ.ceiling)
         heat = run.model.heat
         fig = figures(heat.z) if heat is not None else None
-        # FREE COOLING [D073]: outdoor air would do better in an occupied room
-        outdoor_better = comfort.occupied is True and outdoor_air_would_cool(snap)
-        if not outdoor_better:
-            run.free_cooling_since = None
 
         async def replan() -> None:
             assert heat is not None and fig is not None
@@ -1200,17 +1198,6 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 run.replan = False
 
         if run.replan and heat is not None and fig is not None and not comfort.off:
-            await replan()
-        if (
-            outdoor_better
-            and run.free_cooling_since is None
-            and run.control.plan is not None
-            and run.control.plan.first.kind is StepKind.COOL
-            and heat is not None and fig is not None and not comfort.off
-        ):
-            # the plan is to cool: free cooling is advised from now, and the
-            # plan made again holds a start for 10 minutes before it goes out
-            run.free_cooling_since = now
             await replan()
         control: ControlResult | None = None
         if heat is not None and fig is not None and run.control.plan is not None:
@@ -1232,9 +1219,18 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             control = ControlResult(StepKind.NONE, 0.0, None, run.control.arbiter.in_charge, None, None,
                                     "no plan yet: the model has no reading to plan from")
         u_min = run.model.unit.lowest_rate(fig, 1) if fig is not None else 0.0
+        # FREE COOLING [D073][D105]: the plan's own comparison of itself
+        # with the same room, the unit resting and an opening open. The plan
+        # is the model's answer, so the advice is too: nothing is held for
+        # it and no start waits.
+        free_cooling = (
+            (run.control.plan.free_cooling_advised, run.control.plan.free_cooling_reason)
+            if run.control.plan is not None
+            else (False, None)
+        )
         delivery = run.delivery.deliver(now=now, control=control, snapshot=snap, comfort=comfort,
                                         choices=run.state.choices, heat=heat, u_min=u_min,
-                                        cooling_held=run.free_cooling_since is not None)
+                                        free_cooling=free_cooling)
         run.delivery_result = delivery
         run.step = run.limits.step(now=now, proposed=delivery, snapshot=snap, comfort=comfort, economics=econ,
                                    choices=run.state.choices, shared_climate=shared_climate,
@@ -1292,7 +1288,13 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             running_since=max(starts) if running and starts else None,
             stopped_since=max(stops) if not running and stops else None,
             occupied=comfort.occupied,
-            free_cooling_advised_at=run.free_cooling_since,
+            opening=1.0 if any(f.value is True for f in snap.openings) else 0.0,
+            outdoor_air_dry=outdoor_air_dry(
+                room_t=t,
+                room_rh=rh,
+                outdoor_t=snap.outdoor_temperature.value,
+                outdoor_rh=snap.outdoor_humidity.value,
+            ).ok,
             rebound_steps=rebound,
             last_kind=last_kind,
             last_way=next(iter(ways)) if len(ways := {self._unit_way[u] for u in units if u in self._unit_way}) == 1

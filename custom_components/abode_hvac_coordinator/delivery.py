@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .capabilities import round_to_step
-from .comfort import room_index
 from .const import (
     BLIND_MOVE_POINTS,
     FAN_RESTING_ORDER,
@@ -46,7 +45,7 @@ from .models import (
     Snapshot,
     StepKind,
 )
-from .psychro import condensation_risk, dew_point, free_cooling
+from .psychro import condensation_risk, dew_point
 
 _CYCLE = timedelta(seconds=WHOLE_DEGREE_CYCLE_S)
 _HOLD = timedelta(seconds=SETPOINT_MIN_HOLD_S)
@@ -118,20 +117,6 @@ def whole_degree_value(
     return target
 
 
-def outdoor_air_would_cool(snapshot: Snapshot) -> bool:
-    """Outdoor air would do better than the compressor, were the room to be
-    cooled: what free cooling is advised on (psychro.py) [D073]."""
-    return free_cooling(
-        needs_cooling=True,
-        room_index=room_index(snapshot),
-        room_t=snapshot.room_temperature.value,
-        room_rh=snapshot.room_humidity.value,
-        outdoor_t=snapshot.outdoor_temperature.value,
-        outdoor_rh=snapshot.outdoor_humidity.value,
-        outdoor_wind_ms=snapshot.outdoor_wind_ms.value,
-    ).advised
-
-
 @dataclass(slots=True)
 class RoomDelivery:
     """One room's Delivery. The only state it keeps is each head's place
@@ -150,11 +135,12 @@ class RoomDelivery:
         choices: RoomChoices,
         heat: HeatFilter | None,
         u_min: float,
-        cooling_held: bool = False,
+        free_cooling: tuple[bool, str | None] = (False, None),
     ) -> DeliveryResult:
         """EVERY CYCLE, per room, given the action, the rate u and the
-        plan's blinds (delivery.py). cooling_held: the plan was to cool,
-        and its start is held while outdoor air would do better [D073]."""
+        plan's blinds (delivery.py). free_cooling is the plan's own
+        counterfactual on opening up [D073][D105]: carried through as the
+        model gave it."""
         reasons: list[str] = []
         profile = self.room.profile
 
@@ -178,7 +164,7 @@ class RoomDelivery:
         if kind is StepKind.REST and not has_fan_only:
             # a unit with no fan-only mode rests off [D057]
             reasons.append("The unit has no fan-only mode, so resting is off.")
-            advised, advice_reason = self._free_cooling(kind, snapshot, comfort, cooling_held)
+            advised, advice_reason = free_cooling
             return DeliveryResult(StepKind.OFF, 0.0, (), blinds, left_alone, advised, advice_reason, False,
                                   tuple(reasons))
 
@@ -195,7 +181,7 @@ class RoomDelivery:
             elif cmd.setpoint_low is not None:
                 sent.append(cmd.setpoint_low)
 
-        advised, advice_reason = self._free_cooling(kind, snapshot, comfort, cooling_held)
+        advised, advice_reason = free_cooling
         risk = self._condensation(kind, sent, snapshot)
         if risk:
             reasons.append("The setpoint is within 2.5 C of the room's dew point (reported only).")
@@ -290,27 +276,6 @@ class RoomDelivery:
             return round_to_step(wanted, profile)
         state = self._alternation.setdefault(climate, _Alternation(now))
         return whole_degree_value(wanted, step, profile, now, state)
-
-    def _free_cooling(self, kind: StepKind, snapshot: Snapshot, comfort: ComfortResult,
-                      cooling_held: bool = False) -> tuple[bool, str | None]:
-        """FREE COOLING: advised when psychro.py advises it and the room is
-        occupied [D073]: while the plan is to cool, or its start is held
-        for it."""
-        cooling = kind is StepKind.COOL or cooling_held
-        advice = free_cooling(
-            needs_cooling=cooling,
-            room_index=room_index(snapshot),
-            room_t=snapshot.room_temperature.value,
-            room_rh=snapshot.room_humidity.value,
-            outdoor_t=snapshot.outdoor_temperature.value,
-            outdoor_rh=snapshot.outdoor_humidity.value,
-            outdoor_wind_ms=snapshot.outdoor_wind_ms.value,
-        )
-        if not advice.advised:
-            return False, advice.reason if cooling else None
-        if not comfort.occupied:
-            return False, "Outdoor air would cool the room, but the room is empty."
-        return True, advice.reason
 
     def _condensation(self, kind: StepKind, sent: Sequence[float], snapshot: Snapshot) -> bool:
         """CONDENSATION: the setpoint within 2.5 C of the room's dew point,

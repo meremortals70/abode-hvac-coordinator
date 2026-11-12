@@ -71,7 +71,7 @@ So the target is found by halving the interval from 5 °C to 40 °C until the in
 
 These coefficients come from a different saturation formula than the vapour pressure above. Over 10–40 °C and 20–100% RH the two give dew points no more than 0.055 °C apart [Der: computed over that grid].
 
-**Free cooling** is advised only when the plan is to cool the room, outdoors feels at least 2.0 lower than the room's index (using wind × 0.3, the share taken to reach a room through a window), and the outdoor dew point is at least 1.0 °C below the room's [Set]. What happens when it is advised is [D073].
+**Free cooling** is the model's own counterfactual [D105]: the room with an opening open and the unit resting, carried forward beside the plan and priced by the same cost (comfort, energy and starts), compared at every half-hour over the plan's six hours. It is advised when the opening moves the room's index by more than the forecast's own uncertainty and the counterfactual costs less than the plan over that window. A room whose learned opening coupling is near zero — a shut, well-sealed room — shows no difference between the two and is never advised to open up [D105]. Nothing is advised while an opening is already open, or while the outdoor dew point is not at least 1.0 °C below the room's: the model has no learned moisture coupling for an opening, so damp air is refused rather than priced [Set][D105].
 
 **Condensation risk** is reported when the setpoint is within 2.5 °C of the room's dew point. It is reported only, never acted on [Set].
 
@@ -86,7 +86,7 @@ Each room is modelled as two stores of heat: the room air, which the sensor read
 [image: The room air and the building mass, and the paths heat takes]
 
 ```latex
-\frac{dT}{dt} = a\,(T_{out}-T) + b\,(M-T) + s\,S + g(t) - U
+\frac{dT}{dt} = (a + v\,o)\,(T_{out}-T) + b\,(M-T) + s\,S + g(t) - U
 ```
 
 ```latex
@@ -103,6 +103,8 @@ g(t) = g_0 + \sum_{j=1}^{2}\Bigl[\alpha_j\cos\frac{2\pi j\,h}{24} + \beta_j\sin\
 | M | Envelope and mass temperature, °C | Never measured. Estimated by the Kalman filter (4.3) [R1][Prop] |
 | T\_out | Outdoor temperature, °C | Outdoor sensor, or the forecast's hour now without one [D099]; the forecast when looking ahead [Prop] |
 | a | Direct heat path, air to outdoors, per hour | Learned [Prop] |
+| v | Air changed through an opening, per hour; acts only while o is 1 | Learned [Prop][D105] |
+| o | 1 while one of the room's openings reads open, 0 while they are shut or none is configured | The room's opening sensors [D050][D105] |
 | b | Heat path, air to mass, as seen by the air, per hour | Learned [R1] |
 | c | Heat path, mass to air, as seen by the mass, per hour | Learned [R1] |
 | k | Heat path, mass to outdoors, per hour | Learned [R1] |
@@ -115,11 +117,13 @@ g(t) = g_0 + \sum_{j=1}^{2}\Bigl[\alpha_j\cos\frac{2\pi j\,h}{24} + \beta_j\sin\
 **The model is stable and its time constants are real** [Der]. Write the unforced part as dx/dt = A x with
 
 ```latex
-A = \begin{bmatrix} -(a+b) & b \\ c & -(c+k) \end{bmatrix}, \qquad
-\det A = a(c+k) + bk, \qquad \operatorname{tr} A = -(a+b+c+k)
+A = \begin{bmatrix} -(a+vo+b) & b \\ c & -(c+k) \end{bmatrix}, \qquad
+\det A = (a+vo)(c+k) + bk, \qquad \operatorname{tr} A = -(a+vo+b+c+k)
 ```
 
-With every figure ≥ 0 and a or k above 0, det A > 0 and tr A < 0, so both eigenvalues have negative real part [Der]. The discriminant (a+b−c−k)² + 4bc ≥ 0, so the eigenvalues are real [Der]. The filter carries b and c as logarithms, so both are above zero and the discriminant is too: the two eigenvalues always differ [Der]. Their reciprocals are the room's two time constants: a fast one, the air settling against the mass, and a slow one, the mass settling against outdoors.
+With every figure ≥ 0 and a or k above 0, det A > 0 and tr A < 0, so both eigenvalues have negative real part [Der]. The discriminant (a+vo+b−c−k)² + 4bc ≥ 0, so the eigenvalues are real [Der]. The filter carries b and c as logarithms, so both are above zero and the discriminant is too: the two eigenvalues always differ [Der]. Their reciprocals are the room's two time constants: a fast one, the air settling against the mass, and a slow one, the mass settling against outdoors.
+
+**An opening is an input, not a rule** [D105]. o is 1 while one of the room's openings reads open and 0 while they are shut or none is configured, so a shut room is left with a alone: its glass and leakage. v is the air the opening changes with outdoors, per hour, learned like a and k with the same log figure, its own starting value and its own process noise; its column of the step is zero unless an opening was open during the step, so only minutes an opening was open teach it. A room with no opening sensors keeps v at its starting value and never uses it. The plan forecasts with the opening as it is, so an open room rests when the room is ventilated better than the unit can cool it, and a shut room is never cooled by outdoor air at all.
 
 **The sun on the glass, S** [D023]:
 
@@ -282,7 +286,7 @@ J = \sum_{i=1}^{72} w\,\Bigl(\frac{HCI_i - HCI^*_i}{h_i}\Bigr)^2\delta \;+\; \su
 - **heat** at each rate on the learned curve from U\_min to the top [Prop];
 - **blinds** closed or open, where the room allows blind control, in a step with the sun on the glass; in a step without it they are left alone, and sun that cannot be worked out counts as none [D022][D023].
 
-**What is not allowed in any plan** (Section 3): a start inside the compressor's minimum rest or a stop inside its minimum run, where the running kind can carry on; where it cannot, the plan may rest and Limits' guard holds the stop [D016]; anything a tariff constraint forbids [D034]; a draw above an enforced ceiling [D041][D063]; heating a waking room [D085]; a mode the unit did not advertise [D024]; a compressor start in an occupied room during the 10 minutes after free cooling is advised [D073].
+**What is not allowed in any plan** (Section 3): a start inside the compressor's minimum rest or a stop inside its minimum run, where the running kind can carry on; where it cannot, the plan may rest and Limits' guard holds the stop [D016]; anything a tariff constraint forbids [D034]; a draw above an enforced ceiling [D041][D063]; heating a waking room [D085]; a mode the unit did not advertise [D024].
 
 **The search** [Prop]: plans are built one step at a time, keeping the 50 with the least time outside the band and then the least J (a beam search). The best plan's first step is used, together with the room temperature it forecasts every 5 minutes through that step, which the PID follows (4.5) [Prop][NYE: the 50 is a judgement; the simulation used it].
 
@@ -337,7 +341,7 @@ u = u_{plan} + K_p\left[e + \frac{1}{T_i}\int e\,dt + T_d\left(\frac{dT}{dt} - \
 G(s) = -\frac{s + c + k}{(s + a + b)(s + c + k) - bc}
 ```
 
-As s grows, s·G(s) → −1, so over the minutes that matter the room responds as an integrator with initial slope κ′ = 1 [Der]. Its steady-state gain is κ = |G(0)| = (c+k)/(a(c+k)+bk), in hours [Der]. SIMC treats such a process as first-order with time constant τ₁ = κ/κ′ = |G(0)|, with the unit's lag as a second time constant τ₂ = τ [R7][Der]. SIMC's rules for that case, with κ = κ′τ₁ and κ′ = 1, and its recommendation τ\_c = θ for tight control [R7]. Here θ is the unit's learned delay plus half the filter's 5-minute step (the estimate the PID acts on learns of the room every 5 minutes) plus half the interval at which the setpoint it holds can actually change: 0.25 minutes for a unit that steps in tenths or finer (the 30-second cycle), 5 minutes for whole-degree alternation (10-minute holds, 4.6). A sampled controller acts on average half an interval late, and K\_c stays finite when the learned delay is 0 [Der]:
+As s grows, s·G(s) → −1, so over the minutes that matter the room responds as an integrator with initial slope κ′ = 1 [Der]. Its steady-state gain, with the openings shut, is κ = |G(0)| = (c+k)/(a(c+k)+bk), in hours [Der]. SIMC treats such a process as first-order with time constant τ₁ = κ/κ′ = |G(0)|, with the unit's lag as a second time constant τ₂ = τ [R7][Der]. SIMC's rules for that case, with κ = κ′τ₁ and κ′ = 1, and its recommendation τ\_c = θ for tight control [R7]. Here θ is the unit's learned delay plus half the filter's 5-minute step (the estimate the PID acts on learns of the room every 5 minutes) plus half the interval at which the setpoint it holds can actually change: 0.25 minutes for a unit that steps in tenths or finer (the 30-second cycle), 5 minutes for whole-degree alternation (10-minute holds, 4.6). A sampled controller acts on average half an interval late, and K\_c stays finite when the learned delay is 0 [Der]:
 
 ```latex
 K_c = \frac{1}{\tau_c+\theta}, \qquad \tau_I = \min\bigl(\tau_1,\; 4(\tau_c+\theta)\bigr), \qquad \tau_D = \tau, \qquad \tau_c = \theta
@@ -1206,8 +1210,6 @@ EVERY 5 MINUTES, per room, unless Comfort said OFF:
       anything a tariff constraint forbids                         [D034]
       a draw above an enforced ceiling                        [D041][D063]
       HEAT while the room is WAKING                                [D085]
-      a compressor start in an occupied room within 10 minutes of free
-      cooling being advised                                        [D073]
   plans = [an empty plan, starting from the filters' T, M and e now]
   FOR EACH of the 12 half-hour steps j:
       FOR EACH plan, FOR EACH allowed action:
@@ -1245,6 +1247,7 @@ FILE control/pid.py — holds the room on the plan's path                [R7][Pr
 
 GAINS, with every plan, from the filter's figures, delay and lag:   [R8]
   tau1 = (c + k) / (a (c + k) + b k)       hours          [Der: |G(0)|, 4.5]
+        (with the openings shut: see 4.2, a becomes a + v o)       [D105]
   theta = delay + half the filter's 5-minute step + half the actuation
           interval: 0.25 min for a unit stepping in tenths or finer,
           5 min for whole degrees                                   [Der]
@@ -1348,7 +1351,7 @@ Delivery turns the chosen action and rate into commands the unit and blinds can 
 - **Rate to setpoint** through the learned curve; the unit's own thermostat does the fast work [D054][Prop].
 - **Whole degrees:** alternates between the two nearest setpoints so the average is the one wanted [Prop][Der].
 - **Rest, dry and blinds** as the plan chose them [D057][D078][D022].
-- **Advises free cooling** where the windows would do better [D073].
+- **Advises free cooling** when the model's own counterfactual — the unit resting, an opening open — costs less than the plan [D105].
 
 **How it enables the intent:**
 
@@ -1397,14 +1400,17 @@ EVERY CYCLE, per room, given the action, the rate u and the plan's blinds:
   VANES: IF Automatic vane control is on    the settled vertical position;
          OTHERWISE none                                             [D049]
 
-  FREE COOLING:                                                     [D073]
-      IF psychro.py advises it AND the room is occupied, while the step
-         is COOL or its start is held for the advice
+  FREE COOLING:                                                     [D105]
+      IF, at some half-hour of the plan, the room with an opening open
+         and the unit resting moves its index by more than the
+         forecast's own uncertainty AND costs less than the plan over
+         that window, AND no opening is open, AND the outdoor dew
+         point is at least 1.0 C below the room's
           advise opening up (in the trace and the room's Free cooling
           attributes; nothing is spoken)
-      (the coordinator judges it before the plan's first step goes out:
-       when the plan is to cool, the advice starts then and the plan is
-       made again at once, holding the start for 10 minutes)
+      (the opening's coupling is the learned vent figure, so a sealed
+       room is never advised; nothing is held for the advice and no
+       start waits)                                                 [D105]
   CONDENSATION:
       IF the setpoint is within 2.5 C of the room's dew point
           RECORD the risk (reported only)                            [Set]
@@ -1421,7 +1427,7 @@ Limits decides what may reach the unit. It applies the same way whichever contro
 
 - **User switches and lockout first.** Lockout is off every cycle [D021]. Switching Automatic control off sends off once, then nothing [D049][D089]. Leave is off at once [D088].
 - **An empty room is off,** with a warning first only where someone can hear it [D012][D071][D082].
-- **An open door or window:** nothing new starts; after the room's grace, with warnings, the unit stops [D050]. One opened on free-cooling advice stops it at once [D073].
+- **An open door or window:** nothing new starts; after the room's grace, with warnings, the unit stops [D050]. A stop that the plan itself decides on, because the opening is ventilating the room better than the unit can, waits out the minimum run like any other [D105].
 - **A missing reading** leaves the unit alone and names what is missing [D018].
 - **The unit's own limits:** only what it advertised at setup is sent [D024][D048], and the short-cycle guard counts per outdoor unit [D016][D020]. An outdoor unit runs one way at a time: a multi-split cannot heat one room and cool another, so where rooms on it want opposite ways the room furthest outside its band has it and the others rest; and a reversal counts as a stop and a start (decision of 6 November 2026). While a unit is left alone, the guard follows its compressor as it is seen to run, both in whether the outdoor unit is wanted and in its state, so a start made by hand counts when control comes back and lets another room on the unit rest; and its heads as they run are the command a held stop keeps them on, so a start made by hand runs its 10 minutes [D016][D020][D089].
 - **Tariff constraints** are held absolutely [D034].
@@ -1469,14 +1475,14 @@ EVERY CYCLE, per room, given the proposed step; the first that applies wins:
       OTHERWISE
           step = OFF
 
-  5. AN OPEN DOOR OR WINDOW                                      [D050][D073]
+  5. AN OPEN DOOR OR WINDOW                                           [D050]
       nothing new is started (a unit running, seen or unseen, is not new)
-      IF it was opened while free cooling was advised
-          step = OFF at once, no grace, no warning
-      OTHERWISE
-          first warning due one warning grace before the stop
-          final warning due just before it
-          step = OFF when the opening grace ends
+      (an opening is an input to the model: the plan rests when the room
+       is ventilated better than the unit can cool it, and that stop is
+       held to the minimum run like any other)                       [D105]
+      first warning due one warning grace before the stop
+      final warning due just before it
+      step = OFF when the opening grace ends
       IF when it opened cannot be read      hold the unit as it is
 
   6. MISSING READING                                                   [D018]
@@ -1625,7 +1631,7 @@ TRACE, every cycle, per room (the mode sensor's attributes):           [D006]
   Economics: allowance, ceiling or "no limit"                         [D096]
   Limits: each rule that changed the step
   compressor state and which source answered
-  stale feeds; free-cooling advice; condensation risk          [D030][D073]
+  stale feeds; free-cooling advice; condensation risk          [D030][D105]
 
 SCORECARD, per room:                                                  [Prop]
   learning   EVERY WEEK: the week's average one-hour forecast error

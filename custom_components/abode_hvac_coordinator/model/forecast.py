@@ -17,23 +17,28 @@ from ..linalg import add, diagonal, sandwich
 from ..models import StepKind
 from .filter import HeatFilter
 from .humidity import H_E, HumidityFilter, moisture_figures
-from .physics import I_M, I_T, STEP_H, StepInputs, exact_step, figures, step
+from .physics import ExactStep, I_M, I_T, STEP_H, StepInputs, exact_step, figures, step
 from .unit import effort_for_rate
 
 _REBOUND_STEPS = round(COIL_REBOUND_S / 300.0)
 
 
-def drift_now(heat: HeatFilter, outdoor: float, sun: float, hour: float) -> float:
-    """DRIFT NOW, unit at rest: a (out - T) + b (M - T) + s S + g(hour) [Der]."""
+def drift_now(heat: HeatFilter, outdoor: float, sun: float, hour: float,
+              opening: float = 0.0) -> float:
+    """DRIFT NOW, unit at rest: (a + v o) (out - T) + b (M - T) + s S +
+    g(hour) [Der][D105]. opening is 1 while an opening is open, 0 while it
+    is shut: a shut room is left with a alone."""
     fig = figures(heat.z)
     t, m = heat.z[I_T], heat.z[I_M]
-    return fig.a * (outdoor - t) + fig.b * (m - t) + fig.s * sun + fig.g(hour)
+    air = fig.a + fig.vent * opening
+    return air * (outdoor - t) + fig.b * (m - t) + fig.s * sun + fig.g(hour)
 
 
 @dataclass(frozen=True, slots=True)
 class ForecastInput:
     """One 5-minute step of a forecast: the weather, the blinds' sun, and
-    what the unit does. rate is positive cooling, negative heating."""
+    what the unit does. rate is positive cooling, negative heating.
+    opening is 1 while an opening is open, 0 while it is shut [D105]."""
 
     outdoor: float
     outdoor_rh: float
@@ -41,6 +46,7 @@ class ForecastInput:
     hour: float
     kind: StepKind
     rate: float
+    opening: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +77,15 @@ def forecast(
     a stop within the forecast starts 15 minutes more [D060].
     """
     fig = figures(heat.z)
-    ex = exact_step(fig)
+    # Phi and Gam depend on the opening only through the air's coupling
+    # a + v o, so each opening used is worked out once [D105]
+    steps: dict[float, ExactStep] = {}
+
+    def exact(opening: float) -> ExactStep:
+        if opening not in steps:
+            steps[opening] = exact_step(fig, opening=opening)
+        return steps[opening]
+
     tm = (heat.z[I_T], heat.z[I_M])
     p2 = [[heat.p[0][0], heat.p[0][1]], [heat.p[1][0], heat.p[1][1]]]
     noise = diagonal([FILTER_NOISE_T_PER_H * STEP_H, FILTER_NOISE_M_PER_H * STEP_H])
@@ -95,6 +109,7 @@ def forecast(
         wet_before = wet
         u_step = step_in.rate + (u - step_in.rate) * mean
         u = step_in.rate + (u - step_in.rate) * decay
+        ex = exact(step_in.opening)
         tm = ex.advance(tm, step_in.outdoor, step_in.sun, fig.g(step_in.hour), u_step)
         p2 = add(sandwich(ex.phi, p2), noise)
         if mfig is not None:

@@ -77,7 +77,7 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D070](D070.md) | A room's temperature and humidity are trusted until they are unavailable |
 | [D071](D071.md) | A room speaks only while the component runs it and the room is awake |
 | [D072](D072.md) | Superseded |
-| [D073](D073.md) | When outdoor air is better, an occupied room's compressor is not started for 10 minutes, and an opening made for it stops the unit at once |
+| [D073](D073.md) | Superseded by [D105](D105.md) |
 | [D074](D074.md) | Where a room's sensor is unavailable, the unit's own reading stands in, and is never learned from |
 | [D075](D075.md) | Superseded |
 | [D076](D076.md) | Superseded |
@@ -109,3 +109,4 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D102](D102.md) | Never heat after a cooling cycle; never cool after a heating cycle. The cycle is the run: a running unit is not reversed, a room inside its band is never reversed, and after rest the plan reverses only when neither the rest forecast nor the observed half-hour trend is bringing the room back inside its band |
 | [D103](D103.md) | A change of running kind is a start, and dry is offered only where the moisture model can price it |
 | [D104](D104.md) | Constraints are facts about the equipment; comfort and economic judgements are priced by the model, never branched on |
+| [D105](D105.md) | An opening is an input to the heat balance with a learned coupling; free cooling is the model's own counterfactual, with no hold and no at-once stop |

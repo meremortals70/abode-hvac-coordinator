@@ -29,7 +29,6 @@ from .models import (
     ComfortResult,
     DeliveryResult,
     DueWarning,
-    Flag,
     HeadCommand,
     LimitRule,
     LimitsResult,
@@ -44,7 +43,6 @@ from .models import (
 
 RUNNING_KINDS = frozenset({StepKind.COOL, StepKind.HEAT, StepKind.DRY})  # dry counts as running [D016]
 _OFF_MODES = frozenset({"off", None})
-_CYCLE = timedelta(seconds=CYCLE_S)
 _MIN_RUN = timedelta(seconds=MIN_RUN_S)
 _MIN_REST = timedelta(seconds=MIN_REST_S)
 
@@ -87,8 +85,6 @@ class RoomLimits:
     _can_speak: bool = True
     _opening_since: datetime | None = None
     _opening_warned: set[WarningKind] = field(default_factory=set)
-    _advice_since: datetime | None = None
-    _advice_last: datetime | None = None
     last_running: tuple[HeadCommand, ...] = ()
 
     def step(
@@ -107,7 +103,6 @@ class RoomLimits:
         can_speak: a speech engine is there to say a warning [D069]."""
         s = RoomStep(self.room.room_id, proposed.kind, proposed.heads, proposed.blinds, proposed.rest_heads)
         self._can_speak = can_speak
-        self._note_advice(now, proposed)
         self._choose(s, now, snapshot, comfort, economics, choices, shared_climate)
         self._abilities(s)
         self._tariff(s, snapshot)
@@ -155,7 +150,7 @@ class RoomLimits:
         if empty:
             self._empty(s, now, snapshot, comfort, choices)
             return
-        # 5. AN OPEN DOOR OR WINDOW [D050][D073]
+        # 5. AN OPEN DOOR OR WINDOW [D050]
         if self._opening(s, now, snapshot):
             return
         # 6. MISSING READING [D018]
@@ -196,8 +191,13 @@ class RoomLimits:
 
     def _opening(self, s: RoomStep, now: datetime, snapshot: Snapshot) -> bool:
         """An open door or window: nothing new is started; after the
-        room's grace, with warnings, the unit stops. One opened while free
-        cooling was advised stops it at once [D050][D073]."""
+        room's grace, with warnings, the unit stops [D050].
+
+        An opening opened while the unit is cooling stops it through the
+        plan, not here: the model's forecast carries the opening as it is
+        (a + v o), so the next plan rests when the room is being ventilated
+        better than the unit can cool it [D105]. The stop is held to the
+        minimum run like any other, which is the short-cycle guard."""
         open_now = [f for f in snapshot.openings if f.value is True]
         if not open_now:
             return False
@@ -206,12 +206,6 @@ class RoomLimits:
                  "the unit is held as it is.")
             return True
         opened = min(f.since for f in open_now if f.since is not None)
-        if self._for_free_cooling(open_now):
-            s.to(LimitRule.OPENING, StepKind.OFF, "A door or window was opened on free-cooling advice: off at once.")
-            # the user opened it on the advice: their stop, not held to the
-            # minimum run [D073]
-            s.user_stop = True
-            return True
         if self._opening_since != opened:
             self._opening_since, self._opening_warned = opened, set()
         grace = self.room.opening_grace_s
@@ -231,23 +225,6 @@ class RoomLimits:
             else:
                 s.to(LimitRule.OPENING, StepKind.OFF, "A door or window is open: nothing new is started.")
         return True
-
-    def _for_free_cooling(self, open_now: Sequence[Flag]) -> bool:
-        """Opened while free cooling was advised: at or after the advice
-        began. The advice lapses a cycle after it was last given
-        (_note_advice), so an opening can only be judged against advice
-        still standing."""
-        if self._advice_since is None:
-            return False
-        return any(f.since is not None and f.since >= self._advice_since for f in open_now)
-
-    def _note_advice(self, now: datetime, proposed: DeliveryResult) -> None:
-        if proposed.free_cooling_advised:
-            if self._advice_since is None:
-                self._advice_since = now
-            self._advice_last = now
-        elif self._advice_last is not None and now - self._advice_last > _CYCLE:
-            self._advice_since = self._advice_last = None
 
     @staticmethod
     def _compressor_running(snapshot: Snapshot) -> bool:

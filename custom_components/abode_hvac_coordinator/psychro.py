@@ -1,4 +1,4 @@
-"""Dew point, free cooling and condensation risk (Section 4.1, Section 9)."""
+"""Dew point, outdoor air's moisture and condensation risk (Section 4.1, Section 9)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,7 @@ from .const import (
     CONDENSATION_MARGIN_C,
     DEW_POINT_MIN_RH,
     FREE_COOLING_DEW_POINT_MARGIN_C,
-    FREE_COOLING_INDEX_MARGIN,
-    FREE_COOLING_WIND_SHARE,
 )
-from .hci import outdoor_apparent_temperature
 
 # Magnus form, WMO-No. 8 coefficients [Set][R5]
 _MAGNUS_A = 17.62
@@ -30,56 +27,43 @@ def dew_point(t_c: float, rh: float) -> float:
 
 
 @dataclass(frozen=True, slots=True)
-class FreeCoolingAdvice:
-    """Whether opening up would cool the room, both figures, and why [Set]."""
+class MoistureAdvice:
+    """Whether outdoor air is dry enough to admit, both dew points, and why."""
 
-    advised: bool
-    outdoors_feels: float | None
-    room_index: float | None
+    ok: bool
     outdoor_dew_point: float | None
     room_dew_point: float | None
     reason: str
 
 
-def free_cooling(
+def outdoor_air_dry(
     *,
-    needs_cooling: bool,
-    room_index: float | None,
     room_t: float | None,
     room_rh: float | None,
     outdoor_t: float | None,
     outdoor_rh: float | None,
-    outdoor_wind_ms: float | None,
-) -> FreeCoolingAdvice:
-    """Free cooling advice, only when the plan is to cool the room [Set].
+) -> MoistureAdvice:
+    """Whether the outdoor air is dry enough to admit [Set][D105].
 
-    Advised only when outdoors feels at least 2.0 below the room's index,
-    using wind x 0.3, and the outdoor dew point is at least 1.0 C below
-    the room's. A missing wind reading counts as still air.
+    Its dew point must be at least 1.0 C below the room's. This is the one
+    measured constraint on free cooling: the model learns the heat an
+    opening brings (physics.py, vent) but has no learned moisture coupling
+    for an opening, so humid air is refused rather than priced.
     """
-    if not needs_cooling:
-        return FreeCoolingAdvice(False, None, room_index, None, None, "The room does not need cooling.")
-    if room_index is None or room_t is None or room_rh is None or outdoor_t is None or outdoor_rh is None:
-        return FreeCoolingAdvice(False, None, room_index, None, None, "A reading needed to judge outdoor air is missing.")
-    wind = (outdoor_wind_ms or 0.0) * FREE_COOLING_WIND_SHARE
-    feels = outdoor_apparent_temperature(outdoor_t, outdoor_rh, wind)
+    if room_t is None or room_rh is None or outdoor_t is None or outdoor_rh is None:
+        return MoistureAdvice(False, None, None, "A reading needed to judge outdoor air is missing.")
     out_dp = dew_point(outdoor_t, outdoor_rh)
     room_dp = dew_point(room_t, room_rh)
-    cooler = feels <= room_index - FREE_COOLING_INDEX_MARGIN
-    drier = out_dp <= room_dp - FREE_COOLING_DEW_POINT_MARGIN_C
-    if cooler and drier:
-        reason = (
-            f"Outdoors feels {feels:.1f}, {room_index - feels:.1f} below the room, "
-            f"and its dew point {out_dp:.1f} C is {room_dp - out_dp:.1f} C below the room's."
+    if out_dp <= room_dp - FREE_COOLING_DEW_POINT_MARGIN_C:
+        return MoistureAdvice(
+            True, out_dp, room_dp,
+            f"The outdoor dew point {out_dp:.1f} C is {room_dp - out_dp:.1f} C below the room's.",
         )
-    elif not cooler:
-        reason = f"Outdoors feels {feels:.1f}, not {FREE_COOLING_INDEX_MARGIN:.1f} below the room's {room_index:.1f}."
-    else:
-        reason = (
-            f"The outdoor dew point {out_dp:.1f} C is not {FREE_COOLING_DEW_POINT_MARGIN_C:.1f} C "
-            f"below the room's {room_dp:.1f} C."
-        )
-    return FreeCoolingAdvice(cooler and drier, feels, room_index, out_dp, room_dp, reason)
+    return MoistureAdvice(
+        False, out_dp, room_dp,
+        f"The outdoor dew point {out_dp:.1f} C is not {FREE_COOLING_DEW_POINT_MARGIN_C:.1f} C "
+        f"below the room's {room_dp:.1f} C.",
+    )
 
 
 def condensation_risk(setpoint_c: float, room_dew_point_c: float) -> bool:

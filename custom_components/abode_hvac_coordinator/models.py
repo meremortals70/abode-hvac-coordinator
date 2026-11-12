@@ -501,6 +501,10 @@ class Plan:
     w: float
     c_start: float
     alternatives: tuple[tuple[PlanAction, str], ...] = ()
+    # free cooling [D073][D105]: the plan with an opening open and the unit
+    # resting, against this plan over the same window and by the same cost
+    free_cooling_advised: bool = False
+    free_cooling_reason: str | None = None
 
     @property
     def first(self) -> PlanAction:

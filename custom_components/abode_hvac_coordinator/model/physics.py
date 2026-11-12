@@ -1,12 +1,18 @@
 """The room's heat balance (Section 4.2) [R1][Prop].
 
-    dT/dt = a (T_out - T) + b (M - T) + s S + g(t) - U
+    dT/dt = (a + v o) (T_out - T) + b (M - T) + s S + g(t) - U
     dM/dt = c (T - M) + k (T_out - M) + m S
 
 Rates are per hour, temperatures in C, time in hours. U is the rate the
 unit removes (+, cooling) or adds (-, heating), in C/h. The unit reaches
 r(x(t - delay)) through a first-order lag; the delay and the lag are
 carried in the state with the figures (decision of 27 October 2026).
+
+o is 1 while one of the room's openings is open and 0 while they are shut:
+a measured input, not a figure. v is the air the opening changes with
+outdoors, per hour, learned like a and k and acting only while o is 1
+[D105]. A closed room is left with a alone, the leakage and glass path it
+always had.
 """
 
 from __future__ import annotations
@@ -36,8 +42,9 @@ I_COOL = 13  # rho_cool 1..6 at 13..18
 I_HEAT = 19  # rho_heat 1..6 at 19..24
 I_LN_LAG = 25  # the unit's lag, minutes, as a logarithm
 I_DELAY = 26  # the unit's delay, minutes
+I_LN_VENT = 27  # the opening's coupling to outdoors, as a logarithm [D105]
 CURVE_POINTS = 6
-STATE_SIZE = 27
+STATE_SIZE = 28
 
 MINUTE_H = 1.0 / 60.0
 STEP_H = 5.0 / 60.0
@@ -53,6 +60,7 @@ class Figures:
     k: float
     s: float
     m: float
+    vent: float  # the air an opening changes with outdoors, per hour [D105]
     g0: float
     al1: float
     be1: float
@@ -76,7 +84,7 @@ class Figures:
 
 
 def figures(z: Sequence[float]) -> Figures:
-    """a b c k s m = e^(their logs); the heat pattern as it is."""
+    """a b c k s m vent = e^(their logs); the heat pattern as it is."""
     return Figures(
         a=math.exp(z[I_LN_A]),
         b=math.exp(z[I_LN_B]),
@@ -84,6 +92,7 @@ def figures(z: Sequence[float]) -> Figures:
         k=math.exp(z[I_LN_K]),
         s=math.exp(z[I_LN_S]),
         m=math.exp(z[I_LN_M]),
+        vent=math.exp(z[I_LN_VENT]),
         g0=z[I_G0],
         al1=z[I_AL1],
         be1=z[I_BE1],
@@ -162,6 +171,8 @@ class StepInputs:
     history: tuple[tuple[float, int], ...]
     u_start: float
     curve_efforts: tuple[float, ...]
+    # the share of the step an opening was open: 0 shut, 1 open [D105]
+    opening: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +228,7 @@ def step(z: Sequence[float], inputs: StepInputs) -> StepResult:
     STEP.
     """
     fig = figures(z)
-    minute = exact_step(fig, MINUTE_H)
+    minute = exact_step(fig, MINUTE_H, inputs.opening)
     t, mass = z[I_T], z[I_M]
     u = inputs.u_start
     path: list[float] = []
@@ -231,14 +242,15 @@ def step(z: Sequence[float], inputs: StepInputs) -> StepResult:
     return StepResult(out, tuple(path), u)
 
 
-def a_matrix(fig: Figures) -> Matrix:
-    """A = [[-(a+b), b], [c, -(c+k)]] (Section 4.2)."""
-    return [[-(fig.a + fig.b), fig.b], [fig.c, -(fig.c + fig.k)]]
+def a_matrix(fig: Figures, opening: float = 0.0) -> Matrix:
+    """A = [[-(a+b+v o), b], [c, -(c+k)]] (Section 4.2) [D105]."""
+    air = fig.a + fig.vent * opening
+    return [[-(air + fig.b), fig.b], [fig.c, -(fig.c + fig.k)]]
 
 
-def b_matrix(fig: Figures) -> Matrix:
-    """B = [[a, s, 1, -1], [k, m, 0, 0]] for inputs (outdoor, S, g, U)."""
-    return [[fig.a, fig.s, 1.0, -1.0], [fig.k, fig.m, 0.0, 0.0]]
+def b_matrix(fig: Figures, opening: float = 0.0) -> Matrix:
+    """B = [[a+v o, s, 1, -1], [k, m, 0, 0]] for inputs (outdoor, S, g, U)."""
+    return [[fig.a + fig.vent * opening, fig.s, 1.0, -1.0], [fig.k, fig.m, 0.0, 0.0]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,22 +267,27 @@ class ExactStep:
         return x[0] + w[0], x[1] + w[1]
 
 
-def exact_step(fig: Figures, dt_h: float = STEP_H) -> ExactStep:
+def exact_step(fig: Figures, dt_h: float = STEP_H, opening: float = 0.0) -> ExactStep:
     """Phi = e^(A dt); Gam = A^-1 (Phi - I) B [Der]. det A > 0 for every
-    room (Section 4.2), so A^-1 exists."""
-    a = a_matrix(fig)
+    room (Section 4.2), so A^-1 exists.
+
+    opening is the share of the step an opening was open (0 shut, 1 open),
+    which sets the air's coupling to outdoors, a + v o [D105]."""
+    a = a_matrix(fig, opening)
     phi = expm_2x2(a, dt_h)
-    gam = multiply(multiply(inverse_2x2(a), subtract(phi, identity(2))), b_matrix(fig))
+    gam = multiply(multiply(inverse_2x2(a), subtract(phi, identity(2))), b_matrix(fig, opening))
     return ExactStep(phi, gam)
 
 
-def time_constants_h(fig: Figures) -> tuple[float, float]:
+def time_constants_h(fig: Figures, opening: float = 0.0) -> tuple[float, float]:
     """The room's fast and slow time constants, hours: the reciprocals of
     A's eigenvalues, which are real, distinct and negative (4.2)."""
-    l1, l2 = eigenvalues_2x2(a_matrix(fig))
+    l1, l2 = eigenvalues_2x2(a_matrix(fig, opening))
     return -1.0 / l2, -1.0 / l1
 
 
-def steady_gain_h(fig: Figures) -> float:
-    """|G(0)| = (c + k) / (a (c + k) + b k), hours (Section 4.5)."""
-    return (fig.c + fig.k) / (fig.a * (fig.c + fig.k) + fig.b * fig.k)
+def steady_gain_h(fig: Figures, opening: float = 0.0) -> float:
+    """|G(0)| = (c + k) / (a (c + k) + b k), hours (Section 4.5), with a
+    the air's coupling, a + v o [D105]."""
+    air = fig.a + fig.vent * opening
+    return (fig.c + fig.k) / (air * (fig.c + fig.k) + fig.b * fig.k)

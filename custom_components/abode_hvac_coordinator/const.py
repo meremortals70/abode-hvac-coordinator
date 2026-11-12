@@ -148,10 +148,12 @@ INDEX_SOLVE_HIGH_C: Final = 40.0  # [Set]
 INDEX_SOLVE_TOLERANCE: Final = 0.001  # [Set]
 INDEX_SOLVE_MAX_HALVINGS: Final = 60  # [Set]; 17 always suffice [Der]
 DEW_POINT_MIN_RH: Final = 0.5  # % [Set]
-FREE_COOLING_INDEX_MARGIN: Final = 2.0  # [Set]
+# Free cooling is priced by the model's own plan, with an opening open and
+# the unit resting (control/plan.py, _opening_advice) [D105]. The dew point
+# margin is the one measured constraint left: the model has no learned
+# moisture coupling for an opening, so humid outdoor air is refused rather
+# than priced [D105].
 FREE_COOLING_DEW_POINT_MARGIN_C: Final = 1.0  # [Set]
-FREE_COOLING_WIND_SHARE: Final = 0.3  # [Set]
-FREE_COOLING_WAIT_S: Final = 600.0  # [D073]
 CONDENSATION_MARGIN_C: Final = 2.5  # [Set]
 SUN_MIN_ELEVATION_DEG: Final = 5.0  # [Set]
 # The sun measured by the house's solar power, where the forecast gives no
@@ -200,7 +202,7 @@ LOAD_WATCH_RECENT_S: Final = 60.0  # [Prop]
 # --------------------------------------------------------------------------
 # Model (Module 2, Section 4.2-4.3)
 # --------------------------------------------------------------------------
-FILTER_STATE_SIZE: Final = 27  # 25 [Prop], + delay and lag (decision of 27 October 2026)
+FILTER_STATE_SIZE: Final = 28  # 25 [Prop], + delay and lag (27 October 2026), + vent [D105]
 FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     "a": 0.2,
     "b": 0.2,
@@ -208,6 +210,10 @@ FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     "k": 0.1,
     "s": 0.4,
     "m": 0.1,
+    # air changed through an opening, per hour [D105][Set]: a single open
+    # window in an ordinary room. It acts only while an opening is open, so a
+    # room with no opening sensors keeps it at this start and never uses it.
+    "vent": 3.0,
 }
 FILTER_START_VAR_T: Final = 0.01  # [Prop]
 FILTER_START_VAR_M: Final = 4.0  # [Prop]

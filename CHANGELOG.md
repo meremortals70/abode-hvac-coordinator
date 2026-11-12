@@ -6,6 +6,44 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.7 - 2026-11-12
+
+### Changed
+
+- **An opening is now part of the room's model, and free cooling is the
+  model's own answer.** The heat balance gains the air a room changes with
+  outdoors while one of its openings is open:
+  `dT/dt = (a + v·o)(T_out − T) + b(M − T) + s·S + g(t) − U`. `v` is learned
+  like `a` and `k`, from the minutes an opening was open, so a room with no
+  opening sensors or a shut window is left with `a` alone — its glass and
+  leakage [D105]. A saved state is carried over: the new figure is appended
+  at its starting value with its starting uncertainty, keeping everything
+  else the room taught.
+- **Nothing is held, and nothing stops at once, for free cooling.** The
+  10-minute hold on the plan's first start and the at-once stop when an
+  opening was opened on the advice are both removed [D073 superseded by
+  D105]. The plan now forecasts with the opening as it is, so an open room
+  rests when the room is ventilated better than the unit can cool it, and
+  that stop waits out the minimum run like any other.
+- **The free-cooling advice is a counterfactual the plan scores.** It is
+  given when the same plan, with an opening open and the unit resting, costs
+  less — comfort, energy and starts — than the plan the model chose. A room
+  that does not react to outdoors is therefore never advised to open up; a
+  room that does is [D105]. The outdoor dew point remains a measured
+  constraint: the model has no learned moisture coupling for an opening, so
+  air more than 1.0 °C above the room's dew point is refused rather than
+  priced.
+
+### Fixed
+
+- **A closed room is no longer held for free cooling it cannot use.** On the
+  night of 11-12 November 2026 the living room was switched to automatic
+  control with its window shut and its blind down, at comfort index 31.4
+  against a 23.0-25.5 band. Outdoors was cooler, so the plan held its first
+  start for ten minutes while the room sat 5.9 above its band. A double-brick
+  room with the window shut now starts cooling at once, because the model
+  says such a room cannot be cooled by outdoor air [D105].
+
 ## 0.10.6 - 2026-11-11
 
 ### Fixed

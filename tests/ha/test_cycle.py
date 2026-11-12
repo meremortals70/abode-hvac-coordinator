@@ -388,28 +388,23 @@ async def test_an_empty_room_with_no_speech_engine_turns_off_at_once(
     assert [c.data.get("hvac_mode") for c in climate_calls["set_hvac_mode"]][-1:] == ["off"]
 
 
-async def test_free_cooling_is_not_advised_in_an_empty_room(
-    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory,
+async def test_a_sealed_room_is_not_held_for_free_cooling(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
-    """Outdoor air better, but nobody in: no advice and no hold, even with
-    Precool cooling the empty room [D073]."""
+    """The plan is to cool and outdoor air is far cooler, but the room's
+    openings are shut, so outdoor air cannot reach it: the start goes out at
+    once, with no hold. An opening is an input to the model, not a rule
+    [D073 superseded by D105]."""
     hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 29.0})
     hass.states.async_set("sensor.office_t", "29.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     hass.states.async_set("sensor.office_rh", "70", {"unit_of_measurement": "%", "device_class": "humidity"})
     hass.states.async_set("sensor.outdoor_t", "14.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     hass.states.async_set("sensor.outdoor_rh", "40", {"unit_of_measurement": "%", "device_class": "humidity"})
-    hass.states.async_set("binary_sensor.presence", "off")
-    entry = await setup_entry(hass, rooms=[stored_room(presence_sensor="binary_sensor.presence")])
-    for _ in range(25):  # past the empty grace
-        await _tick(hass, freezer, timedelta(seconds=30))
-    await hass.services.async_call("button", "press", {"entity_id": "button.office_precool"}, blocking=True)
-    for _ in range(12):
-        await _tick(hass, freezer, timedelta(seconds=30))
+    entry = await setup_entry(hass)
     run = entry.runtime_data.coordinator.rooms[ROOM_ID]
-    assert run.comfort_result is not None and run.comfort_result.occupied is False
-    assert run.comfort_result.precool_on
-    assert run.control.plan is not None and run.control.plan.first.kind.value == "cool"
-    assert run.free_cooling_since is None
+    assert run.control.plan is not None and run.control.plan.first.kind is StepKind.COOL
+    assert any(c.data.get("hvac_mode") == "cool" for c in climate_calls["set_hvac_mode"])
+    assert not [c for c in climate_calls["set_hvac_mode"] if c.data.get("hvac_mode") == "heat"]
 
 
 async def test_a_failed_spoken_warning_is_logged_once(
@@ -1485,47 +1480,23 @@ async def test_a_lost_room_sensor_is_logged_while_the_unit_stands_in(
         assert [r for r in caplog.records if entity_id in r.getMessage() and r.levelno >= logging.INFO], entity_id
 
 
-async def test_free_cooling_holds_a_start_for_ten_minutes(
+async def test_the_free_cooling_advice_is_the_plans_own_and_ends_with_it(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
-    """The plan is to cool and outdoor air would do better: the start is
-    held for 10 minutes from the advice, which shows meanwhile [D073]."""
-    hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 29.0})
-    hass.states.async_set("sensor.office_t", "29.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    """The advice is read from the plan each cycle, so it ends as soon as the
+    model's counterfactual stops beating the plan — here, when outdoor air
+    turns hotter than the room [D073 superseded by D105]."""
+    hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 31.0})
+    hass.states.async_set("sensor.office_t", "31.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     hass.states.async_set("sensor.office_rh", "70", {"unit_of_measurement": "%", "device_class": "humidity"})
-    hass.states.async_set("sensor.outdoor_t", "14.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    hass.states.async_set("sensor.outdoor_t", "20.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     hass.states.async_set("sensor.outdoor_rh", "40", {"unit_of_measurement": "%", "device_class": "humidity"})
     entry = await setup_entry(hass)
     run = entry.runtime_data.coordinator.rooms[ROOM_ID]
-    advised_at = run.free_cooling_since
-    assert advised_at is not None  # judged before the first step went out
-    assert not [c for c in climate_calls["set_hvac_mode"] if c.data.get("hvac_mode") == "cool"]
-    assert run.delivery_result is not None and run.delivery_result.free_cooling_advised  # shown while held
-    started = None
-    for _ in range(40):  # 20 minutes
-        await _tick(hass, freezer, timedelta(seconds=30))
-        if started is None and any(c.data.get("hvac_mode") == "cool" for c in climate_calls["set_hvac_mode"]):
-            started = dt_util.utcnow()
-    assert run.free_cooling_since == advised_at  # the advice stood throughout
-    assert started is not None and (started - advised_at).total_seconds() >= 600
-
-
-async def test_free_cooling_advice_is_forgotten_when_outdoor_air_is_no_better(
-    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
-) -> None:
-    """The advice, and the hold with it, ends as soon as outdoor air no
-    longer does better [D073]."""
-    hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 29.0})
-    hass.states.async_set("sensor.office_t", "29.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
-    hass.states.async_set("sensor.office_rh", "70", {"unit_of_measurement": "%", "device_class": "humidity"})
-    hass.states.async_set("sensor.outdoor_t", "14.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
-    hass.states.async_set("sensor.outdoor_rh", "40", {"unit_of_measurement": "%", "device_class": "humidity"})
-    entry = await setup_entry(hass)
-    run = entry.runtime_data.coordinator.rooms[ROOM_ID]
-    assert run.free_cooling_since is not None
-    hass.states.async_set("sensor.outdoor_t", "32.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    assert run.delivery_result is not None and run.delivery_result.free_cooling_advised
+    hass.states.async_set("sensor.outdoor_t", "38.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     await _tick(hass, freezer, timedelta(seconds=30))
-    assert run.free_cooling_since is None
+    assert run.delivery_result is not None and not run.delivery_result.free_cooling_advised
 
 
 async def test_a_unit_seen_running_is_given_to_the_guard_as_it_runs(

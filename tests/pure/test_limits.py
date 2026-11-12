@@ -241,26 +241,16 @@ class Openings(unittest.TestCase):
         r = allowed(limits.RoomLimits(room()), s=snap(openings=(opening(None),)))
         self.assertEqual((r.kind, r.heads), (SK.NONE, ()))
 
-    def test_opened_on_free_cooling_advice_stops_at_once(self) -> None:
+    def test_an_opening_stops_the_unit_only_through_the_plan(self) -> None:
+        """No stop of its own, even on free-cooling advice: an opening is an
+        input to the model, so the next plan rests when the room is
+        ventilated better than the unit can cool it, and Limits holds that
+        stop to the minimum run like any other [D050][D073][D105]."""
         rl = limits.RoomLimits(room())
         allowed(rl, p=proposed(advised=True))
         r = allowed(rl, p=proposed(advised=True), s=snap(comp=CS.RUNNING, openings=(opening(T0 + 0.5 * MIN),)),
                     now=T0 + MIN)
-        self.assertEqual((r.kind, r.warnings), (SK.OFF, ()))  # [D073]
-        # opened before the advice: the ordinary grace
-        rl = limits.RoomLimits(room())
-        allowed(rl, p=proposed(advised=True), now=T0)
-        r = allowed(rl, p=proposed(advised=True), s=snap(comp=CS.RUNNING, openings=(opening(T0 - MIN),)),
-                    now=T0 + MIN)
-        self.assertIs(r.kind, SK.COOL)
-
-    def test_advice_ends_a_cycle_after_it_was_last_given(self) -> None:
-        rl = limits.RoomLimits(room())
-        allowed(rl, p=proposed(advised=True), now=T0)
-        allowed(rl, now=T0 + 0.5 * MIN)
-        allowed(rl, now=T0 + 2 * MIN)
-        r = allowed(rl, s=snap(comp=CS.RUNNING, openings=(opening(T0 + 2.5 * MIN),)), now=T0 + 3 * MIN)
-        self.assertIs(r.kind, SK.COOL)
+        self.assertEqual((r.kind, r.changed, r.warnings), (SK.COOL, (), ()))
 
 
 class Abilities(unittest.TestCase):

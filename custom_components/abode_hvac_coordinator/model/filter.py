@@ -37,6 +37,7 @@ from ..const import (
     FILTER_START_VAR_LOG_FIGURE,
     FILTER_START_VAR_M,
     FILTER_START_VAR_T,
+    HEAT_PATTERN_HARMONICS,
     SENSOR_NOISE_SETTLE_CORRECTIONS,
     SENSOR_NOISE_WEIGHT,
     UNIT_DELAY_RANGE_MIN,
@@ -59,6 +60,7 @@ from .physics import (
     HISTORY_MIN,
     I_COOL,
     I_DELAY,
+    I_G0,
     I_HEAT,
     I_LN_A,
     I_LN_B,
@@ -67,6 +69,7 @@ from .physics import (
     I_LN_LAG,
     I_LN_M,
     I_LN_S,
+    I_LN_VENT,
     I_M,
     I_T,
     STATE_SIZE,
@@ -99,6 +102,9 @@ class MinuteSample:
     dry: bool
     compressor_known: bool
     compressor_running: bool
+    # 1 while one of the room's openings is open, 0 while they are shut or
+    # none is configured [D105]
+    opening: float = 0.0
 
 
 def minute_sample(snapshot: Snapshot, local_hour: float) -> MinuteSample:
@@ -142,6 +148,7 @@ def minute_sample(snapshot: Snapshot, local_hour: float) -> MinuteSample:
         dry=any(h.mode == "dry" for h in same),
         compressor_known=known,
         compressor_running=running,
+        opening=1.0 if any(f.value is True for f in snapshot.openings) else 0.0,
     )
 
 
@@ -175,16 +182,21 @@ def start_state(t0: float) -> list[float]:
         z[I_HEAT + j] = FILTER_START_CURVE_STEP_LOG
     z[I_LN_LAG] = math.log(FILTER_START_LAG_MIN)
     z[I_DELAY] = FILTER_START_DELAY_MIN
+    z[I_LN_VENT] = math.log(FILTER_START_FIGURES["vent"])
     return z
 
 
 def start_uncertainty() -> Matrix:
     """Wide starting uncertainty [Prop][Sim][NYE]."""
-    d = [FILTER_START_VAR_T, FILTER_START_VAR_M]
-    d += [FILTER_START_VAR_LOG_FIGURE] * 6
-    d += [FILTER_START_VAR_HEAT_PATTERN] * 5
-    d += [FILTER_START_VAR_CURVE_STEP] * (2 * CURVE_POINTS)
-    d += [FILTER_START_VAR_LN_LAG, FILTER_START_VAR_DELAY]
+    d = [FILTER_START_VAR_LOG_FIGURE] * STATE_SIZE
+    d[I_T] = FILTER_START_VAR_T
+    d[I_M] = FILTER_START_VAR_M
+    for i in range(CURVE_POINTS):
+        d[I_COOL + i] = d[I_HEAT + i] = FILTER_START_VAR_CURVE_STEP
+    for i in range(I_G0, I_G0 + HEAT_PATTERN_HARMONICS * 2 + 1):
+        d[i] = FILTER_START_VAR_HEAT_PATTERN
+    d[I_LN_LAG] = FILTER_START_VAR_LN_LAG
+    d[I_DELAY] = FILTER_START_VAR_DELAY
     return diagonal(d)
 
 
@@ -197,14 +209,17 @@ def process_noise(compressor_ran: bool, unknown_t: float = 0.0, unknown_m: float
     t_noise = FILTER_NOISE_T_PER_H * step_h + unknown_t
     if compressor_ran:
         t_noise += (FILTER_RUNNING_RATE_NOISE_C_PER_H * step_h) ** 2
-    d = [t_noise, FILTER_NOISE_M_PER_H * step_h + unknown_m] + [FILTER_NOISE_FIGURE] * (STATE_SIZE - 4)
-    d += [FILTER_NOISE_LN_LAG, FILTER_NOISE_DELAY]
+    d = [FILTER_NOISE_FIGURE] * STATE_SIZE
+    d[I_T] = t_noise
+    d[I_M] = FILTER_NOISE_M_PER_H * step_h + unknown_m
+    d[I_LN_LAG] = FILTER_NOISE_LN_LAG
+    d[I_DELAY] = FILTER_NOISE_DELAY
     return diagonal(d)
 
 
 _LOG_FIGURES = frozenset(
-    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, *range(I_COOL, I_COOL + CURVE_POINTS),
-     *range(I_HEAT, I_HEAT + CURVE_POINTS))
+    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, I_LN_VENT,
+     *range(I_COOL, I_COOL + CURVE_POINTS), *range(I_HEAT, I_HEAT + CURVE_POINTS))
 )
 
 
@@ -290,6 +305,9 @@ def acting(minutes: Sequence[MinuteSample], history: Sequence[tuple[float, int]]
     heat = any(d < 0 for _, d in history)
     acts = [True] * STATE_SIZE
     acts[I_LN_S] = acts[I_LN_M] = sun
+    # the opening's coupling is learned only from minutes an opening was
+    # open: with it shut its column of the step is zero [D105]
+    acts[I_LN_VENT] = any(m.opening > 0.0 for m in minutes)
     for j in range(CURVE_POINTS):
         acts[I_COOL + j] = cool
         acts[I_HEAT + j] = heat
@@ -391,6 +409,7 @@ class HeatFilter:
             history=tuple(history),
             u_start=self.u,
             curve_efforts=self.efforts,
+            opening=sum(m.opening for m in minutes) / STEP_MIN,
         )
         ran = any(m.compressor_running for m in minutes)
         known = all(m.compressor_known for m in minutes)
@@ -530,7 +549,7 @@ class HeatFilter:
             self.z[i] = min(max(self.z[i], FIGURE_LOG_RANGE[0]), FIGURE_LOG_RANGE[1])
 
     def as_dict(self) -> dict[str, Any]:
-        """What Memory keeps: 27 numbers, 27 x 27, q, R and v."""
+        """What Memory keeps: 28 numbers, 28 x 28, q, R and v."""
         return {
             "z": list(self.z),
             "p": [list(r) for r in self.p],
@@ -546,13 +565,24 @@ class HeatFilter:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> HeatFilter | None:
-        """Restore, or None if the state is not 27 finite numbers with a
-        finite 27 x 27 uncertainty: it is then relearned [D031]."""
+        """Restore, or None if the state is not 28 finite numbers with a
+        finite 28 x 28 uncertainty: it is then relearned [D031].
+
+        A state saved before the opening's coupling existed (27 numbers) is
+        carried over: the figure is appended at its starting value with its
+        starting uncertainty, so the rest of what the room taught is kept
+        [D105]."""
         try:
             z = [float(x) for x in data["z"]]
             p = [[float(x) for x in r] for r in data["p"]]
         except (KeyError, TypeError, ValueError):
             return None
+        if len(z) == STATE_SIZE - 1 and len(p) == STATE_SIZE - 1 and all(
+            len(r) == STATE_SIZE - 1 for r in p
+        ):
+            n = STATE_SIZE - 1
+            z = [*z, math.log(FILTER_START_FIGURES["vent"])]
+            p = [[*row, 0.0] for row in p] + [[0.0] * n + [FILTER_START_VAR_LOG_FIGURE]]
         if len(z) != STATE_SIZE or len(p) != STATE_SIZE or any(len(r) != STATE_SIZE for r in p):
             return None
         if not all(math.isfinite(x) for x in z) or not is_finite(p):
