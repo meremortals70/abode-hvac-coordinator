@@ -68,7 +68,8 @@ extract it; it contains `abode_night.csv` and `abode_night_summary.txt`.
 
 | Date | What |
 | ---- | ---- |
-| 12 Nov 2026 | 0.10.7: an opening is a model input (`vent`); free cooling is the plan's own counterfactual [D105] |
+| 12 Nov 2026 | 0.10.7 released (tag `v0.10.7`, [release](https://github.com/meremortals70/abode-hvac-coordinator/releases/tag/v0.10.7), issue #5 closed): an opening is a model input (`vent`); free cooling is the plan's own counterfactual [D105] |
+| 12 Nov 2026 | FP2 presence reviewed; the room is to be configured with it and a 120-minute empty grace, with the zone/sensitivity fix still to do |
 | 12 Nov 2026 | Night review of 11–12 Nov; workflow recorded above |
 | Earlier | Shipped 0.10.4 |
 
@@ -102,6 +103,27 @@ extract it; it contains `abode_night.csv` and `abode_night_summary.txt`.
 - Announcements are blocked while the room is asleep, and "asleep" is the
   Comfort mode or the sleep schedule (`comfort.py:115-122`), not a clock.
   With the window shut, a warning can still be spoken by day [D071].
+
+## Living Room presence (Aqara FP2, 12 Nov 2026)
+
+Reviewed from `tools/presence_2026-11-12/` (48 h of `binary_sensor.presence_living_room_zone1`).
+
+- Two nights: 11–12 Nov **0** state changes (on throughout 21:13:28–07:05:43);
+  10–11 Nov two short `off` blips (6 min 48 s, 2 min 32 s).
+- Daytime, with her in the room: one **88.5-minute** `off` (09:37:51–11:06:24)
+  and 22.9 minutes at 17:29. The office sensor had someone in the office for
+  most of the first, so it may have been a true absence; unresolved.
+- 126 real state changes in 48 h, median stretch 1.4 min, 53 under 60 s, and
+  three `unavailable` spells (35 s, 17 min, 1 min) — the integration does mark
+  dropouts, so a silent night is a live `on`.
+- The FP2 is in HA **twice**: `binary_sensor.presence_sensor_fp2_6a04_presence_sensor_2`
+  (native, leads) and `presence_living_room_zone1` (HomeKit bridge, 1 s behind).
+  Same signal. Use the native one.
+- A false "empty" is not a band nudge: `comfort.py:141-144` returns `off` with
+  no band. So the room is configured with **empty grace 120 min** until the
+  sensor is proven.
+- Outstanding: raise presence sensitivity for the bed zone and redraw it to the
+  mattress edges in the Aqara app; the FP2 exposes no absence delay to HA.
 
 ## Blockers
 
