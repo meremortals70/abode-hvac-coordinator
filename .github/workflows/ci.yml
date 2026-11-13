@@ -64,10 +64,10 @@ jobs:
           # (packages/pytest-homeassistant in core; renamed from pytest-home-assistant
           # before 2026.11.0). Installed from the same core tag as Home Assistant itself,
           # because PyPI had only its betas when 2026.11.0 was released.
-          - homeassistant: "2026.11.0"
+          - homeassistant: "2026.11.1"
             install: >-
-              "homeassistant==2026.11.0"
-              "pytest-homeassistant @ git+https://github.com/home-assistant/core@2026.11.0#subdirectory=packages/pytest-homeassistant"
+              "homeassistant==2026.11.1"
+              "pytest-homeassistant @ git+https://github.com/home-assistant/core@2026.11.1#subdirectory=packages/pytest-homeassistant"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
