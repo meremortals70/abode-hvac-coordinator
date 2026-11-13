@@ -338,9 +338,13 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
     # first, so a plan that reverses begins by resting [D016][D102]
     if _reverses(inp.compressor_running, inp.last_kind, action.kind):
         return False
-    if runs and not inp.compressor_running:
-        if inp.stopped_since is not None and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S:
-            return False
+    if (
+        runs
+        and not inp.compressor_running
+        and inp.stopped_since is not None
+        and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S
+    ):
+        return False
     # a stop within the minimum run is not allowed [D016]
     return not (
         not runs

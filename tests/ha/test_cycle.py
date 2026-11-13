@@ -395,6 +395,8 @@ async def test_a_sealed_room_is_not_held_for_free_cooling(
     openings are shut, so outdoor air cannot reach it: the start goes out at
     once, with no hold. An opening is an input to the model, not a rule
     [D073 superseded by D105]."""
+    from custom_components.abode_hvac_coordinator.models import StepKind
+
     hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 29.0})
     hass.states.async_set("sensor.office_t", "29.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
     hass.states.async_set("sensor.office_rh", "70", {"unit_of_measurement": "%", "device_class": "humidity"})
@@ -1495,7 +1497,9 @@ async def test_the_free_cooling_advice_is_the_plans_own_and_ends_with_it(
     run = entry.runtime_data.coordinator.rooms[ROOM_ID]
     assert run.delivery_result is not None and run.delivery_result.free_cooling_advised
     hass.states.async_set("sensor.outdoor_t", "38.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
-    await _tick(hass, freezer, timedelta(seconds=30))
+    # the advice is the 5-minute plan's, so it is remade on the next plan, not
+    # on a 30-second cycle
+    await _tick(hass, freezer, timedelta(minutes=5))
     assert run.delivery_result is not None and not run.delivery_result.free_cooling_advised
 
 

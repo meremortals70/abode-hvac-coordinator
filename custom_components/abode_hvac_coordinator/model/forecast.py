@@ -17,7 +17,7 @@ from ..linalg import add, diagonal, sandwich
 from ..models import StepKind
 from .filter import HeatFilter
 from .humidity import H_E, HumidityFilter, moisture_figures
-from .physics import ExactStep, I_M, I_T, STEP_H, StepInputs, exact_step, figures, step
+from .physics import I_M, I_T, STEP_H, ExactStep, StepInputs, exact_step, figures, step
 from .unit import effort_for_rate
 
 _REBOUND_STEPS = round(COIL_REBOUND_S / 300.0)
