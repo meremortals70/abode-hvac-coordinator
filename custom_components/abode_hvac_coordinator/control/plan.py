@@ -491,7 +491,13 @@ def make_plan(inp: PlanInputs) -> Plan:
     start = _Node(
         t=inp.t_now if inp.t_now is not None else inp.heat.z[I_T],
         m=inp.heat.z[I_M],
-        e=inp.humidity.z[H_E] if inp.humidity is not None else inp.e_now,
+        # the forecast starts from the room the band rule measures: e_now is
+        # the measured vapour pressure, the same one comfort.room_index uses.
+        # The moisture filter's own estimate is not used here, because it can
+        # sit below the reading (a short-cycling unit, a filter still settling)
+        # and the plan would then read the room inside its band while the room
+        # is above it, and rest [D106][D074][D055]
+        e=inp.e_now if inp.e_now is not None else (inp.humidity.z[H_E] if inp.humidity is not None else 0.0),
         outside=0.0,
         comfort=0.0,
         energy=0.0,

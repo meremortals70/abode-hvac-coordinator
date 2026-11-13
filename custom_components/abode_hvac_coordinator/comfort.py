@@ -71,6 +71,7 @@ class RoomComfort:
     _ramp_from: tuple[float, float] | None = None
     _ramp_at: datetime | None = None
     _leave_saw_empty: bool = False
+    _grace: str | None = None  # "occupied", "empty", or None [D107]
 
     def band_at(self, when: datetime, target: tuple[float, float]) -> tuple[float, float]:
         """The band in force at a moment: moving steadily from the band it
@@ -93,8 +94,10 @@ class RoomComfort:
         # OCCUPANCY [D012][D068]
         if leave:
             self.occupied = False
+            self._grace = None  # Leave is deliberate, not a grace [D088][D107]
         elif not has_presence:
             self.occupied = True  # [Set]
+            self._grace = None
         else:
             self._occupancy(snapshot, now)
         occupied = bool(self.occupied)
@@ -141,7 +144,7 @@ class RoomComfort:
         if target is None:
             reason = "Leave was pressed" if rule is BandRule.LEFT else "the room is empty"
             return ComfortResult(rule, True, reason, occupied, sleeping, self.waking, False, (), index, None,
-                                 end_precool, clear_leave, rerun)
+                                 end_precool, clear_leave, rerun, grace=self._grace)
         ready = choices.precool_ready_by if rule is BandRule.PRECOOL else None
         points = []
         for i in range(1, _POINTS + 1):
@@ -154,7 +157,8 @@ class RoomComfort:
             temperature_for_index((lo_now + hi_now) / 2.0, rh).t_c if rh is not None else None
         )
         return ComfortResult(rule, False, f"the {rule.value} band", occupied, sleeping, self.waking, precool,
-                             tuple(points), index, centre_c, end_precool, clear_leave, rerun, lo_now, hi_now)
+                             tuple(points), index, centre_c, end_precool, clear_leave, rerun, lo_now, hi_now,
+                             grace=self._grace)
 
     def _leave(self, snapshot: Snapshot, choices: RoomChoices) -> bool:
         """Leave stands until presence reads empty and then occupied again
@@ -177,14 +181,20 @@ class RoomComfort:
         """Occupied after presence for the occupied grace, empty after none
         for the empty grace; otherwise the last answer stands [Set]. Before
         any answer the room counts as occupied, failing toward comfort
-        [D008]."""
+        [D008]. The grace it is inside is kept so the mode sensor can say
+        which one it is, not the answer the grace is holding [D107]."""
         p = snapshot.presence
+        self._grace = None
         if p is not None and p.value is not None and p.since is not None:
             held = (now - p.since).total_seconds()
-            if p.value and held >= self.room.occupied_after_s:
+            if p.value and held >= self.room.occupied_grace_s:
                 self.occupied = True
-            elif not p.value and held >= self.room.empty_after_s:
+            elif not p.value and held >= self.room.empty_grace_s:
                 self.occupied = False
+            elif p.value and self.occupied is not True:
+                self._grace = "occupied"  # presence on, not yet held
+            elif not p.value and self.occupied is True:
+                self._grace = "empty"  # presence off, not yet held
         if self.occupied is None:
             self.occupied = True
 

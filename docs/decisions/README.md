@@ -110,3 +110,5 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D103](D103.md) | A change of running kind is a start, and dry is offered only where the moisture model can price it |
 | [D104](D104.md) | Constraints are facts about the equipment; comfort and economic judgements are priced by the model, never branched on |
 | [D105](D105.md) | An opening is an input to the heat balance with a learned coupling; free cooling is the model's own counterfactual, with no hold and no at-once stop |
+| [D106](D106.md) | The plan starts its forecast from the room the band rule measures — the measured vapour pressure — not the moisture filter's own estimate |
+| [D107](D107.md) | The mode sensor says which grace the room is in (`occupied_grace`, `empty_grace`, `opening_grace`), not the old answer it is holding; the occupancy waits are renamed to match |

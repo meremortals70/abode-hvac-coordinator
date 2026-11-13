@@ -59,7 +59,7 @@ class Rooms(unittest.TestCase):
     def test_a_room_with_its_defaults(self) -> None:
         r = forms.room_from_options(stored())
         self.assertEqual((r.occupied_band, r.sleep_band, r.precool_band), ((23.0, 26.0), (20.0, 23.0), (23.0, 26.0)))
-        self.assertEqual((r.occupied_after_s, r.empty_after_s, r.warning_grace_s, r.opening_grace_s),
+        self.assertEqual((r.occupied_grace_s, r.empty_grace_s, r.warning_grace_s, r.opening_grace_s),
                          (120.0, 600.0, 180.0, 300.0))
         self.assertTrue(r.allow_blind_control)
         self.assertIs(r.power_management, models.PowerManagement.OFF)
@@ -77,8 +77,8 @@ class Rooms(unittest.TestCase):
         self.assertIs(r.power_management, models.PowerManagement.ENFORCED)
         self.assertEqual(r.window_facing, "NW")
         self.assertEqual(r.lockout_reason, "Painting")
-        self.assertEqual(r.occupied_after_s, 240.0)
-        self.assertEqual(r.empty_after_s, 600.0)  # a negative wait takes the default
+        self.assertEqual(r.occupied_grace_s, 240.0)
+        self.assertEqual(r.empty_grace_s, 600.0)  # a negative wait takes the default
         self.assertEqual(r.openings, ("binary_sensor.w",))
         self.assertEqual(r.profile, PROFILE)
 

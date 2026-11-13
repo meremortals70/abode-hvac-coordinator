@@ -16,8 +16,8 @@ from typing import Any
 from .const import (
     DEFAULT_ALLOW_BLIND_CONTROL,
     DEFAULT_ANNOUNCE,
-    DEFAULT_EMPTY_AFTER_MIN,
-    DEFAULT_OCCUPIED_AFTER_MIN,
+    DEFAULT_EMPTY_GRACE_MIN,
+    DEFAULT_OCCUPIED_GRACE_MIN,
     DEFAULT_OPENING_GRACE_MIN,
     DEFAULT_WARNING_GRACE_MIN,
 )
@@ -65,12 +65,21 @@ class PowerManagement(StrEnum):
 
 
 class RoomModeState(StrEnum):
-    """The band rule in force, the state of the Mode sensor (Section 7)."""
+    """The band rule in force, the state of the Mode sensor (Section 7).
+
+    The occupancy graces are shown as their own states so the sensor says
+    which grace it is in, not the answer the grace is holding: a room
+    re-occupying reads `occupied_grace`, one emptying reads `empty_grace`,
+    instead of the old, misleading `unoccupied`/`occupied` [D107].
+    """
 
     LOCKOUT = "lockout"
     AUTOMATIC_OFF = "automatic_off"
     LEFT = "left"
     UNOCCUPIED = "unoccupied"
+    OCCUPIED_GRACE = "occupied_grace"
+    EMPTY_GRACE = "empty_grace"
+    OPENING_GRACE = "opening_grace"
     PRECOOL = "precool"
     SLEEP = "sleep"
     OCCUPIED = "occupied"
@@ -130,8 +139,8 @@ class RoomConfig:
     window_facing: str | None = None
     overhang_projection_m: float | None = None
     overhang_height_m: float | None = None
-    occupied_after_s: float = DEFAULT_OCCUPIED_AFTER_MIN * 60.0
-    empty_after_s: float = DEFAULT_EMPTY_AFTER_MIN * 60.0
+    occupied_grace_s: float = DEFAULT_OCCUPIED_GRACE_MIN * 60.0
+    empty_grace_s: float = DEFAULT_EMPTY_GRACE_MIN * 60.0
     warning_grace_s: float = DEFAULT_WARNING_GRACE_MIN * 60.0
     announce: bool = DEFAULT_ANNOUNCE
     announce_through: tuple[str, ...] = ()
@@ -414,6 +423,10 @@ class ComfortResult:
     rerun: bool = False
     band_low: float | None = None  # the band in force now, for the trace and the scorecard
     band_high: float | None = None
+    # which occupancy grace the room is inside, if any: "occupied" while
+    # presence reads on but has not held for the occupied grace, "empty"
+    # while it reads off but has not held for the empty grace [D107]
+    grace: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -654,6 +667,9 @@ class LimitsResult:
     unknown_constraints: tuple[str, ...]
     missing: tuple[str, ...]
     reasons: tuple[str, ...]
+    # a door or window is open and the unit is still inside the opening
+    # grace (it has not been stopped yet) [D107]
+    opening_grace: bool = False
 
 
 # --------------------------------------------------------------------------

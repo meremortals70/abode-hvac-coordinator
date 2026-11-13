@@ -267,6 +267,27 @@ class DryIsPricedByTheMoistureModel(unittest.TestCase):
                          [(a.kind.value, a.rate) for a in p.actions])
 
 
+class PlanStartsFromTheMeasuredRoom(unittest.TestCase):
+    """The plan's forecast must start from the room the band rule measures,
+    not from the moisture filter's own estimate, which can sit below the
+    reading (a short-cycling unit, a filter still settling). On 13 November
+    the office's filter estimate read the room at its band centre while the
+    room measured above its band, and the plan rested while the room was
+    plainly over it [D074][D055]."""
+
+    def test_an_out_of_band_room_is_not_rested(self) -> None:
+        # the filter's e (14.39) puts the room at the band centre; the measured
+        # e_now (22.7) puts it well above the band. The plan must act on the
+        # measured room, so its first action cannot be rest.
+        hum = load("model.humidity").HumidityFilter.start(14.39)
+        p = plan.make_plan(inputs(
+            heat=heat(26.5), humidity=hum, e_now=22.7,
+            bands=bands(26.0, 28.5), conditions=conds(outdoor=26.5),
+        ))
+        self.assertIsNot(p.first.kind, SK.REST,
+                         [(a.kind.value, a.rate) for a in p.actions])
+
+
 class NoTurnInsideTheBand(unittest.TestCase):
     """Never heat after a cooling cycle, never cool after a heating cycle
     [D102]. The cycle is the run: a running unit is not turned the other way.

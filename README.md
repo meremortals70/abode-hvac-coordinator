@@ -60,7 +60,7 @@ It never writes to a battery. It publishes a demand forecast instead, for whatev
 
 A device with:
 
-- a **mode sensor** (the band rule in force, with the full decision trace as attributes)
+- a **mode sensor** (the band rule in force, the occupancy grace it is in, with the full decision trace as attributes)
 - the **comfort index**, the **target temperature** and the **dew point**
 - yesterday's **comfort in band**, **near the centre**, **starts per running hour** and **cost of comfort**
 - **Automatic control** and **Automatic vane control** switches

@@ -13,6 +13,7 @@ from tests.pure.sim_room import SimRoom
 comfort = load("comfort")
 models = load("models")
 hci = load("hci")
+evidence = load("evidence")
 VT = models.ValueTag
 BR = models.BandRule
 CM = models.ComfortMode
@@ -69,12 +70,43 @@ class Occupancy(unittest.TestCase):
         self.assertEqual((r.rule, r.off), (BR.UNOCCUPIED, True))
         r = rc.evaluate(snap(True, T0 - timedelta(seconds=119)), CH, T0)
         self.assertFalse(r.occupied)  # inside the occupied grace
+        self.assertEqual(r.grace, "occupied")
         r = rc.evaluate(snap(True, T0 - timedelta(seconds=120)), CH, T0)
         self.assertTrue(r.occupied)
+        self.assertIsNone(r.grace)
         r = rc.evaluate(snap(False, T0 - timedelta(minutes=9, seconds=59)), CH, T0)
         self.assertTrue(r.occupied)  # inside the empty grace
+        self.assertEqual(r.grace, "empty")
         r = rc.evaluate(snap(None), CH, T0)
         self.assertTrue(r.occupied)  # unknown keeps the last answer
+
+    def test_the_mode_sensor_names_the_grace(self) -> None:
+        """D107: the mode sensor says which grace the room is in, not the old
+        answer the grace is holding. Before this the office read `unoccupied`
+        for two minutes after someone walked in, and the user set it to
+        manual each time."""
+        rc = comfort.RoomComfort(room())
+        r = rc.evaluate(snap(False, T0 - timedelta(minutes=10)), CH, T0)
+        self.assertEqual(evidence.mode_state(None, r).value, "unoccupied")
+        r = rc.evaluate(snap(True, T0 - timedelta(seconds=119)), CH, T0)
+        self.assertEqual(evidence.mode_state(None, r).value, "occupied_grace")
+        r = rc.evaluate(snap(True, T0 - timedelta(seconds=120)), CH, T0)
+        self.assertEqual(evidence.mode_state(None, r).value, "occupied")
+        r = rc.evaluate(snap(False, T0 - timedelta(minutes=9, seconds=59)), CH, T0)
+        self.assertEqual(evidence.mode_state(None, r).value, "empty_grace")
+
+    def test_a_window_open_shows_the_opening_grace(self) -> None:
+        """D107: a door or window open and the unit still inside its opening
+        grace is named, not left as the band rule."""
+        rc = comfort.RoomComfort(room())
+        r = rc.evaluate(snap(True, T0 - timedelta(minutes=5)), CH, T0)  # held: occupied
+        self.assertEqual(evidence.mode_state(None, r).value, "occupied")
+        limits = models.LimitsResult(
+            kind=models.StepKind.REST, heads=(), blinds=(), warnings=(), changed=(),
+            not_delivered=False, held_off=False, lockout=False, automatic_off=False,
+            constraints=(), unknown_constraints=(), missing=(), reasons=(), opening_grace=True,
+        )
+        self.assertEqual(evidence.mode_state(limits, r).value, "opening_grace")
 
     def test_first_answer_fails_toward_comfort(self) -> None:
         rc = comfort.RoomComfort(room())

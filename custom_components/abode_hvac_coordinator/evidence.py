@@ -49,12 +49,28 @@ _RULE_STATE = {
 
 def mode_state(limits: LimitsResult | None, comfort: ComfortResult) -> RoomModeState:
     """The Mode sensor's state: the band rule in force, with lockout and
-    Automatic control off first (Section 7)."""
+    Automatic control off first (Section 7).
+
+    While the room is inside an occupancy grace its state is the grace, not
+    the old answer the grace is holding: `occupied_grace` while presence is
+    on and has not held, `empty_grace` while it is off and has not held
+    [D107]. Leave and Precool are deliberate and keep their own states.
+    """
     if limits is not None and limits.lockout:
         return RoomModeState.LOCKOUT
     if limits is not None and limits.automatic_off:
         return RoomModeState.AUTOMATIC_OFF
-    return _RULE_STATE[comfort.rule]
+    rule = _RULE_STATE[comfort.rule]
+    # a door or window open and the unit still inside its grace outranks the
+    # band it would otherwise show [D107]
+    if (limits is not None and limits.opening_grace
+            and rule in (RoomModeState.OCCUPIED, RoomModeState.SLEEP, RoomModeState.UNOCCUPIED)):
+        return RoomModeState.OPENING_GRACE
+    if comfort.grace == "occupied" and rule is RoomModeState.UNOCCUPIED:
+        return RoomModeState.OCCUPIED_GRACE
+    if comfort.grace == "empty" and rule is RoomModeState.OCCUPIED:
+        return RoomModeState.EMPTY_GRACE
+    return rule
 
 
 def _r(value: float | None, places: int = 2) -> float | None:

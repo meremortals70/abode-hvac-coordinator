@@ -65,6 +65,7 @@ class RoomStep:
     constraints: tuple[str, ...] = ()
     unknown_constraints: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
+    opening_grace: bool = False  # a door or window open, inside its grace [D107]
 
     def to(self, rule: LimitRule, kind: StepKind, reason: str, heads: tuple[HeadCommand, ...] = ()) -> None:
         """Set the step to kind, recording the rule and why."""
@@ -213,6 +214,9 @@ class RoomLimits:
         if elapsed >= grace:
             s.to(LimitRule.OPENING, StepKind.OFF, "A door or window has been open past its grace: off.")
             return True
+        # a door or window is open and the unit is still inside the opening
+        # grace: the mode sensor says so, not the band rule [D107]
+        s.opening_grace = True
         for kind, at in ((WarningKind.OPENING_FIRST, grace - self.room.warning_grace_s),
                          (WarningKind.OPENING_FINAL, grace - CYCLE_S)):
             if elapsed >= at and kind not in self._opening_warned:
@@ -531,4 +535,5 @@ def _result(s: RoomStep, held_off: bool) -> LimitsResult:
         unknown_constraints=s.unknown_constraints,
         missing=s.missing,
         reasons=tuple(r for r in s.reasons if r),
+        opening_grace=s.opening_grace,
     )

@@ -6,6 +6,34 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.8 - 2026-11-13
+
+### Fixed
+
+- **The plan now forecasts from the room the band rule measures.** Its
+  opening comfort index is built from the measured vapour pressure — the
+  same reading `comfort.room_index` uses — instead of the moisture filter's
+  own estimate. Where the two differed (a filter still settling, or one
+  whose figures were learned against a short-cycling unit it could not see),
+  the plan read the room inside its band while the room was above it, and
+  rested instead of cooling. The moisture filter still supplies the figures
+  the forecast moves the moisture with; only the starting point is the
+  reading [D106].
+- **The mode sensor now shows which grace the room is in.** A room
+  re-occupying reads `occupied_grace` and one emptying reads `empty_grace`
+  instead of the old, misleading `unoccupied`/`occupied`, and a door or
+  window open inside its grace reads `opening_grace`. Leave and Precool keep
+  their own states. The state is a label only — the band, the plan and the
+  unit's behaviour are unchanged [D107].
+
+### Changed
+
+- **The occupancy waits are renamed for cohesion.** `occupied_after` and
+  `empty_after` are now `occupied_grace` and `empty_grace`, so all four
+  waits — these two, `warning_grace` and `opening_grace` — read as one
+  family. A room saved under the old keys is read once through them and the
+  new keys written from the next save; nothing is lost [D107].
+
 ## 0.10.7 - 2026-11-12
 
 ### Changed

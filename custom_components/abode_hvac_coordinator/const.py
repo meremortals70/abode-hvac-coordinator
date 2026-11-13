@@ -69,8 +69,12 @@ CONF_ALLOW_BLIND_CONTROL: Final = "allow_blind_control"
 CONF_WINDOW_FACING: Final = "window_facing"
 CONF_OVERHANG_PROJECTION: Final = "overhang_projection"
 CONF_OVERHANG_HEIGHT: Final = "overhang_height"
-CONF_OCCUPIED_AFTER: Final = "occupied_after"
-CONF_EMPTY_AFTER: Final = "empty_after"
+CONF_OCCUPIED_GRACE: Final = "occupied_grace"
+CONF_EMPTY_GRACE: Final = "empty_grace"
+# the keys the occupancy graces used before D107: read once for a stored
+# config, then written as the new keys
+CONF_OCCUPIED_AFTER_OLD: Final = "occupied_after"
+CONF_EMPTY_AFTER_OLD: Final = "empty_after"
 CONF_WARNING_GRACE: Final = "warning_grace"
 CONF_ANNOUNCE: Final = "announce"
 CONF_ANNOUNCE_THROUGH: Final = "announce_through"
@@ -87,8 +91,8 @@ CONF_PROFILE: Final = "profile"
 
 # Room setting defaults (Section 7)
 DEFAULT_ALLOW_BLIND_CONTROL: Final = True  # [Set]
-DEFAULT_OCCUPIED_AFTER_MIN: Final = 2.0  # [Set]
-DEFAULT_EMPTY_AFTER_MIN: Final = 10.0  # [Set]
+DEFAULT_OCCUPIED_GRACE_MIN: Final = 2.0  # [Set]
+DEFAULT_EMPTY_GRACE_MIN: Final = 10.0  # [Set]
 DEFAULT_WARNING_GRACE_MIN: Final = 3.0  # [D050]
 DEFAULT_ANNOUNCE: Final = False  # [Set]
 DEFAULT_OPENING_GRACE_MIN: Final = 5.0  # [D050]
