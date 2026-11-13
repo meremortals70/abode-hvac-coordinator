@@ -184,10 +184,10 @@ Treating unknown figures as part of a Kalman filter's state is the extended Kalm
 **The state** [Prop]:
 
 ```latex
-z = \bigl(T,\; M,\; \ln a,\ln b,\ln c,\ln k,\ln s,\ln m,\; g_0,\alpha_1,\beta_1,\alpha_2,\beta_2,\; \rho^{cool}_{1..6},\; \rho^{heat}_{1..6},\; \ln\tau,\; \theta\bigr)
+z = \bigl(T,\; M,\; \ln a,\ln b,\ln c,\ln k,\ln s,\ln m,\; g_0,\alpha_1,\beta_1,\alpha_2,\beta_2,\; \rho^{cool}_{1..6},\; \rho^{heat}_{1..6},\; \ln\tau,\; \theta,\; \ln v,\; \ln d\bigr)
 ```
 
-- 27 numbers. The positive figures are carried as logarithms, so none can go below zero; g₀ and the wave weights may take either sign [Der].
+- 29 numbers. The positive figures are carried as logarithms, so none can go below zero; g₀ and the wave weights may take either sign [Der]. The opening's coupling v is 28th [D105]; dry's share of the cooling curve, d, is 29th [D108].
 - **The unit's delay θ and lag τ** are the last two states, τ as its logarithm and held between 1 and 30 minutes, θ held between 0 and 30 minutes, both in the state itself after every correction. A unit's start-up response is measured at 0.3 to 2 minutes [R19]; a lag above 30 minutes is not the unit's, and the PID's derivative time is the lag (4.5). A stored state whose lag is outside the range was learned by a filter that could diverge, and is refused at start-up with its trust; the room is seeded again from history [R19]. The delayed rate is taken in proportion between the two recorded minutes either side, so θ is learned as a smooth number. They start at θ = 6 and τ = 15 minutes, with uncertainty 25 min² for θ and 1 for ln τ, and noise per step of 10⁻³ min² and 10⁻⁵ [Prop][NYE]. A separate fit after each start, stop or setpoint change was tried and could not recover them at the sensor's 0.2 °C steps: it found 11 and 1 minutes against a true 6 and 15. The filter found 8–10 and 9–12, their total 19–20 against a true 21 [Sim].
 - The unit's curve is carried as its six steps in each direction, so it always rises with effort (4.2) [Der].
 
@@ -235,7 +235,7 @@ The same test is applied to six-hour forecasts over 14 days. Trust is published,
 
 **Learning the unit outside the filter** [Prop]:
 
-- **Lowest continuous rate.** U\_min, one for cooling (and dry) and one for heating, each on its own curve, is the rate of a 30-minute run without a stop held at or below the lowest rate offered at the time, with an effort asked in every minute; it replaces the last, up or down. The lowest rate offered is never below the curve's first point, which is used until a run is learned [D100].
+- **Lowest continuous rate.** U\_min, one for cooling and one for heating, each on its own curve, is the rate of a 30-minute run without a stop held at or below the lowest rate offered at the time, with an effort asked in every minute; it replaces the last, up or down. The lowest rate offered is never below the curve's first point, which is used until a run is learned [D100]. A dry run is not a cooling run and says nothing of this floor: dry's sensible rate is its own share of the cooling curve [D108].
 - **Draw.** A start is a head put in cool, dry or heat from off or fan-only, or a compressor reported starting; a stop is a head put in off or fan-only from cool, dry or heat, or a compressor reported stopping. Neither needs the unit to report its compressor: the house load says whether it moved. When exactly one outdoor unit starts or stops and no other changes from 3 minutes before to 4 minutes after, the step in house load is its draw at that effort [D028]. The load before is its average over the 3 minutes before, after this unit's own last change; after a start, the average from the first reading that rose, since a compressor starts up to 3.3 minutes after its head is put in cool [Sim: the house's recorder, 7 November 2026]; after a stop, the average of what follows; each cut at this unit's next change. A step under three times the house power's own noise is its own movement, not a draw. That noise is learned from the house power's readings as the room sensor's is: from their second differences, taking the median, which a few real steps do not move (0.03 kW on the house's record) [Der]. No effort threshold applies: a unit reading its setpoint in whole degrees was still drawing 0.23 kW (decision of 8 November 2026). Between such efforts it is joined by straight lines; beyond them the nearest known value is used [Prop].
 
 **Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
@@ -733,9 +733,10 @@ EXACT MATRICES, for a minute (STEP) and 5 minutes (plans and forecasts):        
 ```text
 FILE model/filter.py — one Kalman filter learns the room              [R6][R16][Prop]
 
-STATE z, 27 numbers: T, M, ln a, ln b, ln c, ln k, ln s, ln m,
-  g0, al1, be1, al2, be2, rho_cool 1..6, rho_heat 1..6, ln lag, delay
-UNCERTAINTY P, 27 x 27
+STATE z, 29 numbers: T, M, ln a, ln b, ln c, ln k, ln s, ln m,
+  g0, al1, be1, al2, be2, rho_cool 1..6, rho_heat 1..6, ln lag, delay,
+  ln vent [D105], ln dry [D108]
+UNCERTAINTY P, 29 x 29
 
 DESIGN VALUES                                                         [Prop]
   starting figures ...... a 0.2, b 0.2, c 0.3, k 0.1, s 0.4, m 0.1,
@@ -826,8 +827,9 @@ delay and lag: the two states the heat filter learns (filter.py)  [Prop]
 WHEN a head has run 30 minutes or more without the compressor stopping,
      at an average rate at or below the lowest rate offered then, with
      an effort asked in every minute of it:                         [D100]
-  U_min for that direction (cooling and dry, or heating) = the run's
-  average rate, up or down; a change of direction starts a new run
+  U_min for that direction (cooling, or heating) = the run's
+  average rate, up or down; a change of direction, or a dry run, starts
+  a new run: dry has no floor of its own, only its share [D108]
   lowest rate offered = the larger of U_min and the curve's first point
   (until then, the curve's first point)
 
@@ -1717,7 +1719,7 @@ WHERE: Home Assistant storage, one file with a version number:      [Prop]
        was learned from them                                         [Prop]
 
 KEPT, per room:
-  the heat filter: its 27 numbers and 27 x 27 uncertainty; the sensor
+  the heat filter: its 29 numbers and 29 x 29 uncertainty; the sensor
   step q; its learned noise R and the running average v             [Prop]
   the moisture filter: its state and uncertainty                     [Prop]
   the unit: U_min, draw by effort per outdoor

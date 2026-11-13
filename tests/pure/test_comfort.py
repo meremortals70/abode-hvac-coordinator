@@ -95,6 +95,19 @@ class Occupancy(unittest.TestCase):
         r = rc.evaluate(snap(False, T0 - timedelta(minutes=9, seconds=59)), CH, T0)
         self.assertEqual(evidence.mode_state(None, r).value, "empty_grace")
 
+    def test_the_mode_sensor_names_the_empty_grace_while_sleeping(self) -> None:
+        """D107: the sleep band is not an exemption from the empty grace. On
+        the night of 13-14 November 2026 presence read empty for 25 minutes
+        inside the living room's 30-minute grace and the mode sensor read
+        `sleep` throughout, so the room counting as empty could not be seen."""
+        rc = comfort.RoomComfort(room())
+        r = rc.evaluate(snap(True, T0 - timedelta(hours=1), schedule=True), CH, T0)
+        self.assertEqual(r.rule, BR.SLEEP)
+        r = rc.evaluate(snap(False, T0 - timedelta(minutes=9), schedule=True), CH, T0)
+        self.assertTrue(r.occupied)  # inside the empty grace
+        self.assertEqual(r.grace, "empty")
+        self.assertEqual(evidence.mode_state(None, r).value, "empty_grace")
+
     def test_a_window_open_shows_the_opening_grace(self) -> None:
         """D107: a door or window open and the unit still inside its opening
         grace is named, not left as the band rule."""

@@ -48,9 +48,15 @@ class RoomModel:
             self.heat.add_minute(sample)
             # the steady rate asked of the unit, not its lagged rate: U_min is a rate held [Prop]
             fig = figures(self.heat.z)
-            steady = rate_for_effort(fig, sample.effort, sample.direction)
-            self.unit.observe_rate(sample.compressor_running and sample.compressor_known, steady,
-                                   self.unit.lowest_rate(fig, sample.direction))
+            if sample.dry and sample.compressor_running:
+                # a dry run is not a cooling run: it says nothing about the
+                # cooling floor, and what it does remove is dry's own share
+                # [D108]
+                self.unit.break_run()
+            else:
+                steady = rate_for_effort(fig, sample.effort, sample.direction)
+                self.unit.observe_rate(sample.compressor_running and sample.compressor_known, steady,
+                                       self.unit.lowest_rate(fig, sample.direction))
         self._moisture_minute(sample)
         self._last_minute = sample
         return sample

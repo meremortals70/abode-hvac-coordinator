@@ -33,7 +33,8 @@ def heat(t0: float = 25.0, **figs: float) -> Any:
     f = filt.HeatFilter.start(t0)
     f.noise = 0.003
     for name, value in figs.items():
-        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7, "vent": physics.I_LN_VENT}[name]] = math.log(value)
+        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7, "vent": physics.I_LN_VENT,
+             "dry": physics.I_LN_DRY}[name]] = math.log(value)
     for i in range(2, physics.STATE_SIZE):  # a settled model
         f.p[i][i] = 1e-4
     f.p[0][0], f.p[1][1] = 0.001, 0.01
@@ -265,6 +266,66 @@ class DryIsPricedByTheMoistureModel(unittest.TestCase):
         self.assertEqual(swaps, 0, [(a.kind.value, a.rate) for a in p.actions])
         self.assertEqual(p.starts, starts_in(p.actions, already_running=True),
                          [(a.kind.value, a.rate) for a in p.actions])
+
+
+class DryIsPricedAtItsShare(unittest.TestCase):
+    """Dry is offered at the cooling floor, which is the rate the unit is
+    asked for, but it removes only its learned share of what cooling removes
+    [D108]. On 13-14 November 2026 the living room warmed 0.65 C/h through
+    its dry minutes while the floor cooled it 1.21 C/h; the plan at 00:45
+    chose dry, forecast the room at 24.77 in half an hour, and the room went
+    to 25.58, above its band."""
+
+    def dry_plan(self, share: float) -> Any:
+        hum = load("model.humidity").HumidityFilter.start(E_ROOM)
+        return plan.make_plan(inputs(
+            heat=heat(26.0, dry=share), humidity=hum, bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
+            modes=frozenset({"dry", "fan_only"}),
+            compressor_running=False, last_kind=SK.REST, stopped_since=NOW - timedelta(minutes=30),
+        ))
+
+    def test_a_dry_step_cools_the_forecast_by_its_share(self) -> None:
+        full = self.dry_plan(1.0)
+        share = self.dry_plan(0.05)
+        self.assertIs(full.first.kind, SK.DRY)
+        self.assertIs(share.first.kind, SK.DRY)
+        self.assertGreater(share.points[-1].hci, full.points[-1].hci)
+
+
+class ThePlanSaysWhyItCouldNotAct(unittest.TestCase):
+    """The plan records why step 0 could not be each kind it was barred from,
+    so a night can tell a rest the plan chose from one the unit forced
+    [D006]. On 13-14 November the living room rested at 02:15 and 04:25 with
+    45 and 50 minutes forecast outside its band, and the history could not
+    say why."""
+
+    def test_a_stopped_unit_says_it_is_inside_its_minimum_rest(self) -> None:
+        p = plan.make_plan(inputs(
+            heat=heat(26.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
+            compressor_running=False, last_kind=SK.COOL, stopped_since=NOW - timedelta(minutes=2),
+        ))
+        why = dict(p.first_blocked)
+        self.assertIs(p.first.kind, SK.REST)
+        self.assertIn(SK.COOL, why)
+        self.assertIn("minimum rest", why[SK.COOL])
+        self.assertIn("3 min left", why[SK.COOL])
+        self.assertNotIn(SK.REST, why)  # resting itself is allowed
+
+    def test_a_running_unit_says_it_has_not_run_its_minimum_run(self) -> None:
+        p = plan.make_plan(inputs(
+            heat=heat(23.0), bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
+            compressor_running=True, last_kind=SK.COOL, running_since=NOW - timedelta(minutes=2),
+        ))
+        why = dict(p.first_blocked)
+        self.assertIn(SK.REST, why)
+        self.assertIn("minimum run", why[SK.REST])
+
+    def test_a_plan_that_may_cool_says_nothing_was_barred(self) -> None:
+        p = plan.make_plan(inputs(
+            heat=heat(26.5), bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
+            compressor_running=True, last_kind=SK.COOL, running_since=NOW - timedelta(minutes=30),
+        ))
+        self.assertNotIn(SK.COOL, dict(p.first_blocked))
 
 
 class PlanStartsFromTheMeasuredRoom(unittest.TestCase):

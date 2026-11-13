@@ -68,7 +68,10 @@ def mode_state(limits: LimitsResult | None, comfort: ComfortResult) -> RoomModeS
         return RoomModeState.OPENING_GRACE
     if comfort.grace == "occupied" and rule is RoomModeState.UNOCCUPIED:
         return RoomModeState.OCCUPIED_GRACE
-    if comfort.grace == "empty" and rule is RoomModeState.OCCUPIED:
+    # the sleep band is not an exemption from the empty grace: a room whose
+    # presence has read empty, at night as by day, is counting as empty and
+    # says so [D107]
+    if comfort.grace == "empty" and rule in (RoomModeState.OCCUPIED, RoomModeState.SLEEP):
         return RoomModeState.EMPTY_GRACE
     return rule
 
@@ -142,6 +145,10 @@ def trace(
                 "sigma": [round(pt.sigma_hci, 2) for pt in p.points[PLAN_POINTS_PER_STEP - 1::PLAN_POINTS_PER_STEP]],
                 "minutes_outside": round(p.minutes_outside, 1),
                 "costs": [round(p.comfort_cost, 4), round(p.energy_cost, 4), round(p.start_cost, 4)],
+                # why step 0 could not be a kind it was barred from: a plan
+                # that rests because the unit may not start yet says so here,
+                # and a night can tell that from a rest it chose [D006]
+                "blocked": [[k.value, why] for k, why in p.first_blocked],
             }
         if control.pid is not None:
             d = control.pid

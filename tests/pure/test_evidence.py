@@ -47,7 +47,8 @@ def plan() -> Any:
     act = models.PlanAction(SK.COOL, 2.0, None)
     pts = tuple(models.PlanPoint(T0 + timedelta(minutes=5 * i), 24.0, 24.123456, 0.2, False) for i in range(72))
     return models.Plan(T0, (act,) * 12, pts, 0.0, 0.5, 1.25, 0.6, 1, 0.44, 0.6,
-                       ((models.PlanAction(SK.REST, 0.0, None), "leaves the band"),))
+                       ((models.PlanAction(SK.REST, 0.0, None), "leaves the band"),),
+                       ((SK.COOL, "the unit stopped less than its minimum rest ago: 3 min left"),))
 
 
 def control() -> Any:
@@ -103,6 +104,9 @@ class Trace(unittest.TestCase):
         self.assertEqual(t["limits"]["changed"], ["opening"])
         self.assertEqual(t["power"]["ceiling"], "no limit")  # [D096]
         self.assertEqual(t["compressors"]["climate.sim"], {"state": "stopped", "source": "hvac_action"})
+        # why step 0 could not be a kind it was barred from: kept in the
+        # recorder, so a night can tell a forced rest from a chosen one [D006]
+        self.assertEqual(d["blocked"], [["cool", "the unit stopped less than its minimum rest ago: 3 min left"]])
         json.dumps(t)  # plain values only
 
     def test_position_and_ceiling(self) -> None:

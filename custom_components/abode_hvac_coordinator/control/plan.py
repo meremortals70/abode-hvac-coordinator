@@ -277,6 +277,7 @@ class _Fixed:
     cooling: float
     rebound: float
     have_moisture: bool
+    dry_share: float  # dry's sensible share of the cooling curve [D108]
     u_decay: float  # e^(-5 min / (lag + delay))
     u_mean: float  # the share of the step's change in rate seen on average over it
 
@@ -315,6 +316,7 @@ def _fixed(inp: PlanInputs, opening: float | None = None) -> _Fixed:
         cooling=mf.cooling if mf else 0.0,
         rebound=mf.rebound if mf else 0.0,
         have_moisture=mf is not None,
+        dry_share=fig.dry_share,
         u_decay=decay,
         u_mean=tau / _POINT_H * (1.0 - decay),
     )
@@ -326,7 +328,16 @@ def _vp(t: float, rh: float) -> float:
 
 def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -> bool:
     """What step 0 may not do, from the state now [D016][D073]. Later steps
-    are half an hour apart, longer than the shortest run and rest.
+    are half an hour apart, longer than the shortest run and rest."""
+    return _first_bar(inp, action, can_carry_on) is None
+
+
+def _first_bar(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -> str | None:
+    """Why step 0 may not be this action, or None when it may [D016][D073].
+
+    The reason is kept with the plan so a night can be read back: a room
+    that went above its band while the plan rested needs to say whether it
+    rested by choice or because the unit could not start yet.
 
     can_carry_on: the running kind is among this step's actions. Where it
     is not (heating a waking room [D085], a mode or rate no longer
@@ -337,23 +348,27 @@ def _allowed_first(inp: PlanInputs, action: PlanAction, can_carry_on: bool = Tru
     # turning a running unit the other way is a stop and a start: it rests
     # first, so a plan that reverses begins by resting [D016][D102]
     if _reverses(inp.compressor_running, inp.last_kind, action.kind):
-        return False
+        return "the unit would turn the other way: it rests first"
     if (
         runs
         and not inp.compressor_running
         and inp.stopped_since is not None
         and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S
     ):
-        return False
+        left = (MIN_REST_S - (inp.now - inp.stopped_since).total_seconds()) / 60.0
+        return f"the unit stopped less than its minimum rest ago: {left:.0f} min left"
     # a stop within the minimum run is not allowed [D016]
-    return not (
+    if (
         not runs
         and can_carry_on
         and inp.compressor_running
         and inp.last_kind in (StepKind.COOL, StepKind.HEAT, StepKind.DRY)
         and inp.running_since is not None
         and (inp.now - inp.running_since).total_seconds() < MIN_RUN_S
-    )
+    ):
+        left = (MIN_RUN_S - (inp.now - inp.running_since).total_seconds()) / 60.0
+        return f"the unit has not run its minimum run: {left:.0f} min left"
+    return None
 
 
 def _reversal(last_way: int, kind: StepKind) -> bool:
@@ -523,16 +538,22 @@ def make_plan(inp: PlanInputs) -> Plan:
     reversal_ok = not _rest_recovers(start, inp, fx, w)
     beam = [start]
     best_by_first: dict[PlanAction, _Node] = {}
+    # why step 0 could not be each kind it was barred from: one line a kind,
+    # so a night can say whether the plan rested by choice [D006]
+    blocked: dict[StepKind, str] = {}
     for j in range(PLAN_STEPS):
         grown: list[_Node] = []
         # blinds act only while the sun is on the glass; "cannot say" counts as not [D023]
         sunny = any(c.sun_on_glass for c in inp.conditions[j * PLAN_POINTS_PER_STEP:(j + 1) * PLAN_POINTS_PER_STEP])
         for node in beam:
             for action in actions:
-                if j == 0 and not _allowed_first(inp, action, can_carry_on):
-                    continue
-                if j == 0 and not reversal_ok and _reversal(last_way, action.kind):
-                    continue
+                if j == 0:
+                    bar = _first_bar(inp, action, can_carry_on)
+                    if bar is None and not reversal_ok and _reversal(last_way, action.kind):
+                        bar = "resting brings the room back: the unit is not turned the other way"
+                    if bar is not None:
+                        blocked.setdefault(action.kind, bar)
+                        continue
                 if inp.blind_control and (action.blinds_closed is not None) != sunny:
                     continue
                 grown.append(_extend(node, action, j, inp, fx, w, draws[action.rate]))
@@ -547,7 +568,7 @@ def make_plan(inp: PlanInputs) -> Plan:
                 best_by_first[first] = n
     best = min(beam, key=lambda n: n.key)
     advised, advice = _opening_advice(inp, start, best, fx, w, draws)
-    return _as_plan(inp.now, best, best_by_first, w, c_start, advised, advice)
+    return _as_plan(inp.now, best, best_by_first, w, c_start, tuple(blocked.items()), advised, advice)
 
 
 def _extend(
@@ -574,7 +595,11 @@ def _extend(
     n.last_kind = action.kind
     if runs:
         n.way = _way(action.kind)
-    u_target = action.rate if runs else 0.0  # dry removes heat at U_min
+    u_target = action.rate if runs else 0.0  # dry removes its share of what cooling does [D108]
+    if action.kind is StepKind.DRY:
+        # dry is offered at the cooling floor, the rate the unit is asked
+        # for; the room only sees its learned share of it [D108]
+        u_target *= fx.dry_share
     if action.blinds_closed is None:
         tau = inp.transmission_now
     else:
@@ -621,7 +646,8 @@ def _extend(
 
 
 def _as_plan(now: datetime, best: _Node, by_first: dict[PlanAction, _Node], w: float, c_start: float,
-             advised: bool = False, advice: str | None = None) -> Plan:
+             blocked: tuple[tuple[StepKind, str], ...] = (), advised: bool = False,
+             advice: str | None = None) -> Plan:
     alternatives: list[tuple[PlanAction, str]] = []
     for first, node in by_first.items():
         if first == best.actions[0]:
@@ -646,6 +672,7 @@ def _as_plan(now: datetime, best: _Node, by_first: dict[PlanAction, _Node], w: f
         w=w,
         c_start=c_start,
         alternatives=tuple(alternatives),
+        first_blocked=blocked,
         free_cooling_advised=advised,
         free_cooling_reason=advice,
     )

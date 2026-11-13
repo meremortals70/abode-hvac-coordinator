@@ -6,7 +6,7 @@ Entity ids below are for a room named Office; yours follow your room's name.
 
 | Entity | Example id | What it shows or does |
 | --- | --- | --- |
-| Mode | `sensor.office` | The band rule in force: Locked out, Automatic control off, Left, Unoccupied, Precool, Sleep or Occupied. Its attributes are the full decision trace (below) |
+| Mode | `sensor.office` | The band rule in force: Locked out, Automatic control off, Left, Unoccupied, Precool, Sleep or Occupied — or the grace the room is waiting in: Occupied grace, Empty grace or Opening grace. Its attributes are the full decision trace (below) |
 | Comfort index | `sensor.office_comfort_index` | The room's comfort index now. Attributes: band low, band high, and whether the room is below, in or above the band |
 | Target temperature | `sensor.office_target_temperature` | The centre of the band in force, as a temperature at the room's humidity now. Diagnostic |
 | Commanded setpoint | `sensor.office_commanded_setpoint` | The setpoint last sent (for a unit that takes only a range, the middle of the range sent); attribute: the setpoint wanted before whole-degree stepping. Diagnostic, disabled by default |
@@ -51,7 +51,7 @@ The mode sensor's attributes say what the room is doing and why, every 30 second
 | `compressors` | Each head's compressor state, and which source said so |
 | `stale` | Feeds too old to use |
 
-`plan`, `pid`, `model`, `power`, `delivery`, `limits`, `compressors` and `stale` are not kept in the recorder's history, because they change every 30 seconds. `decision` is kept: each plan's first step, its actions, and its forecast index and uncertainty every half-hour, so a night can be read back.
+`plan`, `pid`, `model`, `power`, `delivery`, `limits`, `compressors` and `stale` are not kept in the recorder's history, because they change every 30 seconds. `decision` is kept: each plan's first step, its actions, its forecast index and uncertainty every half-hour, and why its first step could not be a kind it was barred from (for example "the unit stopped less than its minimum rest ago: 3 min left"), so a night can be read back.
 
 ## The house
 

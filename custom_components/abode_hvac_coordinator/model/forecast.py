@@ -107,8 +107,10 @@ def forecast(
         if wet_before and not wet:
             rebound = _REBOUND_STEPS
         wet_before = wet
-        u_step = step_in.rate + (u - step_in.rate) * mean
-        u = step_in.rate + (u - step_in.rate) * decay
+        # dry's sensible rate is its share of what it is asked for [D108]
+        rate = step_in.rate * fig.dry_share if step_in.kind is StepKind.DRY else step_in.rate
+        u_step = rate + (u - rate) * mean
+        u = rate + (u - rate) * decay
         ex = exact(step_in.opening)
         tm = ex.advance(tm, step_in.outdoor, step_in.sun, fig.g(step_in.hour), u_step)
         p2 = add(sandwich(ex.phi, p2), noise)

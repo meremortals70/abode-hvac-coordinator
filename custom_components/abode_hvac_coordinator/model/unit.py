@@ -102,7 +102,7 @@ def top_rate(fig: Figures, direction: int) -> float:
 class UnitModel:
     """One room's unit: its lowest continuous rate."""
 
-    u_min: float | None = None  # cooling (and dry)
+    u_min: float | None = None  # cooling: dry's own rate is a share of it [D108]
     u_min_heat: float | None = None  # heating: its own curve, its own floor
     _run_rates: deque[float] = field(default_factory=lambda: deque(maxlen=int(UNIT_MIN_RATE_HOLD_MIN)))
     _run_lowest: deque[float] = field(default_factory=lambda: deque(maxlen=int(UNIT_MIN_RATE_HOLD_MIN)))
@@ -143,6 +143,13 @@ class UnitModel:
                     self.u_min_heat = held
                 else:
                     self.u_min = held
+
+    def break_run(self) -> None:
+        """A minute that is not a run of its own: the run in progress ends
+        without deciding U_min. A dry minute uses it, so dry's smaller
+        sensible rate is never learned as the cooling floor [D108]."""
+        self._run_rates.clear()
+        self._run_lowest.clear()
 
     def lowest_rate(self, fig: Figures, direction: int) -> float:
         """U_min, or the curve's rate at its first effort before it is

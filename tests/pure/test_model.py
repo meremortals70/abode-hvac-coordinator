@@ -250,7 +250,7 @@ class Filter(unittest.TestCase):
         self.assertEqual([f.p[i][i] for i in range(8)], [0.01, 4.0] + [1.0] * 6)
         self.assertEqual(f.p[physics.I_G0][physics.I_G0], 0.25)
         self.assertEqual(f.p[physics.I_COOL][physics.I_COOL], 0.5)
-        self.assertEqual(len(f.z), 28)
+        self.assertEqual(len(f.z), physics.STATE_SIZE)
         self.assertEqual((f.delay_min, f.lag_min), (6.0, 15.0))
         self.assertEqual((f.p[physics.I_LN_LAG][physics.I_LN_LAG], f.p[physics.I_DELAY][physics.I_DELAY]),
                          (1.0, 25.0))
@@ -524,21 +524,110 @@ class Filter(unittest.TestCase):
 
     def test_a_state_saved_before_the_opening_was_learned_is_carried_over(self) -> None:
         """A 27-number state keeps what the room taught: the vent figure is
-        appended at its starting value with its starting uncertainty
-        [D031][D105]."""
+        appended at its starting value with its starting uncertainty, and so
+        is dry's share after it [D031][D105][D108]."""
         f = self.ready()
         feed(f, [reading_sample(24.4)] * 5)
         old = f.as_dict()
-        old["z"] = old["z"][:-1]
-        old["p"] = [row[:-1] for row in old["p"][:-1]]
+        old["z"] = old["z"][:physics.I_LN_VENT]
+        old["p"] = [row[:physics.I_LN_VENT] for row in old["p"][:physics.I_LN_VENT]]
         g = filt.HeatFilter.from_dict(old)
         self.assertIsNotNone(g)
         self.assertEqual(len(g.z), physics.STATE_SIZE)
-        self.assertEqual(g.z[:-1], old["z"])
-        self.assertAlmostEqual(g.z[-1], filt.start_state(0.0)[physics.I_LN_VENT], places=12)
+        self.assertEqual(g.z[:physics.I_LN_VENT], old["z"])
+        start = filt.start_state(0.0)
+        self.assertAlmostEqual(g.z[physics.I_LN_VENT], start[physics.I_LN_VENT], places=12)
+        self.assertAlmostEqual(g.z[physics.I_LN_DRY], start[physics.I_LN_DRY], places=12)
         self.assertEqual(len(g.p), physics.STATE_SIZE)
+        self.assertGreater(g.p[physics.I_LN_VENT][physics.I_LN_VENT], 0.0)
+        self.assertGreater(g.p[-1][-1], 0.0)
+        self.assertTrue(all(row[-1] == 0.0 for row in g.p[:physics.I_LN_VENT]))
+
+    def test_a_state_saved_before_the_dry_share_was_learned_is_carried_over(self) -> None:
+        """A 28-number state from 0.10.8 keeps everything the room taught:
+        dry's share is appended at its starting value, so the figures, the
+        room and the mass are not relearned [D031][D108]."""
+        f = self.ready()
+        feed(f, [reading_sample(24.4)] * 5)
+        old = f.as_dict()
+        old["z"] = old["z"][:physics.I_LN_DRY]
+        old["p"] = [row[:physics.I_LN_DRY] for row in old["p"][:physics.I_LN_DRY]]
+        g = filt.HeatFilter.from_dict(old)
+        self.assertIsNotNone(g)
+        self.assertEqual(len(g.z), physics.STATE_SIZE)
+        self.assertEqual(g.z[:physics.I_LN_DRY], old["z"])
+        self.assertAlmostEqual(g.z[-1], filt.start_state(0.0)[physics.I_LN_DRY], places=12)
         self.assertGreater(g.p[-1][-1], 0.0)
         self.assertTrue(all(row[-1] == 0.0 for row in g.p[:-1]))
+
+
+class DryRemovesItsOwnShare(unittest.TestCase):
+    """Dry is a cooling mode that removes little of the heat cooling removes
+    [D108]. On the living room's night of 13-14 November 2026 the same
+    planned floor took the room down 1.21 C/h in cool and left it warming
+    0.65 C/h in dry, so dry is given its own share of the cooling curve
+    rather than the floor itself, and the cooling curve learns only from
+    cool minutes."""
+
+    def filter(self) -> Any:
+        f = filt.HeatFilter.start(24.0)
+        f.observe_reading(24.0)
+        f.observe_reading(24.2)
+        f.observe_reading(24.0)
+        f._history.extend([(0.0, 0)] * physics.HISTORY_MIN)  # the unit known to have rested
+        f._history_known.extend([True] * physics.HISTORY_MIN)
+        f._seen_minutes = 24 * 60
+        return f
+
+    def dry_sample(self, reading: float) -> Any:
+        return filt.MinuteSample(NOW, 12.0, 24.0, 60.0, 0.0, False, round(reading, 3), 50.0,
+                                 1.0, 1, 1, True, True, True)
+
+    def test_a_dry_minute_is_its_share_of_the_cooling_curve(self) -> None:
+        z = filt.start_state(25.0)
+        z[physics.I_LN_DRY] = math.log(0.1)
+        fig = physics.figures(z)
+        effs = filt.curve_efforts()
+        cool = physics.curve_rate(effs, fig.cool_steps, 1.0)
+        self.assertEqual(physics.unit_rate(fig, effs, 1.0, 1), cool)
+        self.assertAlmostEqual(physics.unit_rate(fig, effs, 1.0, 2), cool * 0.1)
+        self.assertEqual(physics.unit_rate(fig, effs, 1.0, 0), 0.0)
+
+    def test_a_dry_step_moves_the_room_less_than_a_cool_one(self) -> None:
+        z = filt.start_state(25.0)
+        z[physics.I_LN_DRY] = math.log(0.05)
+        hours = (12.0,) * 5
+        dry = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((1.0, 2),) * 40, 2.0, filt.curve_efforts()))
+        cool = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((1.0, 1),) * 40, 2.0, filt.curve_efforts()))
+        self.assertGreater(dry.z[physics.I_T], cool.z[physics.I_T])
+
+    def test_add_minute_records_dry_as_its_own_direction(self) -> None:
+        f = filt.HeatFilter.start(24.0)
+        f.add_minute(self.dry_sample(24.1))
+        self.assertEqual(f._history[-1][1], 2)
+        f.add_minute(dataclasses.replace(self.dry_sample(24.1), dry=False))
+        self.assertEqual(f._history[-1][1], 1)
+
+    def test_the_cooling_curve_learns_only_from_cool_minutes(self) -> None:
+        sample = filt.MinuteSample(NOW, 12.0, 24.0, 60.0, 0.0, False, 24.0, 50.0, 0.0, 0, 0, False, True, False)
+        dry = filt.acting([sample] * 5, [(1.0, 2)] + [(0.0, 0)] * 39)
+        self.assertTrue(dry[physics.I_LN_DRY])
+        self.assertFalse(dry[physics.I_COOL])
+        self.assertTrue(dry[physics.I_LN_LAG])  # the rate still came through the lag
+        cool = filt.acting([sample] * 5, [(1.0, 1)] + [(0.0, 0)] * 39)
+        self.assertTrue(cool[physics.I_COOL])
+        self.assertFalse(cool[physics.I_LN_DRY])
+
+    def test_a_room_that_warms_while_dry_runs_teaches_the_share_down(self) -> None:
+        f = self.filter()
+        before = f.z[physics.I_LN_DRY]
+        t = 24.0
+        for _ in range(12):  # an hour of dry, the room warming under it
+            t += 0.05
+            for _ in range(5):
+                f.add_minute(self.dry_sample(t))
+            self.assertIsNone(f.five_minutes(NOW).reason)
+        self.assertLess(f.z[physics.I_LN_DRY], before)
 
 
 class MinuteSampleTests(unittest.TestCase):

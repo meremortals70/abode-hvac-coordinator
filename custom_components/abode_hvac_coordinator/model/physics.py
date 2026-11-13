@@ -12,7 +12,8 @@ o is 1 while one of the room's openings is open and 0 while they are shut:
 a measured input, not a figure. v is the air the opening changes with
 outdoors, per hour, learned like a and k and acting only while o is 1
 [D105]. A closed room is left with a alone, the leakage and glass path it
-always had.
+always had. Dry runs at its own share of the cooling curve, a figure
+learned from the room's response to dry minutes [D108].
 """
 
 from __future__ import annotations
@@ -43,8 +44,9 @@ I_HEAT = 19  # rho_heat 1..6 at 19..24
 I_LN_LAG = 25  # the unit's lag, minutes, as a logarithm
 I_DELAY = 26  # the unit's delay, minutes
 I_LN_VENT = 27  # the opening's coupling to outdoors, as a logarithm [D105]
+I_LN_DRY = 28  # dry's sensible share of the cooling curve, as a logarithm [D108]
 CURVE_POINTS = 6
-STATE_SIZE = 28
+STATE_SIZE = 29
 
 MINUTE_H = 1.0 / 60.0
 STEP_H = 5.0 / 60.0
@@ -61,6 +63,7 @@ class Figures:
     s: float
     m: float
     vent: float  # the air an opening changes with outdoors, per hour [D105]
+    dry_share: float  # dry's sensible share of the cooling curve [D108]
     g0: float
     al1: float
     be1: float
@@ -84,7 +87,7 @@ class Figures:
 
 
 def figures(z: Sequence[float]) -> Figures:
-    """a b c k s m vent = e^(their logs); the heat pattern as it is."""
+    """a b c k s m vent dry = e^(their logs); the heat pattern as it is."""
     return Figures(
         a=math.exp(z[I_LN_A]),
         b=math.exp(z[I_LN_B]),
@@ -93,6 +96,7 @@ def figures(z: Sequence[float]) -> Figures:
         s=math.exp(z[I_LN_S]),
         m=math.exp(z[I_LN_M]),
         vent=math.exp(z[I_LN_VENT]),
+        dry_share=math.exp(z[I_LN_DRY]),
         g0=z[I_G0],
         al1=z[I_AL1],
         be1=z[I_BE1],
@@ -160,9 +164,11 @@ class StepInputs:
 
     outdoor and sun are the step's averages; hours gives the hour of day at
     the start of each of the five minutes. history holds the room's effort
-    and direction (+1 cooling, -1 heating, 0 resting) for each minute,
-    oldest first, the last five being this step's; u_start is the unit's
-    rate when the step began.
+    and direction (+1 cooling, +2 dry, -1 heating, 0 resting) for each
+    minute, oldest first, the last five being this step's; u_start is the
+    unit's rate when the step began. Dry is its own direction: it is a
+    cooling mode that removes little of the heat cooling does, and its
+    share of the cooling curve is a figure of the room [D108].
     """
 
     outdoor: float
@@ -185,9 +191,16 @@ class StepResult:
 
 
 def unit_rate(fig: Figures, curve_efforts: Sequence[float], effort: float, direction: int) -> float:
-    """r(effort) in the direction asked: positive cools, negative heats."""
+    """r(effort) in the direction asked: positive cools, negative heats.
+
+    A dry minute (direction 2) is a cooling minute at the dry share of the
+    cooling curve: on these units dry holds the compressor at its floor and
+    removes little of the heat cooling removes, so the share is learned from
+    the room's own response rather than assumed to be 1 [D108].
+    """
     if direction > 0:
-        return curve_rate(curve_efforts, fig.cool_steps, effort)
+        rate = curve_rate(curve_efforts, fig.cool_steps, effort)
+        return rate * fig.dry_share if direction == 2 else rate
     if direction < 0:
         return -curve_rate(curve_efforts, fig.heat_steps, effort)
     return 0.0

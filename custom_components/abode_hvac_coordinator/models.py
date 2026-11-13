@@ -514,6 +514,10 @@ class Plan:
     w: float
     c_start: float
     alternatives: tuple[tuple[PlanAction, str], ...] = ()
+    # why step 0 could not be each kind it was barred from, one line a kind:
+    # "the unit stopped less than its minimum rest ago" is the plan resting
+    # because it must, not because it chose to [D006][D016]
+    first_blocked: tuple[tuple[StepKind, str], ...] = ()
     # free cooling [D073][D105]: the plan with an opening open and the unit
     # resting, against this plan over the same window and by the same cost
     free_cooling_advised: bool = False

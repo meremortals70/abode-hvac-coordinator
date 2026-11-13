@@ -206,7 +206,7 @@ LOAD_WATCH_RECENT_S: Final = 60.0  # [Prop]
 # --------------------------------------------------------------------------
 # Model (Module 2, Section 4.2-4.3)
 # --------------------------------------------------------------------------
-FILTER_STATE_SIZE: Final = 28  # 25 [Prop], + delay and lag (27 October 2026), + vent [D105]
+FILTER_STATE_SIZE: Final = 29  # 25 [Prop], + delay and lag (27 October 2026), + vent [D105], + dry [D108]
 FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     "a": 0.2,
     "b": 0.2,
@@ -218,6 +218,12 @@ FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     # window in an ordinary room. It acts only while an opening is open, so a
     # room with no opening sensors keeps it at this start and never uses it.
     "vent": 3.0,
+    # dry's sensible share of the cooling curve [D108][NYE]: dry is a latent
+    # mode that removes little of the heat cooling removes. The living room's
+    # dry minutes of 13-14 November 2026 warmed the room 0.65 C/h while the
+    # floor cooled it 1.21, so it starts at a tenth and is learned from there:
+    # a unit whose dry does cool teaches it up.
+    "dry": 0.1,
 }
 FILTER_START_VAR_T: Final = 0.01  # [Prop]
 FILTER_START_VAR_M: Final = 4.0  # [Prop]

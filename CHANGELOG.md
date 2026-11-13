@@ -6,6 +6,48 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.9 - 2026-11-14
+
+### Fixed
+
+- **Dry is no longer forecast at the cooling floor.** On the living room's
+  night of 13-14 November the unit ran 206 minutes in dry and 364 in cool: at
+  the same planned rate the room **fell 1.21 °C/h in cool and rose 0.65 °C/h
+  in dry**. The plan believed dry cooled at the floor it is asked for, chose
+  dry at 00:45 with **0 minutes outside** forecast, and the room crossed its
+  band 5 minutes later and stayed above it for 19 minutes. Dry now runs at its
+  own learned share of the cooling curve, so the plan no longer rests on a
+  mode that does not cool [D108].
+- **The cooling curve no longer learns from dry minutes.** A dry minute was
+  presented to the heat filter as the unit cooling at the cooling curve's
+  rate, so the curve's floor — `U_min`, the rate the plan offers dry at — was
+  fitted to a mixture of minutes that cooled and minutes that did not. The
+  cooling curve moves only on cool minutes now, and a dry minute teaches dry's
+  share instead [D108].
+- **`empty_grace` is shown at night.** The mode sensor named an occupancy
+  grace only in an awake room, so a sleeping room whose presence read empty
+  showed `sleep` for the whole of its empty grace. On 13-14 November presence
+  read empty for 25 minutes inside the living room's 30-minute grace and the
+  sensor never said so. `occupied_grace` was never affected: a room that is
+  not occupied is shown as such by its band rule, asleep or not [D107].
+
+### Added
+
+- **The plan records why its first step could not be a kind it was barred
+  from.** A rest the unit forced — "the unit stopped less than its minimum
+  rest ago: 3 min left" — is now in the mode sensor's recorded decision,
+  beside a rest the plan chose, so a night can be read back without guessing.
+  On 13-14 November the plan rested at 02:15 and 04:25 with 45 and 50 minutes
+  forecast outside the band, and history could not say why [D006].
+
+### Changed
+
+- **The heat model has one more figure.** `dry_share` starts at 0.1, the share
+  measured on 13-14 November, and is learned from dry minutes; the saved state
+  goes from 28 numbers to 29. A state saved by 0.10.8 is carried over — the
+  new figure is appended at its starting value with its starting uncertainty,
+  so nothing the room taught is relearned [D031][D108].
+
 ## 0.10.8 - 2026-11-13
 
 ### Fixed

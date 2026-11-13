@@ -1,10 +1,11 @@
 """One Kalman filter learns the room (Section 4.3, model/filter.py) [R6][R16][Prop].
 
 Its state z is the room air, the building mass, every figure of the model
-and the unit's delay and lag, 27 numbers, with their 27 x 27 uncertainty P
+and the unit's delay and lag, 29 numbers, with their 29 x 29 uncertainty P
 (25 in the specification; delay and lag added by decision of 27 October
-2026). Every 5 minutes it
-predicts, then corrects from the room's reading. Nothing else is stored.
+2026, the opening's coupling by [D105] and dry's share by [D108]). Every
+5 minutes it predicts, then corrects from the room's reading. Nothing else
+is stored.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ from .physics import (
     I_LN_A,
     I_LN_B,
     I_LN_C,
+    I_LN_DRY,
     I_LN_K,
     I_LN_LAG,
     I_LN_M,
@@ -183,6 +185,7 @@ def start_state(t0: float) -> list[float]:
     z[I_LN_LAG] = math.log(FILTER_START_LAG_MIN)
     z[I_DELAY] = FILTER_START_DELAY_MIN
     z[I_LN_VENT] = math.log(FILTER_START_FIGURES["vent"])
+    z[I_LN_DRY] = math.log(FILTER_START_FIGURES["dry"])
     return z
 
 
@@ -218,7 +221,7 @@ def process_noise(compressor_ran: bool, unknown_t: float = 0.0, unknown_m: float
 
 
 _LOG_FIGURES = frozenset(
-    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, I_LN_VENT,
+    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, I_LN_VENT, I_LN_DRY,
      *range(I_COOL, I_COOL + CURVE_POINTS), *range(I_HEAT, I_HEAT + CURVE_POINTS))
 )
 
@@ -266,9 +269,12 @@ def unknown_input_variance(z: Sequence[float], minutes: Sequence[MinuteSample]) 
     if unknown:
         def most(m: MinuteSample) -> float:
             # a mode with a direction: the rate its effort asks; heat_cool or
-            # auto: either way, up to the larger curve's top
+            # auto: either way, up to the larger curve's top. A dry minute's
+            # most is its share of the cooling curve: it may have removed
+            # only that much [D108]
             if m.mode_direction > 0:
-                return curve_rate(curve_efforts(), fig.cool_steps, m.effort)
+                rate = curve_rate(curve_efforts(), fig.cool_steps, m.effort)
+                return rate * fig.dry_share if m.dry else rate
             if m.mode_direction < 0:
                 return abs(curve_rate(curve_efforts(), fig.heat_steps, m.effort))
             top = curve_efforts()[-1]
@@ -301,17 +307,22 @@ def acting(minutes: Sequence[MinuteSample], history: Sequence[tuple[float, int]]
     whose sun was never measured (0.1 to 87 per hour). The humidity filter
     learns the same way [D026][D060][R16]."""
     sun = any(m.sun > 0.0 for m in minutes)
-    cool = any(d > 0 for _, d in history)
+    # dry is its own direction in the history: its minutes teach dry's share,
+    # and the cooling curve learns only from cool ones, so a dry minute's
+    # absent cooling no longer pulls the cooling floor down [D108]
+    cool = any(d == 1 for _, d in history)
+    dry = any(d == 2 for _, d in history)
     heat = any(d < 0 for _, d in history)
     acts = [True] * STATE_SIZE
     acts[I_LN_S] = acts[I_LN_M] = sun
     # the opening's coupling is learned only from minutes an opening was
     # open: with it shut its column of the step is zero [D105]
     acts[I_LN_VENT] = any(m.opening > 0.0 for m in minutes)
+    acts[I_LN_DRY] = dry
     for j in range(CURVE_POINTS):
         acts[I_COOL + j] = cool
         acts[I_HEAT + j] = heat
-    acts[I_LN_LAG] = acts[I_DELAY] = cool or heat
+    acts[I_LN_LAG] = acts[I_DELAY] = cool or heat or dry
     return acts
 
 
@@ -364,10 +375,14 @@ class HeatFilter:
         self._last_reading = value
 
     def add_minute(self, sample: MinuteSample) -> None:
-        """Collect one minute towards the next step."""
+        """Collect one minute towards the next step.
+
+        The history records a dry minute as direction 2, its own way, so the
+        step knows to run it at dry's share of the cooling curve [D108]."""
         self.observe_reading(sample.reading)
         self._minutes.append(sample)
-        self._history.append((sample.effort, sample.direction))
+        direction = 2 if sample.dry and sample.direction > 0 else sample.direction
+        self._history.append((sample.effort, direction))
         self._history_known.append(sample.compressor_known)
         self._seen_minutes += 1
 
@@ -549,7 +564,7 @@ class HeatFilter:
             self.z[i] = min(max(self.z[i], FIGURE_LOG_RANGE[0]), FIGURE_LOG_RANGE[1])
 
     def as_dict(self) -> dict[str, Any]:
-        """What Memory keeps: 28 numbers, 28 x 28, q, R and v."""
+        """What Memory keeps: 29 numbers, 29 x 29, q, R and v."""
         return {
             "z": list(self.z),
             "p": [list(r) for r in self.p],
@@ -565,23 +580,25 @@ class HeatFilter:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> HeatFilter | None:
-        """Restore, or None if the state is not 28 finite numbers with a
-        finite 28 x 28 uncertainty: it is then relearned [D031].
+        """Restore, or None if the state is not 29 finite numbers with a
+        finite 29 x 29 uncertainty: it is then relearned [D031].
 
-        A state saved before the opening's coupling existed (27 numbers) is
-        carried over: the figure is appended at its starting value with its
-        starting uncertainty, so the rest of what the room taught is kept
-        [D105]."""
+        A state saved before a figure existed is carried over: each missing
+        figure is appended at its starting value with its starting
+        uncertainty, so the rest of what the room taught is kept. The
+        opening's coupling is 27 numbers [D105], dry's share 28 [D108]."""
         try:
             z = [float(x) for x in data["z"]]
             p = [[float(x) for x in r] for r in data["p"]]
         except (KeyError, TypeError, ValueError):
             return None
-        if len(z) == STATE_SIZE - 1 and len(p) == STATE_SIZE - 1 and all(
-            len(r) == STATE_SIZE - 1 for r in p
-        ):
-            n = STATE_SIZE - 1
-            z = [*z, math.log(FILTER_START_FIGURES["vent"])]
+        for index, name in ((I_LN_VENT, "vent"), (I_LN_DRY, "dry")):
+            if len(z) != index:
+                continue
+            if len(p) != index or any(len(r) != index for r in p):
+                return None
+            n = index
+            z = [*z, math.log(FILTER_START_FIGURES[name])]
             p = [[*row, 0.0] for row in p] + [[0.0] * n + [FILTER_START_VAR_LOG_FIGURE]]
         if len(z) != STATE_SIZE or len(p) != STATE_SIZE or any(len(r) != STATE_SIZE for r in p):
             return None

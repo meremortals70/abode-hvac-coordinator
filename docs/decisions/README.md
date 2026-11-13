@@ -112,3 +112,4 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D105](D105.md) | An opening is an input to the heat balance with a learned coupling; free cooling is the model's own counterfactual, with no hold and no at-once stop |
 | [D106](D106.md) | The plan starts its forecast from the room the band rule measures — the measured vapour pressure — not the moisture filter's own estimate |
 | [D107](D107.md) | The mode sensor says which grace the room is in (`occupied_grace`, `empty_grace`, `opening_grace`), not the old answer it is holding; the occupancy waits are renamed to match |
+| [D108](D108.md) | Dry is a cooling mode that removes little of the heat cooling removes: its sensible rate is its own learned share of the cooling curve, not the cooling floor |
