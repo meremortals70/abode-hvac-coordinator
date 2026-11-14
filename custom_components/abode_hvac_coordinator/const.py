@@ -206,7 +206,7 @@ LOAD_WATCH_RECENT_S: Final = 60.0  # [Prop]
 # --------------------------------------------------------------------------
 # Model (Module 2, Section 4.2-4.3)
 # --------------------------------------------------------------------------
-FILTER_STATE_SIZE: Final = 29  # 25 [Prop], + delay and lag (27 October 2026), + vent [D105], + dry [D108]
+FILTER_STATE_SIZE: Final = 34  # 25 [Prop], + delay and lag (27 Oct 2026), + vent [D105], + dry's curve [D109]
 FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     "a": 0.2,
     "b": 0.2,
@@ -218,13 +218,13 @@ FILTER_START_FIGURES: Final[dict[str, float]] = {  # [Prop][Sim]
     # window in an ordinary room. It acts only while an opening is open, so a
     # room with no opening sensors keeps it at this start and never uses it.
     "vent": 3.0,
-    # dry's sensible share of the cooling curve [D108][NYE]: dry is a latent
-    # mode that removes little of the heat cooling removes. The living room's
-    # dry minutes of 13-14 November 2026 warmed the room 0.65 C/h while the
-    # floor cooled it 1.21, so it starts at a tenth and is learned from there:
-    # a unit whose dry does cool teaches it up.
-    "dry": 0.1,
 }
+# dry's curve, per step, C/h [D109][NYE]: the office on 14 November 2026 ran
+# dry at an effort of 6-7 and took the room down 2.56 C/h where cooling would
+# have taken it ~7; at the floor it takes it nowhere (living room +0.65 C/h,
+# office +0.14). 0.4 a step starts dry at 0.4 C/h at the floor and 2.4 at the
+# top, and every dry minute teaches it.
+FILTER_START_DRY_CURVE_STEP: Final = 0.4
 FILTER_START_VAR_T: Final = 0.01  # [Prop]
 FILTER_START_VAR_M: Final = 4.0  # [Prop]
 FILTER_START_VAR_LOG_FIGURE: Final = 1.0  # [Prop]

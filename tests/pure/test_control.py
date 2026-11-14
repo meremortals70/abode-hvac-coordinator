@@ -29,12 +29,14 @@ FIVE = timedelta(minutes=5)
 E_ROOM = hci.vapour_pressure(24.0, 50.0)
 
 
-def heat(t0: float = 25.0, **figs: float) -> Any:
+def heat(t0: float = 25.0, dry: float | None = None, **figs: float) -> Any:
     f = filt.HeatFilter.start(t0)
     f.noise = 0.003
     for name, value in figs.items():
-        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7, "vent": physics.I_LN_VENT,
-             "dry": physics.I_LN_DRY}[name]] = math.log(value)
+        f.z[{"a": 2, "b": 3, "c": 4, "k": 5, "s": 6, "m": 7, "vent": physics.I_LN_VENT}[name]] = math.log(value)
+    if dry is not None:  # dry's curve, C/h a step [D109]
+        for j in range(physics.CURVE_POINTS):
+            f.z[physics.I_DRY + j] = math.log(dry)
     for i in range(2, physics.STATE_SIZE):  # a settled model
         f.p[i][i] = 1e-4
     f.p[0][0], f.p[1][1] = 0.001, 0.01
@@ -249,7 +251,8 @@ class DryIsPricedByTheMoistureModel(unittest.TestCase):
         hum = load("model.humidity").HumidityFilter.start(E_ROOM)
         acts = plan.candidate_actions(inputs(humidity=hum), 1.0)
         self.assertIn(SK.DRY, {a.kind for a in acts})
-        self.assertEqual([a.rate for a in acts if a.kind is SK.DRY], [1.0])  # at U_min
+        # dry's own curve: 0.4 C/h a step from the start, so 0.4 to 2.4 [D109]
+        self.assertEqual([round(a.rate, 3) for a in acts if a.kind is SK.DRY], [0.4, 0.8, 1.2, 1.6, 2.0, 2.4])
 
     def test_cooling_does_not_alternate_with_dry_while_running(self) -> None:
         """The living room on 10 November: inside its band, 55-59 % RH, and
@@ -268,28 +271,45 @@ class DryIsPricedByTheMoistureModel(unittest.TestCase):
                          [(a.kind.value, a.rate) for a in p.actions])
 
 
-class DryIsPricedAtItsShare(unittest.TestCase):
-    """Dry is offered at the cooling floor, which is the rate the unit is
-    asked for, but it removes only its learned share of what cooling removes
-    [D108]. On 13-14 November 2026 the living room warmed 0.65 C/h through
-    its dry minutes while the floor cooled it 1.21 C/h; the plan at 00:45
-    chose dry, forecast the room at 24.77 in half an hour, and the room went
-    to 25.58, above its band."""
+class DryHasItsOwnCurve(unittest.TestCase):
+    """Dry is a mode of its own with a curve of its own, and the plan asks
+    for the rate the room needs rather than always the floor [D109]. The
+    office on 14 November 2026: dry at the floor took the room nowhere
+    (living room +0.65 C/h, office +0.14) and dry at an effort of 6-7 took
+    it down 2.56 C/h. One rate could not say both; a curve can, and the
+    plan now offers dry from its first step to its top."""
 
-    def dry_plan(self, share: float) -> Any:
+    def dry_plan(self, step: float) -> Any:
         hum = load("model.humidity").HumidityFilter.start(E_ROOM)
         return plan.make_plan(inputs(
-            heat=heat(26.0, dry=share), humidity=hum, bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
+            heat=heat(26.0, dry=step), humidity=hum, bands=bands(23.0, 25.5), conditions=conds(outdoor=26.0),
             modes=frozenset({"dry", "fan_only"}),
             compressor_running=False, last_kind=SK.REST, stopped_since=NOW - timedelta(minutes=30),
         ))
 
-    def test_a_dry_step_cools_the_forecast_by_its_share(self) -> None:
-        full = self.dry_plan(1.0)
-        share = self.dry_plan(0.05)
-        self.assertIs(full.first.kind, SK.DRY)
-        self.assertIs(share.first.kind, SK.DRY)
-        self.assertGreater(share.points[-1].hci, full.points[-1].hci)
+    def test_a_steeper_dry_curve_cools_the_forecast_more(self) -> None:
+        gentle = self.dry_plan(0.4)
+        steep = self.dry_plan(1.2)
+        self.assertIs(gentle.first.kind, SK.DRY)
+        self.assertIs(steep.first.kind, SK.DRY)
+        self.assertGreater(gentle.points[-1].hci, steep.points[-1].hci)
+
+    def test_the_plan_asks_dry_for_more_than_its_first_step(self) -> None:
+        p = self.dry_plan(0.4)
+        asked = [a.rate for a in p.actions if a.kind is SK.DRY]
+        self.assertGreater(max(asked), 0.4, p.actions)
+
+    def test_a_power_ceiling_is_read_on_dry_effort_not_its_rate(self) -> None:
+        """A dry rate asks more effort than the same cooling rate, so the
+        ceiling set in cooling rates must be applied to that effort: dry can
+        never be given a ceiling it would exceed [D037][D109]."""
+        fig = physics.figures(heat(26.0, dry=0.4).z)
+        self.assertEqual([round(r, 3) for r in plan.dry_rates(fig, math.inf)], [0.4, 0.8, 1.2, 1.6, 2.0, 2.4])
+        # the ceiling is a cooling rate: 3.0 C/h is an effort of 1.5, and dry
+        # at that effort is 1.2 C/h, so dry above 1.2 asks more power than the
+        # ceiling allows
+        self.assertEqual([round(r, 3) for r in plan.dry_rates(fig, 3.0)], [0.4, 0.8, 1.2])
+        self.assertEqual(plan.dry_rates(fig, 0.9), [])  # below cooling's first point
 
 
 class ThePlanSaysWhyItCouldNotAct(unittest.TestCase):

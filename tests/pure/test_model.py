@@ -524,8 +524,8 @@ class Filter(unittest.TestCase):
 
     def test_a_state_saved_before_the_opening_was_learned_is_carried_over(self) -> None:
         """A 27-number state keeps what the room taught: the vent figure is
-        appended at its starting value with its starting uncertainty, and so
-        is dry's share after it [D031][D105][D108]."""
+        appended at its starting value with its starting uncertainty, and
+        dry's curve after it [D031][D105][D109]."""
         f = self.ready()
         feed(f, [reading_sample(24.4)] * 5)
         old = f.as_dict()
@@ -537,37 +537,57 @@ class Filter(unittest.TestCase):
         self.assertEqual(g.z[:physics.I_LN_VENT], old["z"])
         start = filt.start_state(0.0)
         self.assertAlmostEqual(g.z[physics.I_LN_VENT], start[physics.I_LN_VENT], places=12)
-        self.assertAlmostEqual(g.z[physics.I_LN_DRY], start[physics.I_LN_DRY], places=12)
+        for j in range(physics.CURVE_POINTS):
+            self.assertAlmostEqual(g.z[physics.I_DRY + j], start[physics.I_DRY + j], places=12)
         self.assertEqual(len(g.p), physics.STATE_SIZE)
         self.assertGreater(g.p[physics.I_LN_VENT][physics.I_LN_VENT], 0.0)
         self.assertGreater(g.p[-1][-1], 0.0)
         self.assertTrue(all(row[-1] == 0.0 for row in g.p[:physics.I_LN_VENT]))
 
-    def test_a_state_saved_before_the_dry_share_was_learned_is_carried_over(self) -> None:
+    def test_a_state_saved_before_dry_had_a_curve_is_carried_over(self) -> None:
         """A 28-number state from 0.10.8 keeps everything the room taught:
-        dry's share is appended at its starting value, so the figures, the
-        room and the mass are not relearned [D031][D108]."""
+        dry's curve is appended at its starting steps [D031][D109]."""
         f = self.ready()
         feed(f, [reading_sample(24.4)] * 5)
         old = f.as_dict()
-        old["z"] = old["z"][:physics.I_LN_DRY]
-        old["p"] = [row[:physics.I_LN_DRY] for row in old["p"][:physics.I_LN_DRY]]
+        old["z"] = old["z"][:physics.I_DRY]
+        old["p"] = [row[:physics.I_DRY] for row in old["p"][:physics.I_DRY]]
         g = filt.HeatFilter.from_dict(old)
         self.assertIsNotNone(g)
         self.assertEqual(len(g.z), physics.STATE_SIZE)
-        self.assertEqual(g.z[:physics.I_LN_DRY], old["z"])
-        self.assertAlmostEqual(g.z[-1], filt.start_state(0.0)[physics.I_LN_DRY], places=12)
-        self.assertGreater(g.p[-1][-1], 0.0)
-        self.assertTrue(all(row[-1] == 0.0 for row in g.p[:-1]))
+        self.assertEqual(g.z[:physics.I_DRY], old["z"])
+        for j in range(physics.CURVE_POINTS):
+            self.assertAlmostEqual(g.z[physics.I_DRY + j], filt.start_state(0.0)[physics.I_DRY + j], places=12)
+        for j in range(physics.CURVE_POINTS):
+            self.assertGreater(g.p[physics.I_DRY + j][physics.I_DRY + j], 0.0)
+
+    def test_a_state_saved_with_dry_single_share_is_carried_over(self) -> None:
+        """0.10.9 carried dry as one share, the state's last number. Dry's
+        curve replaces it: the share is dropped, the curve's starting steps
+        put in its place, and everything else the room taught is kept
+        [D031][D109]."""
+        f = self.ready()
+        feed(f, [reading_sample(24.4)] * 5)
+        old = f.as_dict()
+        old["z"] = old["z"][: physics.I_DRY + 1]
+        old["p"] = [row[: physics.I_DRY + 1] for row in old["p"][: physics.I_DRY + 1]]
+        g = filt.HeatFilter.from_dict(old)
+        self.assertIsNotNone(g)
+        self.assertEqual(len(g.z), physics.STATE_SIZE)
+        self.assertEqual(g.z[:physics.I_DRY], old["z"][:physics.I_DRY])  # the share is not kept
+        start = filt.start_state(0.0)
+        for j in range(physics.CURVE_POINTS):
+            self.assertAlmostEqual(g.z[physics.I_DRY + j], start[physics.I_DRY + j], places=12)
 
 
-class DryRemovesItsOwnShare(unittest.TestCase):
-    """Dry is a cooling mode that removes little of the heat cooling removes
-    [D108]. On the living room's night of 13-14 November 2026 the same
-    planned floor took the room down 1.21 C/h in cool and left it warming
-    0.65 C/h in dry, so dry is given its own share of the cooling curve
-    rather than the floor itself, and the cooling curve learns only from
-    cool minutes."""
+class DryHasItsOwnCurve(unittest.TestCase):
+    """Dry is a mode of its own, with a curve of its own [D109]. On the
+    office's trial of 14 November 2026 the unit ran dry at an effort of 6-7
+    and took the room down 2.56 C/h where cooling would have taken it ~7;
+    at the floor it took it nowhere (living room +0.65 C/h, office +0.14).
+    A morning of dry at the floor and an afternoon of dry at a hard setpoint
+    are two different rates, which one share of the cooling curve could not
+    say and a curve can."""
 
     def filter(self) -> Any:
         f = filt.HeatFilter.start(24.0)
@@ -579,26 +599,26 @@ class DryRemovesItsOwnShare(unittest.TestCase):
         f._seen_minutes = 24 * 60
         return f
 
-    def dry_sample(self, reading: float) -> Any:
+    def dry_sample(self, reading: float, effort: float = 1.0) -> Any:
         return filt.MinuteSample(NOW, 12.0, 24.0, 60.0, 0.0, False, round(reading, 3), 50.0,
-                                 1.0, 1, 1, True, True, True)
+                                 effort, 1, 1, True, True, True)
 
-    def test_a_dry_minute_is_its_share_of_the_cooling_curve(self) -> None:
-        z = filt.start_state(25.0)
-        z[physics.I_LN_DRY] = math.log(0.1)
-        fig = physics.figures(z)
+    def test_a_dry_minute_is_read_on_dry_curve(self) -> None:
+        fig = physics.figures(filt.start_state(25.0))
         effs = filt.curve_efforts()
-        cool = physics.curve_rate(effs, fig.cool_steps, 1.0)
-        self.assertEqual(physics.unit_rate(fig, effs, 1.0, 1), cool)
-        self.assertAlmostEqual(physics.unit_rate(fig, effs, 1.0, 2), cool * 0.1)
+        dry = physics.curve_values(fig.dry_steps)
+        cool = physics.curve_values(fig.cool_steps)
+        self.assertAlmostEqual(physics.unit_rate(fig, effs, 4.0, 2), dry[-1])
+        self.assertAlmostEqual(physics.unit_rate(fig, effs, 4.0, 1), cool[-1])
+        self.assertLess(dry[-1], cool[-1])  # a step asks less of dry than of cool
+        self.assertAlmostEqual(dry[-1], 2.4)  # 0.4 a step at the start [D109]
         self.assertEqual(physics.unit_rate(fig, effs, 1.0, 0), 0.0)
 
     def test_a_dry_step_moves_the_room_less_than_a_cool_one(self) -> None:
         z = filt.start_state(25.0)
-        z[physics.I_LN_DRY] = math.log(0.05)
         hours = (12.0,) * 5
-        dry = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((1.0, 2),) * 40, 2.0, filt.curve_efforts()))
-        cool = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((1.0, 1),) * 40, 2.0, filt.curve_efforts()))
+        dry = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((4.0, 2),) * 40, 4.0, filt.curve_efforts()))
+        cool = physics.step(z, physics.StepInputs(24.0, 0.0, hours, ((4.0, 1),) * 40, 4.0, filt.curve_efforts()))
         self.assertGreater(dry.z[physics.I_T], cool.z[physics.I_T])
 
     def test_add_minute_records_dry_as_its_own_direction(self) -> None:
@@ -610,24 +630,26 @@ class DryRemovesItsOwnShare(unittest.TestCase):
 
     def test_the_cooling_curve_learns_only_from_cool_minutes(self) -> None:
         sample = filt.MinuteSample(NOW, 12.0, 24.0, 60.0, 0.0, False, 24.0, 50.0, 0.0, 0, 0, False, True, False)
-        dry = filt.acting([sample] * 5, [(1.0, 2)] + [(0.0, 0)] * 39)
-        self.assertTrue(dry[physics.I_LN_DRY])
-        self.assertFalse(dry[physics.I_COOL])
-        self.assertTrue(dry[physics.I_LN_LAG])  # the rate still came through the lag
+        acts = filt.acting([sample] * 5, [(1.0, 2)] + [(0.0, 0)] * 39)
+        self.assertTrue(all(acts[physics.I_DRY + j] for j in range(physics.CURVE_POINTS)))
+        self.assertFalse(acts[physics.I_COOL])
+        self.assertTrue(acts[physics.I_LN_LAG])  # the rate still came through the lag
         cool = filt.acting([sample] * 5, [(1.0, 1)] + [(0.0, 0)] * 39)
         self.assertTrue(cool[physics.I_COOL])
-        self.assertFalse(cool[physics.I_LN_DRY])
+        self.assertFalse(any(cool[physics.I_DRY + j] for j in range(physics.CURVE_POINTS)))
 
-    def test_a_room_that_warms_while_dry_runs_teaches_the_share_down(self) -> None:
+    def test_a_room_that_cools_while_dry_runs_teaches_dry_up(self) -> None:
+        """The office on 14 November: 2.56 C/h through 80 minutes of dry. The
+        room's own response is what moves the curve."""
         f = self.filter()
-        before = f.z[physics.I_LN_DRY]
-        t = 24.0
-        for _ in range(12):  # an hour of dry, the room warming under it
-            t += 0.05
+        before = f.z[physics.I_DRY + physics.CURVE_POINTS - 1]
+        t = 25.0
+        for _ in range(12):  # an hour of dry at a hard setpoint
+            t -= 0.05
             for _ in range(5):
-                f.add_minute(self.dry_sample(t))
+                f.add_minute(self.dry_sample(t, effort=4.0))
             self.assertIsNone(f.five_minutes(NOW).reason)
-        self.assertLess(f.z[physics.I_LN_DRY], before)
+        self.assertGreater(f.z[physics.I_DRY + physics.CURVE_POINTS - 1], before)
 
 
 class MinuteSampleTests(unittest.TestCase):

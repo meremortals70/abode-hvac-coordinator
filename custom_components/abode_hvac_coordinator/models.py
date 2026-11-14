@@ -362,6 +362,9 @@ class ModelAnswers:
     top_cool: float | None = None
     top_heat: float | None = None
     last_correction: datetime | None = None
+    # each curve's rates, C/h, by the effort it is asked at: what the plan
+    # and the power budget read a rate from [D109]
+    curves: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

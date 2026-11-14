@@ -184,12 +184,12 @@ Treating unknown figures as part of a Kalman filter's state is the extended Kalm
 **The state** [Prop]:
 
 ```latex
-z = \bigl(T,\; M,\; \ln a,\ln b,\ln c,\ln k,\ln s,\ln m,\; g_0,\alpha_1,\beta_1,\alpha_2,\beta_2,\; \rho^{cool}_{1..6},\; \rho^{heat}_{1..6},\; \ln\tau,\; \theta,\; \ln v,\; \ln d\bigr)
+z = \bigl(T,\; M,\; \ln a,\ln b,\ln c,\ln k,\ln s,\ln m,\; g_0,\alpha_1,\beta_1,\alpha_2,\beta_2,\; \rho^{cool}_{1..6},\; \rho^{heat}_{1..6},\; \ln\tau,\; \theta,\; \ln v,\; \rho^{dry}_{1..6}\bigr)
 ```
 
-- 29 numbers. The positive figures are carried as logarithms, so none can go below zero; g₀ and the wave weights may take either sign [Der]. The opening's coupling v is 28th [D105]; dry's share of the cooling curve, d, is 29th [D108].
+- 34 numbers. The positive figures are carried as logarithms, so none can go below zero; g₀ and the wave weights may take either sign [Der]. The opening's coupling v is 28th [D105]; dry's curve, six steps like cool's and heat's, is 29th to 34th [D109].
 - **The unit's delay θ and lag τ** are the last two states, τ as its logarithm and held between 1 and 30 minutes, θ held between 0 and 30 minutes, both in the state itself after every correction. A unit's start-up response is measured at 0.3 to 2 minutes [R19]; a lag above 30 minutes is not the unit's, and the PID's derivative time is the lag (4.5). A stored state whose lag is outside the range was learned by a filter that could diverge, and is refused at start-up with its trust; the room is seeded again from history [R19]. The delayed rate is taken in proportion between the two recorded minutes either side, so θ is learned as a smooth number. They start at θ = 6 and τ = 15 minutes, with uncertainty 25 min² for θ and 1 for ln τ, and noise per step of 10⁻³ min² and 10⁻⁵ [Prop][NYE]. A separate fit after each start, stop or setpoint change was tried and could not recover them at the sensor's 0.2 °C steps: it found 11 and 1 minutes against a true 6 and 15. The filter found 8–10 and 9–12, their total 19–20 against a true 21 [Sim].
-- The unit's curve is carried as its six steps in each direction, so it always rises with effort (4.2) [Der].
+- The unit's curve is carried as its six steps in each direction, so it always rises with effort (4.2) [Der]. Dry has a curve of its own, six steps learned from the minutes the unit ran dry [D109].
 
 **Every 5 minutes: predict** [R6][Prop]:
 
@@ -733,14 +733,15 @@ EXACT MATRICES, for a minute (STEP) and 5 minutes (plans and forecasts):        
 ```text
 FILE model/filter.py — one Kalman filter learns the room              [R6][R16][Prop]
 
-STATE z, 29 numbers: T, M, ln a, ln b, ln c, ln k, ln s, ln m,
+STATE z, 34 numbers: T, M, ln a, ln b, ln c, ln k, ln s, ln m,
   g0, al1, be1, al2, be2, rho_cool 1..6, rho_heat 1..6, ln lag, delay,
-  ln vent [D105], ln dry [D108]
-UNCERTAINTY P, 29 x 29
+  ln vent [D105], rho_dry 1..6 [D109]
+UNCERTAINTY P, 34 x 34
 
 DESIGN VALUES                                                         [Prop]
   starting figures ...... a 0.2, b 0.2, c 0.3, k 0.1, s 0.4, m 0.1,
-                          heat pattern 0 [Sim]; curve steps ln 1  [NYE]
+                          heat pattern 0 [Sim]; curve steps ln 1  [NYE];
+                          dry's curve steps 0.4 C/h a step       [D109]
                           delay 6 min, lag 15 min                  [NYE]
   starting uncertainty .. T 0.01; M 4; each log figure 1; heat
                           pattern 0.25 each [Sim]; curve steps 0.5 [NYE]
@@ -829,7 +830,7 @@ WHEN a head has run 30 minutes or more without the compressor stopping,
      an effort asked in every minute of it:                         [D100]
   U_min for that direction (cooling, or heating) = the run's
   average rate, up or down; a change of direction, or a dry run, starts
-  a new run: dry has no floor of its own, only its share [D108]
+  a new run: dry has no floor of its own, only its curve [D109]
   lowest rate offered = the larger of U_min and the curve's first point
   (until then, the curve's first point)
 
@@ -1192,7 +1193,8 @@ DESIGN VALUES
 
 EVERY 5 MINUTES, per room, unless Comfort said OFF:
   ACTIONS for one step, only those the unit advertised [D024]:
-      REST (fan); DRY; COOL at each curve rate from U_min to the top;
+      REST (fan); DRY at each rate on dry's curve; COOL at each curve
+      rate from U_min to the top;
       HEAT at each curve rate from U_min to the top; and, where blind
       control is allowed, in a step with the sun on the glass at any of
       its points, each of these with the blinds closed and with them
@@ -1379,8 +1381,8 @@ EVERY CYCLE, per room, given the action, the rate u and the plan's blinds:
 
   REST:   compressor off; unit on fan-only at its quietest fan speed
           a unit with no fan-only mode: OFF; RECORD it              [D057]
-  DRY:    mode dry, with the setpoint COOL would have at U_min
-                                                              [D078][Prop]
+  DRY:    mode dry, with the setpoint that asks for the rate chosen,
+          read backwards on dry's curve                        [D078][D109]
   COOL or HEAT at rate |u|:
           setpoint = model SETPOINT FOR A RATE (|u|)          [Prop][D095]
           a unit that takes only a range: setpoint -1.0 to +1.0 C   [D024]
@@ -1719,7 +1721,7 @@ WHERE: Home Assistant storage, one file with a version number:      [Prop]
        was learned from them                                         [Prop]
 
 KEPT, per room:
-  the heat filter: its 29 numbers and 29 x 29 uncertainty; the sensor
+  the heat filter: its 34 numbers and 34 x 34 uncertainty; the sensor
   step q; its learned noise R and the running average v             [Prop]
   the moisture filter: its state and uncertainty                     [Prop]
   the unit: U_min, draw by effort per outdoor

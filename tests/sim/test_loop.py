@@ -73,7 +73,10 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
                             top=top, delivered=True)
             if res.kind in (models.StepKind.COOL, models.StepKind.HEAT, models.StepKind.DRY):
                 sim.command_direction = 1 if res.rate >= 0 else -1
-                sim.command_effort = unit.effort_for_rate(fig, res.rate)
+                sim.command_kind = res.kind.value  # the plant knows dry from cool [D109]
+                # a dry rate is read on dry's own curve, as delivery does [D109]
+                sim.command_effort = unit.effort_for_rate(
+                    fig, res.rate, dry=res.kind is models.StepKind.DRY)
             else:
                 sim.command_direction, sim.command_effort = 0, 0.0
         now_running = sim.command_direction != 0

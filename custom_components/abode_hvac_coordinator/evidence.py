@@ -160,6 +160,9 @@ def trace(
         "room": _r(answers.t),
         "mass": _r(answers.mass),
         "figures": {k: round(v, 4) for k, v in answers.figures.items()},
+        # each curve's rates against the effort that asks for them: what the
+        # plan reads a dry step's rate on [D109]
+        "curves": {k: [round(x, 2) for x in v] for k, v in answers.curves.items()},
         "uncertainty": {k: round(v, 4) for k, v in answers.uncertainty.items()},
         "sensor_noise": _r(answers.sensor_noise, 3),
         "one_hour_error": _r(answers.one_hour_error, 3),

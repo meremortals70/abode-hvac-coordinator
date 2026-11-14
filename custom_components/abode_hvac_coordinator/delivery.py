@@ -134,7 +134,6 @@ class RoomDelivery:
         comfort: ComfortResult,
         choices: RoomChoices,
         heat: HeatFilter | None,
-        u_min: float,
         free_cooling: tuple[bool, str | None] = (False, None),
     ) -> DeliveryResult:
         """EVERY CYCLE, per room, given the action, the rate u and the
@@ -171,7 +170,7 @@ class RoomDelivery:
         heads: list[HeadCommand] = []
         sent: list[float] = []
         for head in snapshot.heads:
-            cmd = self._head(kind, control.rate, head, profile, choices, heat, u_min, now, reasons)
+            cmd = self._head(kind, control.rate, head, profile, choices, heat, now, reasons)
             if cmd is None:
                 return DeliveryResult(StepKind.NONE, control.rate, (), blinds, left_alone, False, None, False,
                                       tuple(reasons), rest)
@@ -224,7 +223,6 @@ class RoomDelivery:
         profile: CapabilityProfile,
         choices: RoomChoices,
         heat: HeatFilter | None,
-        u_min: float,
         now: datetime,
         reasons: list[str],
     ) -> HeadCommand | None:
@@ -245,15 +243,14 @@ class RoomDelivery:
         if not head.available or head.own_temperature is None:
             reasons.append(f"{head.climate}: its own reading is missing, so no setpoint can be worked out.")
             return None
-        # positive cools, negative heats; DRY is sent with the setpoint COOL
-        # would have at U_min [D078][Prop]
+        # positive cools, negative heats; DRY is sent with the setpoint that
+        # asks for its own rate on dry's curve [D078][D109]
         if kind is StepKind.DRY:
-            asked = abs(u_min)
+            wanted = setpoint_for_rate(heat, head.own_temperature, abs(rate), dry=True)
         elif kind is StepKind.COOL:
-            asked = abs(rate)
+            wanted = setpoint_for_rate(heat, head.own_temperature, abs(rate))
         else:
-            asked = -abs(rate)
-        wanted = setpoint_for_rate(heat, head.own_temperature, asked)  # [Prop][D095]
+            wanted = setpoint_for_rate(heat, head.own_temperature, -abs(rate))
         wanted = min(max(wanted, profile.min_setpoint), profile.max_setpoint)  # [D051]
         value = self._stepped(head.climate, wanted, profile, now)
         if profile.range_only:

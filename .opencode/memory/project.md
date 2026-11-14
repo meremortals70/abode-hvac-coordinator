@@ -12,39 +12,47 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 
 Verified 12 Nov 2026 by running it for the night of 11–12 Nov.
 
-**The script that runs lives on the HA host**, not on Windows:
-`/config/export_night.sh`. The Windows copy in this repo
-(`tools\export_night.sh`) is an archived copy only — `tools/` is git-ignored.
+`/config/export_window.sh` (archive copy: `tools\export_window.sh`) exports any
+room over any window. Arguments: room substring, output tag, start UTC, end UTC,
+and a label for the summary:
+
+```sh
+sh /config/export_window.sh living_room living_2026-11-13 '2026-11-12 11:00:00' '2026-11-12 22:00:00' '21:00 Thu -> 08:00 Fri'
+```
+
+It writes `abode_<tag>.csv`, `abode_<tag>_summary.txt` and `abode_<tag>.tar.gz`
+and prints `OK: upload <path>`. `/config/export_night.sh` is the older
+living-room-only script, still on the host.
+
+**The script that runs lives on the HA host**, not on Windows; the copies in
+this repo are archives only — `tools/` is git-ignored.
 
 Run it in the HA SSH add-on (Advanced SSH & Web Terminal). It needs `sqlite3`
 (`apk add sqlite` if missing) and reads `/homeassistant/home-assistant_v2.db`
 (the script's `CFG` falls back to `/config` when `/homeassistant` is absent).
 
-The window is **hardcoded in UTC**. Brisbane is +10 with no daylight saving, so
-local 21:00 → 08:00 is UTC 11:00 → 22:00 of the same calendar day:
+Windows are **in UTC** on the command line. Brisbane is +10 with no daylight
+saving, so local 21:00 → 08:00 is UTC 11:00 → 22:00 of the same calendar day.
 
-```sh
-sed -i "s/^START=.*/START='2026-11-11 11:00:00'   # 21:00 Wed 11 Nov local (UTC)/; s/^END=.*/END='2026-11-11 22:00:00'     # 08:00 Thu 12 Nov local (UTC)/" /config/export_night.sh
-sh /config/export_night.sh
-```
-
-Success prints `OK: upload /homeassistant/abode_night.tar.gz (132.0K)`. Upload
+Success prints `OK: upload /homeassistant/abode_<tag>.tar.gz (132.0K)`. Upload
 that tarball to `C:\Users\jason\Nextcloud\abode-hvac-coordinator\tools\` and
-extract it; it contains `abode_night.csv` and `abode_night_summary.txt`.
+extract it.
 
-### Gotchas (all hit on 12 Nov 2026)
+### Gotchas
 
+- **A pasted script arrives with CRLF and will not parse.** Run
+  `sed -i 's/\r$//' /config/export_window.sh` before the first use, then
+  `sh -n` it. A bare `{\r` is not the reserved word, so the group's closing `}`
+  is reported as `syntax error: unexpected "}"` — 13 Nov 2026.
 - The tarball lands in `/homeassistant`, not `/config`, whenever that directory
   exists. Take the path from the `OK:` line, not from the script's variables.
 - The summary's `window local:` line is a hardcoded `echo` and keeps the old
   date. It is **not** evidence of the exported window — check the first
-  `local_time` in `abode_night.csv` instead.
+  `local_time` in the csv instead.
 - `abode_night.csv` begins with a stray `10000` line (sqlite3 echoing
   `.timeout 10000`). Skip it before parsing: `next(f)` before `csv.DictReader`,
   or `Get-Content | Select-Object -Skip 1` in PowerShell. `Import-Csv` alone
   reads that line as the header and returns empty fields.
-- Update `START`/`END` in the local `tools\export_night.sh` too, so the archive
-  copy stays in step with what runs on HA.
 - `tools\ha_history_dump.py` exists but is not the nightly workflow.
 
 ### Review metrics

@@ -6,6 +6,35 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.10 - 2026-11-14
+
+### Changed
+
+- **Dry runs on a curve of its own, and the plan chooses its rate [D109].**
+  0.10.9 priced dry as a share of the cooling floor. The office's trial of
+  14 November showed that is right only at the floor: with the unit in dry at
+  a setpoint of 18 the room fell **2.56 °C/h** (63 % → 43 % RH, the house load
+  up 1.5–2 kW), while at the floor the same room gained 0.14 °C/h and the
+  living room 0.65. Dry now has six figures of its own, learned from the
+  minutes it runs, and the plan offers it at rates from its first step to its
+  top, so the optimiser can choose a dry that cools and dries rather than a
+  dry that does nothing. This supersedes 0.10.9's single share [D108].
+- **Dry is asked for the rate chosen, not always the floor.** `delivery` sends
+  the setpoint that asks for the plan's dry rate, read backwards on dry's
+  curve. Before this every dry run was asked at the cooling floor however
+  little it did [D078][D109].
+- **A power ceiling is applied to the effort a dry rate asks.** Dry asks more
+  effort than the same cooling rate, so a dry step is offered only where the
+  cooling that effort would buy still fits under the ceiling, and its draw is
+  read at that rate. The demand forecast prices each action the same way
+  [D028][D037][D109].
+- **The model's curves are now published.** The mode sensor's `model`
+  attribute carries `cool`, `heat` and `dry` with the efforts they are read
+  against, so what dry is learning can be seen without the raw state [D006].
+- **The saved state grows from 29 numbers to 34.** A save from 0.10.9 drops
+  its single dry share and appends dry's curve; one from 0.10.8 or earlier
+  appends the curve alone. Nothing else the room taught is relearned [D031].
+
 ## 0.10.9 - 2026-11-14
 
 ### Fixed

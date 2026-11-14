@@ -78,14 +78,14 @@ def comf(off: bool = False, occupied: bool = True) -> Any:
 
 
 def go(control: Any, *, rd: Any = None, s: Any = None, c: Any = None, vanes: bool = False,
-       heat: Any = "default", u_min: float = 1.0, now: datetime = T0,
+       heat: Any = "default", now: datetime = T0,
        free_cooling: tuple[bool, str | None] = (False, None)) -> Any:
     rd = rd or delivery.RoomDelivery(room())
     hf = filt.HeatFilter.start(25.0) if heat == "default" else heat
     # the starting curve: every step ln 1, so the rate at efforts
     # 0.5, 1, 1.5, 2, 3, 4 C is 1, 2, 3, 4, 5, 6 C/h
     return rd.deliver(now=now, control=control, snapshot=s or snap(), comfort=c or comf(),
-                      choices=models.RoomChoices(automatic_vane_control=vanes), heat=hf, u_min=u_min,
+                      choices=models.RoomChoices(automatic_vane_control=vanes), heat=hf,
                       free_cooling=free_cooling)
 
 
@@ -121,9 +121,15 @@ class RateToSetpoint(unittest.TestCase):
         # 2.5 C/h lies halfway between efforts 1 and 1.5 C
         self.assertAlmostEqual(go(ctl(SK.COOL, 2.5)).heads[0].setpoint, 23.8)
 
-    def test_dry_has_the_setpoint_cool_would_have_at_u_min(self) -> None:
-        h = go(ctl(SK.DRY, 0.0), u_min=2.0).heads[0]
-        self.assertEqual((h.mode, h.setpoint), ("dry", 24.0))  # [D078]
+    def test_dry_has_the_setpoint_for_its_own_rate(self) -> None:
+        """Dry is sent with the setpoint that asks for the rate the plan
+        chose, read on dry's curve, not on cooling's: at the start dry's
+        curve is 0.4 C/h a step, so 2.4 C/h is the top effort of 4 C [D078]
+        [D109]."""
+        h = go(ctl(SK.DRY, 2.4)).heads[0]
+        self.assertEqual((h.mode, h.setpoint), ("dry", 21.0))
+        h = go(ctl(SK.DRY, 0.4)).heads[0]  # dry's first step, effort 0.5
+        self.assertEqual((h.mode, h.setpoint), ("dry", 24.5))
 
     def test_beyond_the_curve_asks_for_the_top(self) -> None:
         h = go(ctl(SK.COOL, 50.0), s=snap((head(own=26.0),))).heads[0]

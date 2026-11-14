@@ -50,11 +50,13 @@ class SimRoom:
     _cloud: float = 1.0
     _cmd: deque[bool] = field(default_factory=lambda: deque([False] * 6, maxlen=6))
     # external control: the effort the unit is asked for (C of its reading
-    # against its setpoint), its direction (+1 cool, -1 heat, 0 rest); the
-    # true unit delivers 2 C/h per C of effort, from 1 C/h up to 6 C/h
+    # against its setpoint), its direction (+1 cool, -1 heat, 0 rest) and its
+    # kind; the true unit delivers 2 C/h per C of effort, from 1 C/h up to
+    # 6 C/h, and in dry 0.4 of that [D109]
     external: bool = False
     command_effort: float = 0.0
     command_direction: int = 0
+    command_kind: str = "cool"  # cool, heat or dry
     _ext: deque[float] = field(default_factory=lambda: deque([0.0] * 6, maxlen=6))
 
     def __post_init__(self) -> None:
@@ -85,8 +87,11 @@ class SimRoom:
             self._cloud = self.rng.uniform(0.3, 1.0)
         if self.external:
             self.running = self.command_direction != 0
-            # the true unit: 2 C/h per C of effort, at least 1 C/h while it runs, at most 6
-            rate = min(max(2.0 * max(self.command_effort, 0.0), 1.0), 6.0) if self.command_direction else 0.0
+            # the true unit: 2 C/h per C of effort, at least 1 C/h while it
+            # runs, at most 6; dry is 0.4 of that, as the office measured on
+            # 14 November 2026 (2.56 C/h at an effort of 6-7) [D109]
+            share = 0.4 if self.command_kind == "dry" else 1.0
+            rate = min(max(2.0 * max(self.command_effort, 0.0), 1.0), 6.0) * share if self.command_direction else 0.0
             self._ext.append(self.command_direction * rate)
             target = self._ext[0]  # 6-minute delay
             self._cmd.append(self.running)
@@ -112,7 +117,7 @@ class SimRoom:
 
     def snapshot(self) -> Any:
         if self.external:
-            mode = {1: "cool", -1: "heat"}.get(self.command_direction, "fan_only")
+            mode = {1: self.command_kind, -1: "heat"}.get(self.command_direction, "fan_only")
             own = self.t
             setpoint = own - self.command_direction * self.command_effort if self.command_direction else None
         else:

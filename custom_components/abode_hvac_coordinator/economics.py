@@ -34,6 +34,7 @@ from .const import (
 )
 from .models import (
     Plan,
+    PlanAction,
     PowerManagement,
     RoomEconomics,
     RoomPower,
@@ -715,14 +716,14 @@ _RUNS = frozenset({StepKind.COOL, StepKind.HEAT, StepKind.DRY})
 
 
 def forecast_to_change(
-    plans: Sequence[tuple[Plan, Callable[[float], float | None]]],
+    plans: Sequence[tuple[Plan, Callable[[PlanAction], float | None]]],
     intervals: Sequence[TariffInterval],
     now: datetime,
 ) -> DemandForecast | None:
     """The energy each room's plan in force will use from now until the
     next tariff change, or the plans' end where that comes first (decision
     of 29 October 2026) [D005][Prop]. plans pairs each plan with its room's
-    learned draw at a rate; a draw not yet learned is priced as the plan
+    learned draw at an action; a draw not yet learned is priced as the plan
     prices it [D028]. None without a plan."""
     if not plans:
         return None
@@ -740,7 +741,7 @@ def forecast_to_change(
             end = min(plan.made_at + (j + 1) * step, until)
             if end <= start:
                 continue
-            kw = draw(action.rate)  # its sign picks the heating or cooling curve [D028]
+            kw = draw(action)  # the action's kind picks the curve its rate is read on [D028][D109]
             if kw is None:
                 kw = DRAW_WITHOUT_LOAD_SENSOR_KW
             steps.append((start, end, kw * (end - start).total_seconds() / 3600.0))

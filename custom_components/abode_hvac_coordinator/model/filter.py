@@ -1,9 +1,9 @@
 """One Kalman filter learns the room (Section 4.3, model/filter.py) [R6][R16][Prop].
 
 Its state z is the room air, the building mass, every figure of the model
-and the unit's delay and lag, 29 numbers, with their 29 x 29 uncertainty P
+and the unit's delay and lag, 34 numbers, with their 34 x 34 uncertainty P
 (25 in the specification; delay and lag added by decision of 27 October
-2026, the opening's coupling by [D105] and dry's share by [D108]). Every
+2026, the opening's coupling by [D105] and dry's curve by [D109]). Every
 5 minutes it predicts, then corrects from the room's reading. Nothing else
 is stored.
 """
@@ -29,6 +29,7 @@ from ..const import (
     FILTER_RUNNING_RATE_NOISE_C_PER_H,
     FILTER_START_CURVE_STEP_LOG,
     FILTER_START_DELAY_MIN,
+    FILTER_START_DRY_CURVE_STEP,
     FILTER_START_FIGURES,
     FILTER_START_LAG_MIN,
     FILTER_START_VAR_CURVE_STEP,
@@ -61,12 +62,12 @@ from .physics import (
     HISTORY_MIN,
     I_COOL,
     I_DELAY,
+    I_DRY,
     I_G0,
     I_HEAT,
     I_LN_A,
     I_LN_B,
     I_LN_C,
-    I_LN_DRY,
     I_LN_K,
     I_LN_LAG,
     I_LN_M,
@@ -185,7 +186,8 @@ def start_state(t0: float) -> list[float]:
     z[I_LN_LAG] = math.log(FILTER_START_LAG_MIN)
     z[I_DELAY] = FILTER_START_DELAY_MIN
     z[I_LN_VENT] = math.log(FILTER_START_FIGURES["vent"])
-    z[I_LN_DRY] = math.log(FILTER_START_FIGURES["dry"])
+    for j in range(CURVE_POINTS):
+        z[I_DRY + j] = math.log(FILTER_START_DRY_CURVE_STEP)
     return z
 
 
@@ -195,7 +197,7 @@ def start_uncertainty() -> Matrix:
     d[I_T] = FILTER_START_VAR_T
     d[I_M] = FILTER_START_VAR_M
     for i in range(CURVE_POINTS):
-        d[I_COOL + i] = d[I_HEAT + i] = FILTER_START_VAR_CURVE_STEP
+        d[I_COOL + i] = d[I_HEAT + i] = d[I_DRY + i] = FILTER_START_VAR_CURVE_STEP
     for i in range(I_G0, I_G0 + HEAT_PATTERN_HARMONICS * 2 + 1):
         d[i] = FILTER_START_VAR_HEAT_PATTERN
     d[I_LN_LAG] = FILTER_START_VAR_LN_LAG
@@ -221,8 +223,9 @@ def process_noise(compressor_ran: bool, unknown_t: float = 0.0, unknown_m: float
 
 
 _LOG_FIGURES = frozenset(
-    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, I_LN_VENT, I_LN_DRY,
-     *range(I_COOL, I_COOL + CURVE_POINTS), *range(I_HEAT, I_HEAT + CURVE_POINTS))
+    (I_LN_A, I_LN_B, I_LN_C, I_LN_K, I_LN_S, I_LN_M, I_LN_VENT,
+     *range(I_COOL, I_COOL + CURVE_POINTS), *range(I_HEAT, I_HEAT + CURVE_POINTS),
+     *range(I_DRY, I_DRY + CURVE_POINTS))
 )
 
 
@@ -273,8 +276,8 @@ def unknown_input_variance(z: Sequence[float], minutes: Sequence[MinuteSample]) 
             # most is its share of the cooling curve: it may have removed
             # only that much [D108]
             if m.mode_direction > 0:
-                rate = curve_rate(curve_efforts(), fig.cool_steps, m.effort)
-                return rate * fig.dry_share if m.dry else rate
+                steps = fig.dry_steps if m.dry else fig.cool_steps
+                return curve_rate(curve_efforts(), steps, m.effort)
             if m.mode_direction < 0:
                 return abs(curve_rate(curve_efforts(), fig.heat_steps, m.effort))
             top = curve_efforts()[-1]
@@ -318,7 +321,8 @@ def acting(minutes: Sequence[MinuteSample], history: Sequence[tuple[float, int]]
     # the opening's coupling is learned only from minutes an opening was
     # open: with it shut its column of the step is zero [D105]
     acts[I_LN_VENT] = any(m.opening > 0.0 for m in minutes)
-    acts[I_LN_DRY] = dry
+    for j in range(CURVE_POINTS):
+        acts[I_DRY + j] = dry
     for j in range(CURVE_POINTS):
         acts[I_COOL + j] = cool
         acts[I_HEAT + j] = heat
@@ -580,26 +584,37 @@ class HeatFilter:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> HeatFilter | None:
-        """Restore, or None if the state is not 29 finite numbers with a
-        finite 29 x 29 uncertainty: it is then relearned [D031].
+        """Restore, or None if the state is not 34 finite numbers with a
+        finite 34 x 34 uncertainty: it is then relearned [D031].
 
         A state saved before a figure existed is carried over: each missing
         figure is appended at its starting value with its starting
         uncertainty, so the rest of what the room taught is kept. The
-        opening's coupling is 27 numbers [D105], dry's share 28 [D108]."""
+        opening's coupling is 27 numbers [D105]; 0.10.9's state is 29, its
+        last figure dry's single share, which dry's curve replaces [D109]."""
         try:
             z = [float(x) for x in data["z"]]
             p = [[float(x) for x in r] for r in data["p"]]
         except (KeyError, TypeError, ValueError):
             return None
-        for index, name in ((I_LN_VENT, "vent"), (I_LN_DRY, "dry")):
-            if len(z) != index:
-                continue
-            if len(p) != index or any(len(r) != index for r in p):
-                return None
-            n = index
-            z = [*z, math.log(FILTER_START_FIGURES[name])]
-            p = [[*row, 0.0] for row in p] + [[0.0] * n + [FILTER_START_VAR_LOG_FIGURE]]
+        if len(z) == I_LN_VENT and len(p) == I_LN_VENT and all(len(r) == I_LN_VENT for r in p):
+            # before the opening's coupling: one figure, one variance [D105]
+            z = [*z, math.log(FILTER_START_FIGURES["vent"])]
+            p = [[*row, 0.0] for row in p] + [[0.0] * I_LN_VENT + [FILTER_START_VAR_LOG_FIGURE]]
+        if len(z) == I_DRY + 1 and len(p) == I_DRY + 1 and all(len(r) == I_DRY + 1 for r in p):
+            # 0.10.9 carried dry's share where its curve now begins: the
+            # share is dropped, and the curve's starting steps put in its
+            # place [D109]
+            z = z[:I_DRY]
+            p = [row[:I_DRY] for row in p[:I_DRY]]
+        if len(z) == I_DRY and len(p) == I_DRY and all(len(r) == I_DRY for r in p):
+            # before dry had a curve of its own: six steps appended [D109]
+            steps = [math.log(FILTER_START_DRY_CURVE_STEP)] * CURVE_POINTS
+            z = [*z, *steps]
+            p = [[*row, *([0.0] * CURVE_POINTS)] for row in p] + [
+                [0.0] * I_DRY + [FILTER_START_VAR_CURVE_STEP if i == j else 0.0 for j in range(CURVE_POINTS)]
+                for i in range(CURVE_POINTS)
+            ]
         if len(z) != STATE_SIZE or len(p) != STATE_SIZE or any(len(r) != STATE_SIZE for r in p):
             return None
         if not all(math.isfinite(x) for x in z) or not is_finite(p):

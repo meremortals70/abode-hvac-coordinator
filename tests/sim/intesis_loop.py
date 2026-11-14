@@ -105,6 +105,10 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
                 sent = delivery.whole_degree_value(wanted, 1.0, prof, sim.now, alt)
                 new_mode = "cool" if d > 0 else "heat"
             elif res.kind is M.StepKind.DRY:
+                # dry is asked for the rate chosen, read on dry's own curve,
+                # as delivery does [D109]
+                wanted = own - tl.unit.effort_for_rate(fig, res.rate, dry=True)
+                sent = delivery.whole_degree_value(wanted, 1.0, prof, sim.now, alt)
                 new_mode = "dry"
             else:
                 new_mode = "fan_only"
@@ -132,6 +136,7 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
             last_way = d
         comp_on = want_on
         sim.command_direction = d if comp_on else 0
+        sim.command_kind = mode  # the plant knows dry from cool [D109]
         sim.command_effort = max(d * (own - sent), 0.5) if comp_on else 0.0
         felt = tl.hci.comfort_index(sim.t, RH)
         day["n"] += 1

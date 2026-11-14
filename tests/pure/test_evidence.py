@@ -58,7 +58,8 @@ def control() -> Any:
 
 def answers() -> Any:
     return models.ModelAnswers(True, 24.1234, 25.5, 15.0, 0.1, {"a": 0.123456}, {"a": 0.01}, 0.058, 300,
-                               "corrected", True, False, 0.05, None, 6.0, 15.0, 1.0, 6.0, 6.0)
+                               "corrected", True, False, 0.05, None, 6.0, 15.0, 1.0, 6.0, 6.0,
+                               curves={"cool": (2.0, 4.0), "dry": (0.4, 0.8), "effort": (0.5, 1.0)})
 
 
 def economics(ceiling: float | None = None) -> Any:
@@ -100,6 +101,9 @@ class Trace(unittest.TestCase):
         self.assertEqual(len(d["sigma"]), len(d["index"]))
         self.assertEqual(t["pid"]["ti_min"], 63.0)
         self.assertEqual(t["model"]["figures"], {"a": 0.1235})
+        # each curve's rates against the effort that asks for them, so what
+        # dry is learning can be read [D109]
+        self.assertEqual(t["model"]["curves"], {"cool": [2.0, 4.0], "dry": [0.4, 0.8], "effort": [0.5, 1.0]})
         self.assertEqual(t["model"]["room"], 24.12)
         self.assertEqual(t["limits"]["changed"], ["opening"])
         self.assertEqual(t["power"]["ceiling"], "no limit")  # [D096]

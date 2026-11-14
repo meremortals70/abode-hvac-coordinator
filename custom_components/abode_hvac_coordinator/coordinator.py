@@ -111,6 +111,7 @@ from .model.unit import (
     effort_for_rate,
     head_direction,
     head_effort,
+    rate_for_effort,
     seen_running,
     top_rate,
 )
@@ -126,6 +127,7 @@ from .models import (
     Issue,
     LimitsResult,
     ModelAnswers,
+    PlanAction,
     RawState,
     RoomConfig,
     RoomEconomics,
@@ -1073,6 +1075,24 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
 
         return at
 
+    def _draw_for_plan(self, run: RoomRun) -> Callable[[PlanAction], float | None]:
+        """The room's learned draw at a plan's action: dry's rate is read on
+        dry's own curve, so it is converted to the cooling rate that asks the
+        same effort of the compressor before the draw is read [D028][D109]."""
+        at = self._draw_for_rate(run)
+        heat = run.model.heat
+        if heat is None:
+            return lambda _action: None
+        fig = figures(heat.z)
+
+        def draw(action: PlanAction) -> float | None:
+            if action.kind is StepKind.DRY:
+                ease = effort_for_rate(fig, action.rate, dry=True)
+                return at(rate_for_effort(fig, ease, 1))
+            return at(action.rate)
+
+        return draw
+
     def _shared_climates(self) -> dict[str, tuple[str, ...]]:
         """Every climate entity used by more than one room [D021]."""
         by: dict[str, list[str]] = {}
@@ -1218,7 +1238,6 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         if control is None:
             control = ControlResult(StepKind.NONE, 0.0, None, run.control.arbiter.in_charge, None, None,
                                     "no plan yet: the model has no reading to plan from")
-        u_min = run.model.unit.lowest_rate(fig, 1) if fig is not None else 0.0
         # FREE COOLING [D073][D105]: the plan's own comparison of itself
         # with the same room, the unit resting and an opening open. The plan
         # is the model's answer, so the advice is too: nothing is held for
@@ -1229,7 +1248,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             else (False, None)
         )
         delivery = run.delivery.deliver(now=now, control=control, snapshot=snap, comfort=comfort,
-                                        choices=run.state.choices, heat=heat, u_min=u_min,
+                                        choices=run.state.choices, heat=heat,
                                         free_cooling=free_cooling)
         run.delivery_result = delivery
         run.step = run.limits.step(now=now, proposed=delivery, snapshot=snap, comfort=comfort, economics=econ,
@@ -1574,7 +1593,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                                               datetime | None, bool]:
         """The demand forecast from each room's plan in force, to the next
         tariff change (economics.py) [D005]."""
-        plans = [(r.control.plan, self._draw_for_rate(r)) for r in self.rooms.values()
+        plans = [(r.control.plan, self._draw_for_plan(r)) for r in self.rooms.values()
                  if r.control.plan is not None and not r.failed]
         f = forecast_to_change(plans, self.tariff.intervals, now)
         if f is None:

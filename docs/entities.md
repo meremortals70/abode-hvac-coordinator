@@ -44,7 +44,7 @@ The mode sensor's attributes say what the room is doing and why, every 30 second
 | `in_charge`, `control_reason` | Which controller is in charge, and its reason |
 | `plan` | The plan in force: each half-hour's action and rate, the forecast index, minutes outside the band, its costs, and the first actions not taken with the reason |
 | `pid` | The PID's terms and gains |
-| `model` | What the model has learned: figures, their uncertainty, the sensor's noise, the forecast error, trust, the unit's delay and lag, and why the last step did not learn, if it did not |
+| `model` | What the model has learned: figures, their uncertainty, the sensor's noise, the forecast error, trust, the unit's delay and lag, each curve's rates against the effort they are read at (`cool`, `heat`, `dry`), and why the last step did not learn, if it did not |
 | `power` | The power budget: allowance, ceiling ("no limit" where none applies) and reason |
 | `delivery` | The setpoints wanted, free-cooling advice, condensation risk and reasons |
 | `limits` | Every rule that changed the step, constraints in force, missing readings and reasons |

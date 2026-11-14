@@ -40,8 +40,18 @@ from ..const import (
 from ..linalg import add, diagonal, sandwich
 from ..model.filter import FilterStep, HeatFilter
 from ..model.humidity import H_E, HumidityFilter, moisture_figures
-from ..model.physics import I_M, I_T, STEP_H, curve_values, exact_step, figures
-from ..model.unit import UnitModel
+from ..model.physics import (
+    I_M,
+    I_T,
+    STEP_H,
+    Figures,
+    curve_effort,
+    curve_rate,
+    curve_values,
+    exact_step,
+    figures,
+)
+from ..model.unit import UnitModel, curve_efforts
 from ..models import (
     BandPoint,
     Plan,
@@ -184,16 +194,17 @@ def candidate_actions(inp: PlanInputs, u_min: float, u_min_heat: float | None = 
     blinds are part of the plan, each comes with the blinds left alone,
     closed and open; make_plan offers closed and open only in a step with
     the sun on the glass, and left alone only in one without [D023].
-    u_min is the cooling floor, which dry also runs at; heating has its
-    own floor on its own curve (u_min_heat; u_min where not given) [D100].
+    u_min is the cooling floor, which cool runs down to; heating has its own
+    floor on its own curve (u_min_heat; u_min where not given) [D100]. Dry
+    runs on dry's own curve, from its first step to its top [D109].
     Dry is offered only while the room is humid enough to need it [D103]."""
     fig = figures(inp.heat.z)
     blinds: list[bool | None] = [None, True, False] if inp.blind_control else [None]
     out: list[PlanAction] = []
     kinds: list[tuple[StepKind, float]] = [(StepKind.REST, 0.0)]
     top = math.inf if inp.ceiling is None else inp.ceiling
-    if "dry" in inp.modes and u_min <= top and drying_needed(inp):
-        kinds.append((StepKind.DRY, u_min))
+    if "dry" in inp.modes and drying_needed(inp):
+        kinds.extend((StepKind.DRY, r) for r in dry_rates(fig, top))
     # the allowance is power: as a heating rate it is its own figure, read
     # on the heating curve [D028][D041]
     top_heat = top if inp.ceiling_heat is None else inp.ceiling_heat
@@ -209,6 +220,34 @@ def candidate_actions(inp: PlanInputs, u_min: float, u_min_heat: float | None = 
         for b in blinds:
             out.append(PlanAction(kind, rate, b))
     return out
+
+
+def dry_rates(fig: Figures, top: float) -> list[float]:
+    """The dry rates the plan may ask for, C/h, from dry's own curve [D109].
+
+    A dry rate is what the room gets; the unit is asked for the effort that
+    curve gives that rate at. The power ceiling is set in cooling rates, and
+    dry asks more effort for the same rate, so a dry rate is offered only
+    where the cooling that effort would otherwise buy still fits under it: a
+    dry step can never be given a ceiling it would exceed."""
+    out: list[float] = []
+    for rate in curve_values(fig.dry_steps):
+        effort = curve_effort(curve_efforts(), fig.dry_steps, rate)
+        if curve_rate(curve_efforts(), fig.cool_steps, effort) <= top:
+            out.append(rate)
+    return out
+
+
+def draw_of(inp: PlanInputs, action: PlanAction) -> float:
+    """The draw a step takes, kW: for dry, at the cooling rate that asks the
+    same effort of the compressor, since dry's rate is read on its own curve
+    [D028][D109]."""
+    rate = action.rate
+    if action.kind is StepKind.DRY:
+        fig = figures(inp.heat.z)
+        effort = curve_effort(curve_efforts(), fig.dry_steps, rate)
+        rate = curve_rate(curve_efforts(), fig.cool_steps, effort)
+    return inp.draw_for_rate(rate) or DRAW_WITHOUT_LOAD_SENSOR_KW
 
 
 def _runs(kind: StepKind) -> bool:
@@ -277,7 +316,6 @@ class _Fixed:
     cooling: float
     rebound: float
     have_moisture: bool
-    dry_share: float  # dry's sensible share of the cooling curve [D108]
     u_decay: float  # e^(-5 min / (lag + delay))
     u_mean: float  # the share of the step's change in rate seen on average over it
 
@@ -316,7 +354,6 @@ def _fixed(inp: PlanInputs, opening: float | None = None) -> _Fixed:
         cooling=mf.cooling if mf else 0.0,
         rebound=mf.rebound if mf else 0.0,
         have_moisture=mf is not None,
-        dry_share=fig.dry_share,
         u_decay=decay,
         u_mean=tau / _POINT_H * (1.0 - decay),
     )
@@ -439,7 +476,7 @@ def _rest_recovers(start: _Node, inp: PlanInputs, fx: _Fixed, w: float) -> bool:
 
 
 def _opening_advice(inp: PlanInputs, start: _Node, best: _Node, fx: _Fixed, w: float,
-                    draws: dict[float, float]) -> tuple[bool, str | None]:
+                    draws: dict[PlanAction, float]) -> tuple[bool, str | None]:
     """FREE COOLING [D073][D105]: the plan with an opening open and the unit
     resting, against the plan itself, over the same window and by the same
     cost (comfort, energy and starts).
@@ -463,7 +500,7 @@ def _opening_advice(inp: PlanInputs, start: _Node, best: _Node, fx: _Fixed, w: f
         opened = _extend(opened, rest, j, inp, fx_open, w, 0.0)
         shut = _extend(shut, rest, j, inp, fx, w, 0.0)
         action = best.actions[j]
-        planned = _extend(planned, action, j, inp, fx, w, draws[action.rate])
+        planned = _extend(planned, action, j, inp, fx, w, draws[action])
         at = j * PLAN_POINTS_PER_STEP + PLAN_POINTS_PER_STEP - 1
         # does the opening itself change the room, beyond the forecast's own
         # uncertainty? a sealed room does not, so it is never advised [D105]
@@ -506,7 +543,9 @@ def make_plan(inp: PlanInputs) -> Plan:
     c_start = PLAN_START_COST_SHARE * p_ref * d_one * 1.0  # [Prop][Sim][NYE]
     actions = candidate_actions(inp, u_min, u_min_heat)
     can_carry_on = any(a.kind is inp.last_kind for a in actions)
-    draws = {a.rate: (inp.draw_for_rate(a.rate) or DRAW_WITHOUT_LOAD_SENSOR_KW) for a in actions}
+    # keyed by the action, not its rate: dry and cool at the same number are
+    # two different draws [D109]
+    draws = {a: draw_of(inp, a) for a in actions}
     start = _Node(
         t=inp.t_now if inp.t_now is not None else inp.heat.z[I_T],
         m=inp.heat.z[I_M],
@@ -556,7 +595,7 @@ def make_plan(inp: PlanInputs) -> Plan:
                         continue
                 if inp.blind_control and (action.blinds_closed is not None) != sunny:
                     continue
-                grown.append(_extend(node, action, j, inp, fx, w, draws[action.rate]))
+                grown.append(_extend(node, action, j, inp, fx, w, draws[action]))
         grown.sort(key=lambda n: n.key)
         beam = grown[:PLAN_BEAM_WIDTH]
         for n in grown if j == 0 else beam:
@@ -595,11 +634,7 @@ def _extend(
     n.last_kind = action.kind
     if runs:
         n.way = _way(action.kind)
-    u_target = action.rate if runs else 0.0  # dry removes its share of what cooling does [D108]
-    if action.kind is StepKind.DRY:
-        # dry is offered at the cooling floor, the rate the unit is asked
-        # for; the room only sees its learned share of it [D108]
-        u_target *= fx.dry_share
+    u_target = action.rate if runs else 0.0  # dry's rate is already what the room gets [D109]
     if action.blinds_closed is None:
         tau = inp.transmission_now
     else:

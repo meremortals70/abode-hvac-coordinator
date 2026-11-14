@@ -222,8 +222,13 @@ def room(rid: str = "r1", unit: str = "ou1", mgmt: Any = PM.ENFORCED, precool: b
     return models.RoomPower(rid, unit, mgmt, precool, running, 6.0, lowest)
 
 
-def linear(r: float) -> float:
-    return 0.3 + 0.25 * r
+def linear(rate: float) -> float:
+    return 0.3 + 0.25 * rate
+
+
+def demand_draw(action: Any) -> float:
+    """A plan action's draw: its rate on its own curve [D109]."""
+    return 0.3 + 0.25 * action.rate
 
 
 class Budget(unittest.TestCase):
@@ -402,7 +407,7 @@ class DemandToChange(unittest.TestCase):
     def test_to_the_next_tariff_change(self) -> None:
         tariff = [iv(0, 1, 0.3), iv(1, 2, 0.1)]
         p = plan([(models.StepKind.COOL, 2.0)] * 4)  # 2 hours of 0.8 kW
-        f = eco.forecast_to_change([(p, linear)], tariff, T0)
+        f = eco.forecast_to_change([(p, demand_draw)], tariff, T0)
         self.assertEqual((f.until, f.to_change), (T0 + H, True))
         self.assertAlmostEqual(f.kwh, 0.8)  # the first hour only
         self.assertEqual([(iv_.price, round(k, 3)) for iv_, k in f.per_interval], [(0.3, 0.8)])
@@ -411,29 +416,29 @@ class DemandToChange(unittest.TestCase):
     def test_the_part_already_past_is_not_demand(self) -> None:
         tariff = [iv(0, 1, 0.3), iv(1, 2, 0.1)]
         p = plan([(models.StepKind.COOL, 2.0)] * 4)
-        f = eco.forecast_to_change([(p, linear)], tariff, T0 + 0.25 * H)
+        f = eco.forecast_to_change([(p, demand_draw)], tariff, T0 + 0.25 * H)
         self.assertAlmostEqual(f.kwh, 0.6)  # 45 minutes of 0.8 kW
 
     def test_a_change_beyond_the_plans_runs_to_their_end(self) -> None:
         tariff = [iv(0, 24, 0.3)]
         p = plan([(models.StepKind.COOL, 2.0), (models.StepKind.REST, 0.0)] * 6)
-        f = eco.forecast_to_change([(p, linear)], tariff, T0)
+        f = eco.forecast_to_change([(p, demand_draw)], tariff, T0)
         self.assertEqual((f.until, f.to_change), (T0 + 6 * H, False))
         self.assertAlmostEqual(f.kwh, 6 * 0.4)
         late = [iv(0, 1, 0.3), iv(1, 9, 0.1)]
-        f = eco.forecast_to_change([(p, linear)], late[:1] + [iv(1, 8, 0.3), iv(8, 9, 0.1)], T0)
+        f = eco.forecast_to_change([(p, demand_draw)], late[:1] + [iv(1, 8, 0.3), iv(8, 9, 0.1)], T0)
         self.assertEqual((f.until, f.to_change), (T0 + 6 * H, False))  # the change at 8 h is beyond
 
     def test_heating_is_priced_on_its_own_curve(self) -> None:
         """A heating rate is negative; its sign picks the heating curve [D028]."""
         tariff = [iv(0, 24, 0.3)]
         p = plan([(models.StepKind.HEAT, -2.0)] * 2)  # an hour of heating
-        f = eco.forecast_to_change([(p, lambda r: 0.6 if r < 0 else 1.0)], tariff, T0)
+        f = eco.forecast_to_change([(p, lambda a: 0.6 if a.rate < 0 else 1.0)], tariff, T0)
         self.assertAlmostEqual(f.kwh, 0.6)
 
     def test_without_a_tariff_or_a_plan(self) -> None:
         p = plan([(models.StepKind.DRY, 1.0), (models.StepKind.OFF, 0.0)])
-        f = eco.forecast_to_change([(p, lambda r: None)], [], T0)
+        f = eco.forecast_to_change([(p, lambda a: None)], [], T0)
         self.assertEqual((f.until, f.to_change, f.cost, f.per_interval), (T0 + H, False, None, ()))
         self.assertAlmostEqual(f.kwh, 0.6)  # an unlearned draw priced as the plan prices it, 1.2 kW
         self.assertIsNone(eco.forecast_to_change([], [], T0))

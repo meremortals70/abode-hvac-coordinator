@@ -107,10 +107,8 @@ def forecast(
         if wet_before and not wet:
             rebound = _REBOUND_STEPS
         wet_before = wet
-        # dry's sensible rate is its share of what it is asked for [D108]
-        rate = step_in.rate * fig.dry_share if step_in.kind is StepKind.DRY else step_in.rate
-        u_step = rate + (u - rate) * mean
-        u = rate + (u - rate) * decay
+        u_step = step_in.rate + (u - step_in.rate) * mean
+        u = step_in.rate + (u - step_in.rate) * decay
         ex = exact(step_in.opening)
         tm = ex.advance(tm, step_in.outdoor, step_in.sun, fig.g(step_in.hour), u_step)
         p2 = add(sandwich(ex.phi, p2), noise)
@@ -151,8 +149,9 @@ def replay(z_then: Sequence[float], steps: Sequence[StepInputs]) -> float:
     return z[I_T]
 
 
-def setpoint_for_rate(heat: HeatFilter, own_reading: float, rate: float) -> float:
+def setpoint_for_rate(heat: HeatFilter, own_reading: float, rate: float, *, dry: bool = False) -> float:
     """SETPOINT FOR A RATE [Prop][D095]: the effort for the rate, from the
-    unit's reading. Cooling: reading - effort; heating: reading + effort."""
-    effort = effort_for_rate(figures(heat.z), rate)
+    unit's reading. Cooling: reading - effort; heating: reading + effort.
+    dry: the rate is dry's, read on dry's own curve [D109]."""
+    effort = effort_for_rate(figures(heat.z), rate, dry=dry)
     return own_reading - effort if rate >= 0.0 else own_reading + effort

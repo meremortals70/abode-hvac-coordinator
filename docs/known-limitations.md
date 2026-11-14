@@ -1,5 +1,7 @@
 # Known limitations
 
+- **Dry is asked no harder than the curve goes.** The unit's effort is asked across 0.5 to 4 °C of reading against setpoint, so dry is commanded at most at an effort of 4 — 2.4 °C/h on its starting curve, more as the curve learns up. The office's trial of 14 November used an effort of 6-7 (a setpoint of 18 against a reading of 28) and took the room down 2.56 °C/h; the component cannot ask that hard, and cools instead.
+- **Dry's curve starts from a guess.** It begins at 0.4 °C/h a step (0.4 at the floor, 2.4 at the top) and is learned only from minutes the unit actually ran dry. A room whose plan never chooses dry keeps that guess, so a unit whose dry is weaker or stronger than the office's of 14 November 2026 reads wrong until dry is run [D109].
 - **One sensor per room, in the room.** The room's air is taken as well mixed and read by one sensor where people are. A sensor in the air conditioner's airflow reads the unit, not the room.
 - **The model needs weeks to settle.** It forecasts well within days, but its separate figures (how much the walls hold, what the sun adds) need weeks of varied weather to pull apart. Until then the forecast is right but the figures may trade against each other.
 - **The forecast matters.** The plan looks six hours ahead on the weather forecast. A poor forecast means a poorer plan; the PID still holds the room.

@@ -17,9 +17,9 @@ from ..models import ModelAnswers, Snapshot
 from .filter import FilterStep, HeatFilter, MinuteSample, minute_sample
 from .forecast import ForecastInput, drift_now, forecast, replay
 from .humidity import HumidityFilter, MoistureMinute, in_rebound, room_e
-from .physics import I_DELAY, I_LN_LAG, I_M, I_T, figures
+from .physics import I_DELAY, I_LN_LAG, I_M, I_T, curve_values, figures
 from .trust import Trust
-from .unit import UnitModel, rate_for_effort, top_rate
+from .unit import UnitModel, curve_efforts, rate_for_effort, top_rate
 
 _FIGURE_NAMES = ("a", "b", "c", "k", "s", "m")
 
@@ -132,6 +132,12 @@ class RoomModel:
         unc = {"T": self.heat.p[I_T][I_T], "M": self.heat.p[I_M][I_M]}
         unc.update({n: self.heat.p[2 + i][2 + i] for i, n in enumerate(_FIGURE_NAMES)})
         unc.update(delay=self.heat.p[I_DELAY][I_DELAY], ln_lag=self.heat.p[I_LN_LAG][I_LN_LAG])
+        curves = {
+            "cool": tuple(curve_values(fig.cool_steps)),
+            "heat": tuple(curve_values(fig.heat_steps)),
+            "dry": tuple(curve_values(fig.dry_steps)),
+            "effort": curve_efforts(),
+        }
         return ModelAnswers(
             learning=True,
             t=self.heat.z[I_T],
@@ -149,6 +155,7 @@ class RoomModel:
             delay_min=fig.delay_min,
             lag_min=fig.lag_min,
             u_min=self.unit.lowest_rate(fig, 1),
+            curves=curves,
             top_cool=top_rate(fig, 1),
             top_heat=top_rate(fig, -1),
             last_correction=self.heat.last_correction,

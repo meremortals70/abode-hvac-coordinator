@@ -80,16 +80,22 @@ def head_effort(head: HeadSnapshot) -> float | None:
 def rate_for_effort(fig: Figures, effort: float, direction: int) -> float:
     """The steady rate at an effort, C/h, positive cooling."""
     if direction > 0:
-        return curve_rate(curve_efforts(), fig.cool_steps, effort)
+        steps = fig.dry_steps if direction == 2 else fig.cool_steps
+        return curve_rate(curve_efforts(), steps, effort)
     if direction < 0:
         return -curve_rate(curve_efforts(), fig.heat_steps, effort)
     return 0.0
 
 
-def effort_for_rate(fig: Figures, rate: float) -> float:
-    """The effort for a rate (positive cools, negative heats); the top
-    effort if the rate is beyond the curve [D056]."""
-    steps = fig.cool_steps if rate >= 0.0 else fig.heat_steps
+def effort_for_rate(fig: Figures, rate: float, *, dry: bool = False) -> float:
+    """The effort for a rate, C/h, read on the curve the mode runs on.
+
+    dry: the rate is dry's, so it is read on dry's own curve [D109]; without
+    it the sign picks cooling or heating [D056]."""
+    if dry:
+        steps = fig.dry_steps
+    else:
+        steps = fig.cool_steps if rate >= 0.0 else fig.heat_steps
     return curve_effort(curve_efforts(), steps, abs(rate))
 
 
