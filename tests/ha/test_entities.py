@@ -55,7 +55,7 @@ async def test_every_entity_and_its_registry_entry(hass: HomeAssistant,
     house = {e.unique_id.removeprefix(f"{entry.entry_id}_") for e in entries if e.unique_id.startswith(entry.entry_id)}
     assert house == {"demand_forecast", "tariff_rate", "constraints", "projected_cost", "outdoor_temperature",
                      "outdoor_apparent_temperature", "outdoor_dew_point", "forecast_peak", "stale_feeds",
-                     "rooms_configured"}
+                     "learned_draw", "rooms_configured"}
     index = hass.states.get("sensor.office_comfort_index")
     assert index is not None and index.attributes["position"] in ("below", "in", "above")
     assert "device_class" not in index.attributes  # an index, not an air temperature
