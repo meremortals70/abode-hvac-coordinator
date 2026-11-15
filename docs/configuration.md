@@ -61,6 +61,7 @@ One screen for each head.
 | --- | --- | --- |
 | Outdoor unit | A name for the outdoor unit this head shares. Heads with the same name share one compressor, in this room or another | None: its own outdoor unit |
 | Compressor frequency sensor | A sensor of the compressor's frequency, Hz. Tells the component exactly when the compressor runs | None |
+| Outdoor unit power meter | A sensor of the power this outdoor unit draws, W or kW, measured at its isolator switch. One meter per switch, so every head on the same outdoor unit names the same sensor. Tells the component when the compressor runs and what it draws, which the house's total load cannot show at low draw [D110] | None |
 
 ## Room screen 3: comfort
 

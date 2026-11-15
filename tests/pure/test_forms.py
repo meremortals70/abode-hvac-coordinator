@@ -163,6 +163,31 @@ class Rooms(unittest.TestCase):
         self.assertEqual(forms.migrate_entry(1, 0, {"a": 1}, {"rooms": []}), ({"a": 1}, {"rooms": []}))
 
 
+class UnitMeters(unittest.TestCase):
+    """One meter per isolator switch, and every head on one outdoor unit
+    names it [D110]."""
+
+    def test_a_head_has_its_own_unit_when_it_names_none(self) -> None:
+        self.assertEqual(forms.head_unit({"climate": "climate.a"}), "own:climate.a")
+        self.assertEqual(forms.head_unit({"climate": "climate.a", "outdoor_unit": "Shed"}), "Shed")
+
+    def test_two_heads_on_one_unit_must_name_one_meter(self) -> None:
+        a = {"climate": "climate.a", "outdoor_unit": "Shed", "unit_power": "sensor.shed"}
+        b = {"climate": "climate.b", "outdoor_unit": "Shed"}
+        other = {"climate": "climate.c", "outdoor_unit": "Den", "unit_power": "sensor.den"}
+        self.assertIsNone(forms.unit_meter_conflict(a, [b, other]))  # b takes its unit's meter
+        c = {"climate": "climate.b", "outdoor_unit": "Shed", "unit_power": "sensor.other"}
+        self.assertEqual(forms.unit_meter_conflict(a, [c]), "Shed")
+        self.assertIsNone(forms.unit_meter_conflict({"climate": "climate.a"}, [other]))  # no meter named
+
+    def test_the_meter_is_stored_with_its_head(self) -> None:
+        room = forms.room_from_options(stored(heads=[{"climate": "climate.a", "unit_power": "sensor.m"}]))
+        self.assertEqual(room.heads[0].unit_power, "sensor.m")
+        built = forms.build_room("r1", stored(), [{"climate": "climate.a", "unit_power": "sensor.m"}], {},
+                                 PROFILE)
+        self.assertEqual(built["heads"], [{"climate": "climate.a", "unit_power": "sensor.m"}])
+
+
 class Summary(unittest.TestCase):
     def test_summary(self) -> None:
         house = forms.house_from_data({"tariff_entry": "t", "weather": "weather.home", "battery_charge": "sensor.b",

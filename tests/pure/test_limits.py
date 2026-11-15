@@ -88,12 +88,18 @@ def step(rl: Any, *, now: datetime = T0, p: Any = None, s: Any = None, c: Any = 
 HAND = (models.HeadCommand("climate.a", "cool", None, None, None, None, None, None),)  # seen running as it is
 
 
-def allowed(rl: Any, guard: Any = None, *, outdoor: str = "u1", running: bool = False, **kw: Any) -> Any:
+def allowed(rl: Any, guard: Any = None, *, outdoor: str = "u1", running: bool = False, comp: Any = None,
+            **kw: Any) -> Any:
     guard = guard or limits.HouseGuard()
     st = step(rl, **kw)
     seen = HAND if running else ()
-    return guard.apply(kw.get("now", T0), [limits.GuardEntry(rl, st, (outdoor,), {outdoor: running}, seen)])[
-        st.room_id]
+    # what the compressor is seen to do, which the guard times the run from
+    # [D110]: running, stopped, or not known, where the command is the best
+    # effort there is
+    state = CS.RUNNING if running else (comp or CS.UNKNOWN)
+    return guard.apply(kw.get("now", T0), [limits.GuardEntry(
+        rl, st, (outdoor,), {outdoor: running}, observed_state={outdoor: state},
+        observed_heads=seen)])[st.room_id]
 
 
 def opening(since: datetime | None, open_: bool = True) -> Any:
@@ -309,10 +315,46 @@ class Guard(unittest.TestCase):
         self.assertIs(self.run_(0, SK.COOL).kind, SK.COOL)
         r = self.run_(6, SK.REST)
         self.assertEqual((r.kind, r.changed, r.held_off), (SK.COOL, (LR.SHORT_CYCLE_GUARD,), False))
-        self.assertEqual(r.heads, (cmd(fan="quiet"),))  # fan choice stands
+        self.assertEqual(r.heads, (cmd(),))  # the running command's own fan, not the rest step's quiet [D110]
         r = self.run_(8, SK.OFF)
         self.assertEqual((r.kind, r.held_off), (SK.COOL, True))  # [D077]
         self.assertIs(self.run_(10, SK.REST).kind, SK.REST)
+
+    def test_a_command_that_never_started_the_compressor_is_not_a_run(self) -> None:
+        """The plan asks for dry, and the meter on its circuit shows only the
+        fan: nothing has run, so the stop is not held for ten minutes on the
+        strength of the command [D110]."""
+        self.assertIs(self.run_(0, SK.DRY).kind, SK.DRY)
+        self.assertIs(self.run_(1, SK.DRY, comp=CS.UNKNOWN).kind, SK.DRY)  # not known yet: the command stands
+        r = self.run_(3, SK.REST, comp=CS.STOPPED)
+        self.assertEqual((r.kind, r.changed), (SK.REST, ()))
+
+    def test_a_measured_run_holds_the_stop_a_command_alone_would_release(self) -> None:
+        """The command asked for a rest, but the compressor is measured
+        running: the stop is held, and the unit keeps the command it runs on
+        [D110]."""
+        self.run_(0, SK.COOL)
+        self.assertIs(self.run_(11, SK.REST).kind, SK.REST)  # the run is served
+        self.assertIs(self.run_(17, SK.COOL, comp=CS.RUNNING).kind, SK.COOL)  # started again by hand
+        r = self.run_(20, SK.REST, comp=CS.RUNNING)
+        self.assertEqual((r.kind, r.changed), (SK.COOL, (LR.SHORT_CYCLE_GUARD,)))
+
+    def test_the_unit_is_running_if_any_head_on_it_says_so(self) -> None:
+        """One head on a shared unit cannot say, and must not overrule the
+        head that can: the unit is known only where every head agrees
+        [D110]."""
+        def seen(*states: Any) -> Any:
+            entries = [limits.GuardEntry(limits.RoomLimits(room(f"r{i}", "shared")),
+                                         limits.RoomStep(f"r{i}", SK.NONE, (), (), ()),
+                                         ("shared",), {}, observed_state={"shared": s})
+                       for i, s in enumerate(states)]
+            return limits.HouseGuard._seen("shared", entries)
+
+        self.assertIs(seen(CS.RUNNING, CS.UNKNOWN), True)
+        self.assertIs(seen(CS.RUNNING, CS.STOPPED), True)
+        self.assertIs(seen(CS.STOPPED, CS.STOPPED), False)
+        self.assertIsNone(seen(CS.STOPPED, CS.UNKNOWN))
+        self.assertIsNone(seen())
 
     def test_dry_counts_as_running(self) -> None:
         allowed(self.rl, self.g, p=proposed(SK.DRY, heads=(cmd("dry", 24.5),)), now=T0)

@@ -329,7 +329,6 @@ def replay(
     written = [_written(s) for s in events]
     observer = RoomObserver(room)
     states: dict[str, RawState] = {}
-    head_units = {h.climate: h.outdoor_unit or f"own:{h.climate}" for h in room.heads}
     before = model.heat.corrections if model.heat is not None else 0
     t = start
     i = 0
@@ -345,7 +344,7 @@ def replay(
                 house=house, states=states, now=t, choices=RoomChoices(), location=location,
                 forecast=_weather_hour(weather, t),
                 forecast_temperature_unit=t_unit, forecast_wind_unit=w_unit, tariff=(), load_history=LoadHistory(),
-                commands={}, draw_kw={}, head_outdoor_units=head_units,
+                commands={}, draw_kw={},
                 system_temperature_unit=system_temperature_unit,
             )
             local = t.astimezone(tz)

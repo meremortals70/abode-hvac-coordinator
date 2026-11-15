@@ -89,7 +89,7 @@ from .evidence import (
     room_issues,
     trace,
 )
-from .forms import house_from_data, rooms_from_options
+from .forms import house_from_data, power_kw, rooms_from_options
 from .hci import outdoor_apparent_temperature, vapour_pressure
 from .limits import GuardEntry, HouseGuard, RoomLimits, RoomStep, band_distances
 from .memory import (
@@ -108,6 +108,7 @@ from .model import RoomModel
 from .model.forecast import ForecastInput, drift_now
 from .model.physics import Figures, figures
 from .model.unit import (
+    curve_efforts,
     effort_for_rate,
     head_direction,
     head_effort,
@@ -119,10 +120,12 @@ from .models import (
     CapabilityProfile,
     ComfortResult,
     CommandRecord,
+    CompressorState,
     ControlResult,
     DayScore,
     DeliveryResult,
     HeadCommand,
+    HeadSnapshot,
     HouseConfig,
     Issue,
     LimitsResult,
@@ -139,7 +142,7 @@ from .models import (
     TariffInterval,
     ValueTag,
 )
-from .observe import LoadHistory, RoomObserver
+from .observe import LoadHistory, RoomObserver, UnitMeters
 from .psychro import dew_point, outdoor_air_dry
 from .sun import sun_position
 
@@ -195,6 +198,10 @@ class RoomView:
     learning: float | None
     yesterday: DayScore | None
     rl_score: Mapping[str, Any]
+    # the room's learned curves, rates in C/h at the efforts the plan asks
+    # [D109][D110]: small enough to record, unlike the mode sensor's model
+    curves: Mapping[str, list[float]] = field(default_factory=dict)
+    efforts: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +223,8 @@ class HouseView:
     forecast_peak_c: float | None
     stale: tuple[str, ...]
     rooms: int
+    # each outdoor unit's learned draw curve [D028][D110]: effort, kW, count
+    learned_draw: Mapping[str, list[tuple[float, float, int]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +341,35 @@ def _by_unit(draws: Mapping[tuple[str, str], float | None]) -> dict[str, float |
         else:
             out[unit] = d
     return out
+
+
+def _unit_meters(rooms: Mapping[str, Any]) -> dict[str, str]:
+    """Each outdoor unit and the meter on its circuit, from the rooms' heads
+    [D110]. One meter per isolator switch, so every head on a unit names the
+    same sensor; a unit whose heads name two different sensors is left
+    without one, and its draw is inferred from the house load as before."""
+    named: dict[str, set[str]] = {}
+    for run in rooms.values():
+        for h in run.config.heads:
+            if h.unit_power:
+                named.setdefault(h.outdoor_unit or f"own:{h.climate}", set()).add(h.unit_power)
+    return {unit: next(iter(sensors)) for unit, sensors in named.items() if len(sensors) == 1}
+
+
+def _unit_compressor(heads: Sequence[HeadSnapshot], unit: str) -> CompressorState:
+    """One outdoor unit's compressor as its heads see it [D110].
+
+    Running if any head on it is seen running; stopped only if every head on
+    it is seen stopped; otherwise not known. A head in fan-only reports its
+    own head stopped, not the unit, so it must not overrule a head on the
+    same unit that is working: the two share one compressor, and one of them
+    saying nothing is not the other being wrong."""
+    states = [h.compressor for h in heads if (h.outdoor_unit or f"own:{h.climate}") == unit]
+    if any(s is CompressorState.RUNNING for s in states):
+        return CompressorState.RUNNING
+    if states and all(s is CompressorState.STOPPED for s in states):
+        return CompressorState.STOPPED
+    return CompressorState.UNKNOWN
 
 
 def _floor(t: datetime, period: timedelta) -> datetime:
@@ -536,6 +574,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         self.commands = CommandLog()
         self._last_command: dict[str, datetime] = {}
         self.load_history = LoadHistory()
+        self.meters = UnitMeters()
         self.budget = PowerBudget()
         self.guard = HouseGuard()
         self.grid: GridChecks | None = None
@@ -832,6 +871,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 out.add(head.climate)
                 if head.frequency_sensor:
                     out.add(head.frequency_sensor)
+                if head.unit_power:
+                    out.add(head.unit_power)
         return out
 
     def _states(self) -> dict[str, RawState]:
@@ -867,8 +908,13 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         day_ended = self._day_due(now)
         system_unit = self.hass.config.units.temperature_unit
         location = (self.hass.config.latitude, self.hass.config.longitude)
-        head_units = {h.climate: h.outdoor_unit or f"own:{h.climate}" for r in self.rooms.values()
-                      for h in r.config.heads}
+        # each outdoor unit's own meter, sampled every cycle: the readings
+        # over the last few minutes decide its resting level [D110]
+        unit_meters = _unit_meters(self.rooms)
+        for unit, entity in unit_meters.items():
+            state = states.get(entity)
+            self.meters.add(now, unit, power_kw(state.state, state.attributes.get("unit_of_measurement"))
+                            if state is not None else None)
         # the house-load step (4.8, source 3) judges a head whose compressor
         # no other source answers, so it is given each unit's learned draw
         # whatever its compressor is seen to do [D028][Prop]
@@ -879,8 +925,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         for run in list(self.rooms.values()):
             run.failed = False
             try:
-                await self._observe_and_learn(run, states, now, minute, five, hour, location, head_units,
-                                              draw_now, system_unit)
+                await self._observe_and_learn(run, states, now, minute, five, hour, location,
+                                              unit_meters, draw_now, system_unit)
             except Exception:  # noqa: BLE001 - one room failing never fails the update [R18]
                 self._room_failed(run)
         runs = [r for r in self.rooms.values() if not r.failed and r.snapshot is not None]
@@ -890,7 +936,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         budget = self._house(now, runs, first)
         if minute and first is not None:
             heads = [h for r in runs if r.snapshot is not None for h in r.snapshot.heads]
-            self.house_state.draw.observe(now, heads, self._last_command, self.load_history)
+            self.house_state.draw.observe(now, heads, self._last_command, self.load_history, self.meters)
 
         # 4-7: Economics, Control, Delivery, Limits, per room
         for run in runs:
@@ -909,12 +955,17 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             # and its run is not taken as a stop [D016][D020]
             observed = {u: any(seen_running(h) for h in run.snapshot.heads
                                if (h.outdoor_unit or f"own:{h.climate}") == u) for u in run.outdoor_units}
+            # the compressor itself, which decides when the guard's run
+            # began and ended [D110]
+            compressors = {u: _unit_compressor(run.snapshot.heads, u) for u in run.outdoor_units}
             seen = tuple(HeadCommand(h.climate, h.mode, None, None, None, None, None, None)
                          for h in run.snapshot.heads if seen_running(h) and h.mode)
             c = run.comfort_result
             outside, from_centre = (band_distances(c.room_index, c.band_low, c.band_high) if c is not None
                                     else (0.0, 0.0))
-            entries.append(GuardEntry(run.limits, run.step, run.outdoor_units, observed, seen, outside, from_centre))
+            entries.append(GuardEntry(run.limits, run.step, run.outdoor_units, observed,
+                                      observed_state=compressors, observed_heads=seen,
+                                      outside=outside, from_centre=from_centre))
         allowed = self.guard.apply(now, entries)
 
         # 8-9: Act, Evidence, per room
@@ -943,7 +994,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         five: bool,
         hour: bool,
         location: tuple[float, float],
-        head_units: Mapping[str, str],
+        unit_meters: Mapping[str, str],
         draw_now: Mapping[str, float | None],
         system_unit: str,
     ) -> None:
@@ -961,7 +1012,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             load_history=self.load_history,
             commands=self._last_command,
             draw_kw=draw_now,
-            head_outdoor_units=head_units,
+            unit_meters=unit_meters,
             system_temperature_unit=system_unit,
             measured_clear=self._clear_now,
         )
@@ -1549,6 +1600,8 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             yesterday=run.scorecard.yesterday,
             rl_score={"reason": arbiter.last_reason, "wins": [w for w in arbiter.wins],
                       "since": arbiter.since.isoformat() if arbiter.since else None},
+            curves={k: [round(x, 2) for x in v] for k, v in run.answers.curves.items()},
+            efforts=[round(x, 1) for x in curve_efforts()],
         )
 
     def _house_view(self) -> HouseView:
@@ -1587,6 +1640,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             forecast_peak_c=peak,
             stale=stale,
             rooms=len(self.rooms),
+            learned_draw=self.house_state.draw.curve(),
         )
 
     def _demand(self, now: datetime) -> tuple[float | None, tuple[Mapping[str, Any], ...], float | None,

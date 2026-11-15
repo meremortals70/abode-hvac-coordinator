@@ -1229,7 +1229,7 @@ class DrawWithASharedUnit(unittest.TestCase):
                 "climate.b": st("climate.b", "cool", {"temperature": 22, "current_temperature": 25}),
             }
             reader = observe._Reader(states, now, "°C")
-            heads = [obs._head(reader, c, "outdoor1", "sensor.freq", hist, {}, {}, units) for c in units]
+            heads = [obs._head(reader, c, "outdoor1", "sensor.freq", None, hist, {}, {}) for c in units]
             learner.observe(now, heads, {}, hist)
         self.assertEqual(learner.table, {})
 

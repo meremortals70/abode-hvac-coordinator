@@ -23,8 +23,8 @@ experienced architect. Treat them accordingly:
 
 ### Starting a session
 
-1. Open the project folder: `C:\Users\jason\Nextcloud\abode-hvac-coordinator`.
-   Project files live under `C:\Users\jason\Nextcloud\` and nowhere else — never
+1. Open the project folder: `C:\Users\jason\Nextcloud\opencode\projects\abode-hvac-coordinator`.
+   Project files live under `C:\Users\jason\Nextcloud\opencode\projects\` and nowhere else — never
    the OneDrive folder or the stray `C:\Users\jason\Projects\` copies.
 2. Check the current state:
    ```powershell

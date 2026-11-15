@@ -115,6 +115,8 @@ class HeadConfig:
     climate: str
     outdoor_unit: str | None = None
     frequency_sensor: str | None = None
+    # the meter on this head's outdoor unit, one per isolator switch [D110]
+    unit_power: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +251,7 @@ class CompressorSource(StrEnum):
     """Which source answered whether the compressor ran [D006]."""
 
     FREQUENCY = "frequency"
+    METER = "meter"
     HVAC_ACTION = "hvac_action"
     MODE = "mode"
     LOAD_STEP = "load_step"
@@ -273,6 +276,8 @@ class HeadSnapshot:
     frequency: Reading
     compressor: CompressorState
     compressor_source: CompressorSource
+    # this head's outdoor unit's own meter, kW, where one is configured [D110]
+    power: Reading = Reading(None, ValueTag.MISSING)
 
 
 @dataclass(frozen=True, slots=True)

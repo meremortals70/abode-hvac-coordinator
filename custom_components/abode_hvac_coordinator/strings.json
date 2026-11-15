@@ -133,11 +133,13 @@
         "description": "{climate}. Heads given the same outdoor-unit name share one compressor, in this room or another.",
         "data": {
           "outdoor_unit": "Outdoor unit",
-          "frequency_sensor": "Compressor frequency sensor"
+          "frequency_sensor": "Compressor frequency sensor",
+          "unit_power": "Outdoor unit power meter"
         },
         "data_description": {
           "outdoor_unit": "Choose a name already used or type a new one. Leave empty if this head has its own outdoor unit.",
-          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs."
+          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs.",
+          "unit_power": "A sensor showing the power this outdoor unit draws, in W or kW, measured at its isolator switch. One meter per switch, so every head on the same outdoor unit names the same sensor. It tells the component when the compressor runs and what it draws, which the house's total load cannot show at low draw."
         }
       },
       "room_3": {
@@ -170,7 +172,8 @@
       "ranges_do_not_overlap": "These air conditioners' setpoint ranges do not overlap, so one setpoint cannot suit them all.",
       "heads_take_different_setpoints": "One of these air conditioners takes only a low and high setpoint, and another cannot take them, so nothing sent could suit them all.",
       "no_name": "Give the room a name.",
-      "band_inverted": "The {band} band's low must be below its high."
+      "band_inverted": "The {band} band's low must be below its high.",
+      "meter_conflict": "Every head on {unit} must name the same meter: one meter measures the isolator switch of one compressor."
     },
     "abort": {
       "single_instance_allowed": "The Abode HVAC Coordinator is already set up. Add rooms from its options.",
@@ -248,11 +251,13 @@
         "description": "{climate}. Heads given the same outdoor-unit name share one compressor, in this room or another.",
         "data": {
           "outdoor_unit": "Outdoor unit",
-          "frequency_sensor": "Compressor frequency sensor"
+          "frequency_sensor": "Compressor frequency sensor",
+          "unit_power": "Outdoor unit power meter"
         },
         "data_description": {
           "outdoor_unit": "Choose a name already used or type a new one. Leave empty if this head has its own outdoor unit.",
-          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs."
+          "frequency_sensor": "A sensor showing the compressor's frequency in Hz. It tells the component when the compressor runs.",
+          "unit_power": "A sensor showing the power this outdoor unit draws, in W or kW, measured at its isolator switch. One meter per switch, so every head on the same outdoor unit names the same sensor. It tells the component when the compressor runs and what it draws, which the house's total load cannot show at low draw."
         }
       },
       "room_3": {
@@ -339,7 +344,8 @@
       "ranges_do_not_overlap": "These air conditioners' setpoint ranges do not overlap, so one setpoint cannot suit them all.",
       "heads_take_different_setpoints": "One of these air conditioners takes only a low and high setpoint, and another cannot take them, so nothing sent could suit them all.",
       "no_name": "Give the room a name.",
-      "band_inverted": "The {band} band's low must be below its high."
+      "band_inverted": "The {band} band's low must be below its high.",
+      "meter_conflict": "Every head on {unit} must name the same meter: one meter measures the isolator switch of one compressor."
     },
     "abort": {
       "no_rooms": "There are no rooms yet.",
@@ -487,6 +493,9 @@
       },
       "stale_feeds": {
         "name": "Stale feeds"
+      },
+      "learned_draw": {
+        "name": "Learned draw"
       },
       "rooms_configured": {
         "name": "Rooms configured"

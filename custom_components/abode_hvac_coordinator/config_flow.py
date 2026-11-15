@@ -57,6 +57,7 @@ from .const import (
     CONF_FREQUENCY_SENSOR,
     CONF_GRID_POSITIVE_IS_IMPORT,
     CONF_GRID_POWER,
+    CONF_HEADS,
     CONF_HOUSE_LOAD,
     CONF_HUMIDITY_SENSOR,
     CONF_LOCKOUT_REASON,
@@ -82,6 +83,7 @@ from .const import (
     CONF_TARIFF_ENTRY,
     CONF_TEMPERATURE_SENSOR,
     CONF_TTS_ENGINE,
+    CONF_UNIT_POWER,
     CONF_WARNING_GRACE,
     CONF_WEATHER,
     CONF_WINDOW_FACING,
@@ -110,6 +112,7 @@ from .forms import (
     room_answers,
     rooms_from_options,
     summary,
+    unit_meter_conflict,
 )
 from .models import CapabilityProfile, PowerManagement
 
@@ -418,24 +421,40 @@ class _RoomScreens:
                                     errors=errors, description_placeholders=placeholders)
 
     async def async_step_room_2(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Room screen 2, once for each air conditioner: its outdoor unit and
-        compressor frequency sensor [D020][Prop]."""
+        """Room screen 2, once for each air conditioner: its outdoor unit, its
+        compressor frequency sensor, and the meter on its circuit [D020][D110]."""
         head = self.heads[self.head_index]
         schema = probatio.Schema({
             probatio.Optional(CONF_OUTDOOR_UNIT): SelectSelector(SelectSelectorConfig(
                 options=outdoor_unit_choices(self.options), custom_value=True, mode=SelectSelectorMode.DROPDOWN)),
             probatio.Optional(CONF_FREQUENCY_SENSOR): _entity("sensor", "frequency"),
+            probatio.Optional(CONF_UNIT_POWER): _entity("sensor", "power"),
         })
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         if user_input is not None:
             head.pop(CONF_OUTDOOR_UNIT, None)
             head.pop(CONF_FREQUENCY_SENSOR, None)
+            head.pop(CONF_UNIT_POWER, None)
             head.update({k: v for k, v in user_input.items() if v not in (None, "")})
-            self.head_index += 1
-            if self.head_index < len(self.heads):
-                return await self.async_step_room_2()
-            return await self.async_step_room_3()
+            others: list[Mapping[str, Any]] = [
+                h for h in self.heads if h.get(CONF_CLIMATE) != head[CONF_CLIMATE]]
+            others += [h for room in self.options.get(CONF_ROOMS, []) if isinstance(room, Mapping)
+                       and room.get(CONF_ROOM_ID) != self.room_id
+                       for h in (room.get(CONF_HEADS) or []) if isinstance(h, Mapping)]
+            unit = unit_meter_conflict(head, others)
+            if unit is not None:
+                errors[CONF_UNIT_POWER] = "meter_conflict"
+                placeholders = {"unit": unit}
+            else:
+                self.head_index += 1
+                if self.head_index < len(self.heads):
+                    return await self.async_step_room_2()
+                return await self.async_step_room_3()
         return self.async_show_form(step_id="room_2", data_schema=self.add_suggested_values_to_schema(schema, head),
-                                    description_placeholders={"climate": str(head[CONF_CLIMATE]),
+                                    errors=errors,
+                                    description_placeholders={**placeholders,
+                                                              "climate": str(head[CONF_CLIMATE]),
                                                               "count": f"{self.head_index + 1} of {len(self.heads)}"})
 
     async def async_step_room_3(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

@@ -48,7 +48,7 @@ class LoadStepWindow(unittest.TestCase):
                 house=models.HouseConfig(house_load="sensor.load"), states=_states(now, mode), now=now,
                 choices=models.RoomChoices(), location=None, forecast=(), forecast_temperature_unit=None,
                 forecast_wind_unit=None, tariff=(), load_history=lh, commands=commands,
-                draw_kw={UNIT: 1.5}, head_outdoor_units={CLIMATE: UNIT},
+                draw_kw={UNIT: 1.5},
             )
             seen.append((now.strftime("%M:%S"), snap.heads[0].compressor.value))
             lh.add(now, 1.0 + (1.5 if now >= start_at else 0.0))  # coordinator._house

@@ -67,6 +67,7 @@ from .const import (
     CONF_TARIFF_ENTRY,
     CONF_TEMPERATURE_SENSOR,
     CONF_TTS_ENGINE,
+    CONF_UNIT_POWER,
     CONF_WARNING_GRACE,
     CONF_WEATHER,
     CONF_WINDOW_FACING,
@@ -260,7 +261,8 @@ def room_from_options(data: Mapping[str, Any]) -> RoomConfig:
     if isinstance(heads_raw, list):
         for h in heads_raw:
             if isinstance(h, Mapping) and (climate := _text(h.get(CONF_CLIMATE))) is not None:
-                heads.append(HeadConfig(climate, _text(h.get(CONF_OUTDOOR_UNIT)), _text(h.get(CONF_FREQUENCY_SENSOR))))
+                heads.append(HeadConfig(climate, _text(h.get(CONF_OUTDOOR_UNIT)), _text(h.get(CONF_FREQUENCY_SENSOR)),
+                                        _text(h.get(CONF_UNIT_POWER))))
     if room_id is None or name is None or temperature is None or humidity is None or not heads:
         raise ValueError("the room's id, name, air conditioners and sensors are required")
     management_raw = data.get(CONF_POWER_MANAGEMENT, PowerManagement.OFF.value)
@@ -350,7 +352,8 @@ def build_room(
             continue
         out[key] = value
     out[CONF_HEADS] = [
-        {k: v for k, v in h.items() if k in (CONF_CLIMATE, CONF_OUTDOOR_UNIT, CONF_FREQUENCY_SENSOR) and v}
+        {k: v for k, v in h.items()
+         if k in (CONF_CLIMATE, CONF_OUTDOOR_UNIT, CONF_FREQUENCY_SENSOR, CONF_UNIT_POWER) and v}
         for h in heads
     ]
     for key in ROOM_SCREEN_3:
@@ -423,6 +426,37 @@ def lockout_choices(options: Mapping[str, Any]) -> list[str]:
 def outdoor_unit_choices(options: Mapping[str, Any]) -> list[str]:
     """The outdoor unit dropdown: names already used [D020]."""
     return [u for u in options.get(CONF_OUTDOOR_UNIT_NAMES, []) if isinstance(u, str)]
+
+
+def head_unit(head: Mapping[str, Any]) -> str:
+    """The outdoor unit a head runs on: the name it is given, or the head
+    itself when it has a unit of its own [D020]."""
+    return _text(head.get(CONF_OUTDOOR_UNIT)) or f"own:{head.get(CONF_CLIMATE)}"
+
+
+def unit_meter_conflict(
+    head: Mapping[str, Any], others: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """The outdoor unit whose heads name two different meters, or None
+    [D110].
+
+    One meter measures one circuit, and each air conditioner's isolator
+    feeds one circuit, so every head on one outdoor unit names the same
+    sensor. A head left empty takes its unit's meter from whichever head
+    names it; two names for one unit is a mistake, and the unit is named
+    for the message.
+    """
+    unit = head_unit(head)
+    meter = _text(head.get(CONF_UNIT_POWER))
+    if meter is None:
+        return None
+    for other in others:
+        if head_unit(other) != unit:
+            continue
+        named = _text(other.get(CONF_UNIT_POWER))
+        if named is not None and named != meter:
+            return unit.removeprefix("own:")
+    return None
 
 
 # --------------------------------------------------------------------------

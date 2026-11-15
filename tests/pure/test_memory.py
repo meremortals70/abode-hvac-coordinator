@@ -240,8 +240,7 @@ class Seed(unittest.TestCase):
                                   forecast=[{"datetime": t.replace(minute=0).isoformat(), "cloud_coverage": 30,
                                              "uv_index": None}],
                                   forecast_temperature_unit=None, forecast_wind_unit=None, tariff=(),
-                                  load_history=load("observe").LoadHistory(), commands={}, draw_kw={},
-                                  head_outdoor_units={"climate.sim": "own:climate.sim"})
+                                  load_history=load("observe").LoadHistory(), commands={}, draw_kw={})
             live.minute(snap, t.hour + t.minute / 60.0)
             if t.minute % 5 == 0:
                 live.five_minutes(t)

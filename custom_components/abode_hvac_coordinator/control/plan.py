@@ -393,7 +393,7 @@ def _first_bar(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -
         and (inp.now - inp.stopped_since).total_seconds() < MIN_REST_S
     ):
         left = (MIN_REST_S - (inp.now - inp.stopped_since).total_seconds()) / 60.0
-        return f"the unit stopped less than its minimum rest ago: {left:.0f} min left"
+        return f"the unit stopped less than its minimum rest ago: {math.ceil(left)} min left"
     # a stop within the minimum run is not allowed [D016]
     if (
         not runs
@@ -404,7 +404,7 @@ def _first_bar(inp: PlanInputs, action: PlanAction, can_carry_on: bool = True) -
         and (inp.now - inp.running_since).total_seconds() < MIN_RUN_S
     ):
         left = (MIN_RUN_S - (inp.now - inp.running_since).total_seconds()) / 60.0
-        return f"the unit has not run its minimum run: {left:.0f} min left"
+        return f"the unit has not run its minimum run: {math.ceil(left)} min left"
     return None
 
 

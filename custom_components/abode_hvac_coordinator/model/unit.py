@@ -25,11 +25,12 @@ from ..const import (
     DRAW_STEP_WINDOW_S,
     DRAW_WITHOUT_LOAD_SENSOR_KW,
     LOAD_STEP_WINDOW_S,
+    METER_RUNNING_KW,
     UNIT_CURVE_EFFORTS_C,
     UNIT_MIN_RATE_HOLD_MIN,
 )
 from ..models import CompressorSource, CompressorState, HeadSnapshot
-from ..observe import LoadHistory
+from ..observe import LoadHistory, UnitMeters
 from .physics import Figures, curve_effort, curve_rate
 
 COOLING_MODES = frozenset({"cool", "dry"})
@@ -257,8 +258,12 @@ class DrawLearner:
         heads: Sequence[HeadSnapshot],
         commands: Mapping[str, datetime],
         load: LoadHistory,
+        meters: UnitMeters | None = None,
     ) -> None:
-        """Watch every head in the house each minute."""
+        """Watch every head in the house each minute.
+
+        meters: the outdoor units that have a meter of their own. A metered
+        unit's draw is measured, not inferred from the house load [D110]."""
         before = dict(self._watch)
         # an outdoor unit another head kept running across the minute did
         # not start or stop: a head joining or leaving it says nothing of
@@ -301,9 +306,11 @@ class DrawLearner:
             self._changes.append((unit, when))
         horizon = now - timedelta(seconds=10 * LOAD_STEP_WINDOW_S)
         self._seen_commands = {c for c in self._seen_commands if c[1] >= horizon}
-        self._judge(now, load)
+        self._judge(now, load, meters)
+        if meters is not None:
+            self._learn_from_meters(heads, meters)
 
-    def _judge(self, now: datetime, load: LoadHistory) -> None:
+    def _judge(self, now: datetime, load: LoadHistory, meters: UnitMeters | None = None) -> None:
         window = timedelta(seconds=DRAW_STEP_WINDOW_S)
         base = timedelta(seconds=DRAW_BASELINE_S)
         # a change is seen up to a minute after it was made: the minute
@@ -314,6 +321,8 @@ class DrawLearner:
         # learned, events wait (and lapse once their load has gone) [Der]
         min_step = load.step_kw()
         for ev in self._events:
+            if meters is not None and meters.has(ev.outdoor_unit):
+                continue  # this unit's draw is measured, not inferred [D110]
             if now - ev.when < window or min_step is None:
                 if now - ev.when < 2 * window:
                     keep.append(ev)
@@ -348,6 +357,28 @@ class DrawLearner:
                 self._add(ev.outdoor_unit, ev.effort, draw)
         self._events = keep
 
+    def _learn_from_meters(self, heads: Sequence[HeadSnapshot], meters: UnitMeters) -> None:
+        """Each metered unit's draw at an effort, measured [D110].
+
+        A meter measures the unit, so a reading is learned only where the
+        whole of it belongs to one head: exactly one head on that unit is in
+        a working mode with an effort, and the unit is drawing above its
+        resting level. Two heads working at once cannot be told apart, and
+        that reading is skipped, as the house-load step skips it."""
+        by_unit: dict[str, list[HeadSnapshot]] = {}
+        for h in heads:
+            if meters.has(h.outdoor_unit):
+                by_unit.setdefault(h.outdoor_unit, []).append(h)
+        for unit, group in by_unit.items():
+            working = [h for h in group if _working(h)]
+            if len(working) != 1:
+                continue
+            effort = head_effort(working[0])
+            draw = meters.draw(unit)
+            if effort is None or draw is None or draw < METER_RUNNING_KW:
+                continue
+            self._add(unit, max(effort, 0.0), draw)
+
     def _add(self, unit: str, effort: float, draw: float) -> None:
         efforts = curve_efforts()
         idx = min(range(len(efforts)), key=lambda i: abs(efforts[i] - effort))
@@ -374,6 +405,18 @@ class DrawLearner:
             if x0 <= effort <= x1:
                 return y0 + (effort - x0) / (x1 - x0) * (y1 - y0)
         return known[-1][1]
+
+    def curve(self) -> dict[str, list[tuple[float, float, int]]]:
+        """The learned curves, for the trace [D028][D110]: each outdoor unit,
+        each effort it has been seen drawing at, the draw there in kW, and
+        how many readings stand behind it. Small enough to record every
+        cycle, which is what lets a day's plan be checked afterwards against
+        what the units actually drew."""
+        efforts = curve_efforts()
+        return {
+            unit: [(efforts[i], round(mean, 3), count) for i, (mean, count) in sorted(bins.items())]
+            for unit, bins in sorted(self.table.items())
+        }
 
     def as_dict(self) -> dict[str, Any]:
         """What Memory keeps."""

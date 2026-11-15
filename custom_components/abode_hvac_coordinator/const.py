@@ -58,6 +58,7 @@ CONF_HEADS: Final = "heads"
 CONF_CLIMATE: Final = "climate"
 CONF_OUTDOOR_UNIT: Final = "outdoor_unit"
 CONF_FREQUENCY_SENSOR: Final = "frequency_sensor"
+CONF_UNIT_POWER: Final = "unit_power"
 CONF_TEMPERATURE_SENSOR: Final = "temperature_sensor"
 CONF_HUMIDITY_SENSOR: Final = "humidity_sensor"
 CONF_PRESENCE_SENSOR: Final = "presence_sensor"
@@ -202,6 +203,12 @@ LOAD_NOISE_MIN_READINGS: Final = 20  # [Prop]
 LOAD_STEP_SIGMAS: Final = 3.0  # [Der]
 CHI2_1_MEDIAN: Final = 0.4549364231195724  # [Der]
 LOAD_WATCH_RECENT_S: Final = 60.0  # [Prop]
+# An outdoor unit's own meter [D110]. The compressor draws well over 0.15 kW
+# and its stopped fan well under it, so the meter separates them without
+# learning anything; readings are kept over the last 3 minutes, so the unit's
+# resting level is known from any stop in that time.
+METER_RUNNING_KW: Final = 0.15  # [Der]
+METER_KEEP_S: Final = 3 * 60.0  # [Prop]
 
 # --------------------------------------------------------------------------
 # Model (Module 2, Section 4.2-4.3)

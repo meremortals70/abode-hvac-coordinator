@@ -64,7 +64,7 @@ class DrawFromLoadStep(unittest.TestCase):
                 house=models.HouseConfig(house_load="sensor.load"), states=_states(now, setpoint), now=now,
                 choices=models.RoomChoices(), location=None, forecast=(), forecast_temperature_unit=None,
                 forecast_wind_unit=None, tariff=(), load_history=lh, commands=commands,
-                draw_kw={UNIT: draw.draw_at(UNIT, 2.0)}, head_outdoor_units={CLIMATE: UNIT},
+                draw_kw={UNIT: draw.draw_at(UNIT, 2.0)},
             )
             sources.append((now, snap.heads[0].compressor, snap.heads[0].compressor_source))
             lh.add(now, load_kw(now))  # coordinator._house
@@ -80,6 +80,52 @@ class DrawFromLoadStep(unittest.TestCase):
         learned = {draw.draw_at(UNIT, e) for e in unit.curve_efforts()}
         self.assertGreaterEqual(min(learned), 1.4, f"table {draw.table}; draw by effort {sorted(learned)} kW, "
                                 f"true {TRUE_DRAW} kW")
+
+
+class DrawFromMeter(unittest.TestCase):
+    """A metered unit's draw is measured, so nothing of the house's load is
+    needed and one reading at an effort is enough [D110]."""
+
+    def states(self, now: datetime, watts: str, setpoint: float) -> dict:
+        states = _states(now, setpoint)
+        states["sensor.meter"] = models.RawState("sensor.meter", watts, {"unit_of_measurement": "W"}, now, now)
+        return states
+
+    def observe(self, draw: object, meters: object, now: datetime, watts: str, setpoint: float) -> None:
+        snap = observe.RoomObserver(_room()).build(
+            house=models.HouseConfig(), states=self.states(now, watts, setpoint), now=now,
+            choices=models.RoomChoices(), location=None, forecast=(), forecast_temperature_unit=None,
+            forecast_wind_unit=None, tariff=(), load_history=observe.LoadHistory(), commands={}, draw_kw={},
+            unit_meters={UNIT: "sensor.meter"},
+        )
+        draw.observe(now, snap.heads, {}, observe.LoadHistory(), meters)
+
+    def test_the_meter_teaches_the_draw_without_a_house_load(self) -> None:
+        draw, meters = unit.DrawLearner(has_load_sensor=True), observe.UnitMeters()
+        now = T0
+        meters.add(now, UNIT, 0.02)
+        meters.add(now + timedelta(seconds=30), UNIT, 0.02)  # the resting level: the fan
+        self.observe(draw, meters, now, "20", 24.0)  # resting: nothing to learn
+        self.assertIsNone(draw.draw_at(UNIT, 2.0))
+        now += timedelta(seconds=30)
+        meters.add(now, UNIT, 1.52)
+        self.observe(draw, meters, now, "1520", 22.0)  # 2 K of effort, 1.5 kW above resting
+        self.assertAlmostEqual(draw.draw_at(UNIT, 2.0) or 0.0, 1.5, places=2)
+        self.assertEqual(draw.table[UNIT], {3: (1.5, 1)})  # effort 2 is bin 3, one reading
+
+    def test_a_metered_unit_is_not_learned_from_the_house_load(self) -> None:
+        """The load step would read the whole house, so a metered unit's draw
+        never comes from it: the meter's reading stands alone [D028][D110]."""
+        draw, meters = unit.DrawLearner(has_load_sensor=True), observe.UnitMeters()
+        meters.add(T0, UNIT, 0.02)
+        draw._events.append(unit._DrawEvent(UNIT, T0, 1, 2.0))
+        lh = observe.LoadHistory()
+        for k in range(40):
+            lh.add(T0 - timedelta(seconds=30 * (40 - k)), 1.0 + (0.03, -0.02, 0.01, -0.03)[k % 4])
+        for k in range(30):
+            lh.add(T0 + timedelta(seconds=30 * k), 1.0 + TRUE_DRAW + (0.03, -0.02, 0.01, -0.03)[k % 4])
+        draw._judge(T0 + timedelta(minutes=6), lh, meters)
+        self.assertEqual(draw.table.get(UNIT, {}), {})
 
 
 if __name__ == "__main__":

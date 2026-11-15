@@ -35,7 +35,7 @@ Windows are **in UTC** on the command line. Brisbane is +10 with no daylight
 saving, so local 21:00 → 08:00 is UTC 11:00 → 22:00 of the same calendar day.
 
 Success prints `OK: upload /homeassistant/abode_<tag>.tar.gz (132.0K)`. Upload
-that tarball to `C:\Users\jason\Nextcloud\abode-hvac-coordinator\tools\` and
+that tarball to `C:\Users\jason\Nextcloud\opencode\projects\abode-hvac-coordinator\tools\` and
 extract it.
 
 ### Gotchas

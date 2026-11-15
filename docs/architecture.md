@@ -238,6 +238,8 @@ The same test is applied to six-hour forecasts over 14 days. Trust is published,
 - **Lowest continuous rate.** U\_min, one for cooling and one for heating, each on its own curve, is the rate of a 30-minute run without a stop held at or below the lowest rate offered at the time, with an effort asked in every minute; it replaces the last, up or down. The lowest rate offered is never below the curve's first point, which is used until a run is learned [D100]. A dry run is not a cooling run and says nothing of this floor: dry's sensible rate is its own share of the cooling curve [D108].
 - **Draw.** A start is a head put in cool, dry or heat from off or fan-only, or a compressor reported starting; a stop is a head put in off or fan-only from cool, dry or heat, or a compressor reported stopping. Neither needs the unit to report its compressor: the house load says whether it moved. When exactly one outdoor unit starts or stops and no other changes from 3 minutes before to 4 minutes after, the step in house load is its draw at that effort [D028]. The load before is its average over the 3 minutes before, after this unit's own last change; after a start, the average from the first reading that rose, since a compressor starts up to 3.3 minutes after its head is put in cool [Sim: the house's recorder, 7 November 2026]; after a stop, the average of what follows; each cut at this unit's next change. A step under three times the house power's own noise is its own movement, not a draw. That noise is learned from the house power's readings as the room sensor's is: from their second differences, taking the median, which a few real steps do not move (0.03 kW on the house's record) [Der]. No effort threshold applies: a unit reading its setpoint in whole degrees was still drawing 0.23 kW (decision of 8 November 2026). Between such efforts it is joined by straight lines; beyond them the nearest known value is used [Prop].
 
+**A metered unit's draw is measured, not inferred** [D110]. Where a meter is configured on the unit's circuit, its reading less the unit's resting level — the median of its recent readings below 0.15 kW, the fan with the compressor stopped — is the draw at the effort the one working head asks, and the house load is not consulted for that unit at all: two heads working at once cannot be told apart and that reading is skipped, as the house-load step skips it. Nothing is learned until the unit has been seen resting, because until then its fan would be counted as its compressor.
+
 **Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
 
 **What uses the model.** Every other part asks the model; none keeps its own idea of the room [Prop]:
@@ -429,7 +431,7 @@ P^* = \text{credit} + \max\!\left(0,\; \min\!\left(\frac{\max(E_{avail},0)}{t_{e
 
 **One gap in the budget's mathematics** [Der]:
 
-- **Draw away from start efforts.** Draw is learned only at the efforts where starts and stops happened (4.3). Between them it is interpolated, which is [Prop]. With a frequency sensor the draw can also be learned while running, which is [NYE].
+- **Draw away from start efforts.** Without a meter, draw is learned only at the efforts where starts and stops happened (4.3); between them it is interpolated, which is [Prop]. A meter measures it every minute the unit draws at one head's effort [D110], and with a frequency sensor the draw can also be learned while running, which is [NYE].
 
 **Grid checks** [D038][D043]:
 
@@ -452,11 +454,14 @@ Whether the compressor ran decides which rate the filter is told the unit delive
 | --- | --- |
 | 0. The head is off or in fan-only | Not running, whatever a frequency sensor says: one sensor is often chosen for every head on an outdoor unit and reads another head's compressor [D025] |
 | 1. Compressor frequency | Running above 0 Hz [Prop] |
-| 2. `hvac_action` | Cooling, heating or drying is running; idle, fan or off is not [D025] |
-| 3. House power | Off or fan-only is not running (row 0). In any other mode the house power is watched: a rise of the step (half the unit's learned draw, never under three times the house power's learned noise; that alone before any draw is learned [Der]) in its average over the last minute against its median over the 3 minutes before is the compressor starting, and that median is where the power stands with it stopped; a fall to within half a step of that is it stopping. A fall that stays above it is an inverter slowing near its setpoint, not a stop. A head put to work from off or fan-only starts stopped. A state it finds teaches no draw, since it is dated after the change [D101][D028] |
-| 4. Unknown | Not learned from; the trace says so [Prop]. In a mode that runs the compressor (cool, dry, heat) it counts as running wherever the component decides what to do: the power budget and the Enforced turn-off, the plan, the day's cost, the short-cycle guard and an opening's grace [D028] |
+| 2. A meter on the unit's circuit | Running at or above 0.15 kW: one meter per isolator switch, and an isolator feeds one compressor, so the reading is that compressor's whichever head asks [D110] |
+| 3. `hvac_action` | Cooling, heating or drying is running; idle, fan or off is not [D025] |
+| 4. House power | Off or fan-only is not running (row 0). In any other mode the house power is watched: a rise of the step (half the unit's learned draw, never under three times the house power's learned noise; that alone before any draw is learned [Der]) in its average over the last minute against its median over the 3 minutes before is the compressor starting, and that median is where the power stands with it stopped; a fall to within half a step of that is it stopping. A fall that stays above it is an inverter slowing near its setpoint, not a stop. A head put to work from off or fan-only starts stopped. A state it finds teaches no draw, since it is dated after the change [D101][D028] |
+| 5. Unknown | Not learned from; the trace says so [Prop]. In a mode that runs the compressor (cool, dry, heat) it counts as running wherever the component decides what to do: the power budget and the Enforced turn-off, the plan, the day's cost, the short-cycle guard and an opening's grace [D028] |
 
 The source that answered is recorded every cycle [D006].
+
+**The short-cycle guard times the run from the compressor, not from the command** [D110]. A unit that is measured is held to its minimum run only while it is measured running, and released at once when the measurement says it stopped; where the compressor cannot be told either way (row 5) the command is the best effort there is, which is what every house had before [D016]. The plan already asks the same question of the same answer (4.4), so the two can no longer disagree in one cycle.
 
 ### 4.9 The learned controller, and when it may take over
 
@@ -643,12 +648,13 @@ BUILD SNAPSHOT, for one room, from the raw states the coordinator hands over:
       0. the head off or in fan-only   not running (a frequency sensor
                                        may be another head's)         [D025]
       1. frequency sensor MEASURED     running if above 0 Hz          [Prop]
-      2. hvac_action reported          running if cooling, heating or
+      2. the unit's meter MEASURED    running at or above 0.15 kW   [D110]
+      3. hvac_action reported          running if cooling, heating or
                                        drying; not if idle, fan or off [D025]
-      3. house power (above)           started or stopped; a head put
+      4. house power (above)           started or stopped; a head put
                                        to work from off or fan-only
                                        starts stopped                 [Prop]
-      4. otherwise                     UNKNOWN                        [Prop]
+      5. otherwise                     UNKNOWN                        [Prop]
       RECORD which source answered                                    [D006]
 
   SUN ON THE GLASS, 0 to 1:                                           [D023]

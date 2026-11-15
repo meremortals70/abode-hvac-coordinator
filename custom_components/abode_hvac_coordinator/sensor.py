@@ -125,6 +125,9 @@ ROOM_SENSORS: tuple[RoomSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         suggested_display_precision=2,
         value=lambda v: _round(v.learning, 3),
+        # the learned curves, kept small enough to record: the mode sensor's
+        # model attribute is too large for the recorder [D109][D110]
+        attributes=lambda v: {"curves": v.curves, "efforts": v.efforts},
     ),
     RoomSensorDescription(
         key="comfort_in_band",
@@ -318,6 +321,12 @@ HOUSE_SENSORS: tuple[HouseSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value=lambda h: len(h.stale),
         attributes=lambda h: {"feeds": list(h.stale)},
+    ),
+    HouseSensorDescription(
+        key="learned_draw",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value=lambda h: len(h.learned_draw),
+        attributes=lambda h: {"units": h.learned_draw},
     ),
     HouseSensorDescription(
         key="rooms_configured",

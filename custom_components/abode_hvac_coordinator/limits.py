@@ -27,6 +27,7 @@ from .models import (
     BlindCommand,
     CapabilityProfile,
     ComfortResult,
+    CompressorState,
     DeliveryResult,
     DueWarning,
     HeadCommand,
@@ -362,6 +363,11 @@ class GuardEntry:
     # opposite ways (decision of 6 November 2026)
     outside: float = 0.0
     from_centre: float = 0.0
+    # per outdoor unit, the compressor as its heads see it [D110]: whether
+    # it is running, stopped, or not known. A run is timed from this, not
+    # from the command, so a command that never started the compressor is
+    # not a run
+    observed_state: Mapping[str, CompressorState] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -378,15 +384,24 @@ class HouseGuard:
         for e in entries:
             for u in e.outdoor_units:
                 by_unit.setdefault(u, []).append(e)
-                if u not in self._units:
-                    self._units[u] = _Outdoor(bool(e.observed_running.get(u, False)), None)
+        for u, rooms in by_unit.items():
+            if u not in self._units:
+                seen = self._seen(u, rooms)
+                self._units[u] = _Outdoor(
+                    any(e.observed_running.get(u, False) for e in rooms) if seen is None else seen, None)
         held_off: set[str] = set()
         for u, rooms in by_unit.items():
             self._one_way(u, rooms)
         for u, rooms in by_unit.items():
             state = self._units[u]
+            # what the compressor is seen to do now: the unit's own word
+            # (a frequency sensor, a meter on its circuit, an hvac_action),
+            # then the house-load step, and where nothing can say, the state
+            # latched last cycle [D110]
+            seen = self._seen(u, rooms)
+            running_now = state.running if seen is None else seen
             ways = {_wanted_way(e, u) for e in rooms} - {0}
-            if state.running and state.direction and ways and state.direction not in ways:
+            if running_now and state.direction and ways and state.direction not in ways:
                 # a reversal is a stop and a start: the run must have lasted
                 # its 10 minutes, and the rest its 5, before the other way
                 # runs [D016]. Inside the run, the rooms that were running
@@ -419,11 +434,13 @@ class HouseGuard:
                 for e in rooms
             )
             since = now - state.since if state.since is not None else None
-            if wanted and not state.running and since is not None and since < _MIN_REST:
+            # a stop the meter says already happened is not one to hold: the
+            # run is timed from the compressor, not from the command [D110]
+            if wanted and not running_now and since is not None and since < _MIN_REST:
                 for e in rooms:
                     if e.step.kind in RUNNING_KINDS:
                         self._hold_rest(e.step, (_MIN_REST - since).total_seconds())
-            elif not wanted and state.running and since is not None and since < _MIN_RUN:
+            elif not wanted and running_now and since is not None and since < _MIN_RUN:
                 for e in rooms:
                     if not e.step.user_stop and e.limits.last_running and e.step.kind is not StepKind.NONE:
                         if e.step.kind is StepKind.OFF:
@@ -440,7 +457,12 @@ class HouseGuard:
             # a room whose unit is left as it is (Automatic control off, an
             # opening that cannot be timed) runs as it is seen to run, so a
             # start made by hand counts when control comes back [D016][D089]
-            running = any(
+            # The run is the compressor's, not the command's [D110]: a
+            # frequency sensor, a meter on its circuit or an hvac_action is
+            # the unit's own word; the house-load step is the fallback where
+            # none of those exists; where the compressor cannot be told
+            # either way the command is the best effort there is
+            running = seen if seen is not None else any(
                 results[e.step.room_id].kind in RUNNING_KINDS
                 or (results[e.step.room_id].kind is StepKind.NONE and e.observed_running.get(u, False))
                 for e in rooms
@@ -459,6 +481,24 @@ class HouseGuard:
             if running:
                 state.direction = way
         return results
+
+    @staticmethod
+    def _seen(unit: str, rooms: Sequence[GuardEntry]) -> bool | None:
+        """Whether the unit's compressor is running, from what the rooms
+        observe [D110]: yes if any head on it is seen running, no only if
+        every head on it is seen stopped, and not known where the heads
+        disagree or one of them cannot say.
+
+        The heads on one outdoor unit share its compressor, so the room that
+        cannot say does not overrule the one that can. Where no room can say,
+        None leaves the guard on the command as the best effort there is.
+        """
+        states = [e.observed_state[unit] for e in rooms if unit in e.observed_state]
+        if any(s is CompressorState.RUNNING for s in states):
+            return True
+        if states and all(s is CompressorState.STOPPED for s in states):
+            return False
+        return None
 
     @staticmethod
     def _one_way(unit: str, rooms: Sequence[GuardEntry]) -> None:
@@ -496,13 +536,14 @@ class HouseGuard:
 
     @staticmethod
     def _keep_running(e: GuardEntry, wait_s: float) -> None:
-        """A stop refused: keep running on the last running command; the
-        blind and fan choices of the proposed step stand [D016]."""
-        s = e.step
-        fans = {h.climate: h.fan_mode for h in (s.heads or s.rest_heads)}
-        heads = tuple(replace(h, fan_mode=fans.get(h.climate, h.fan_mode)) for h in e.limits.last_running)
-        s.to(LimitRule.SHORT_CYCLE_GUARD, _running_kind(heads), "Short-cycle guard: the compressor ran less "
-             f"than 10 minutes; stop held {math.ceil(wait_s)} s.", heads)
+        """A stop refused: keep running on the last running command, its fan
+        included. The step refused here is a stop or a rest, and a rest
+        step's fan is the resting fan, so it has no fan choice of its own to
+        stand: writing it onto the running command would slow the head that
+        is being kept running [D016][D110]."""
+        heads = e.limits.last_running
+        e.step.to(LimitRule.SHORT_CYCLE_GUARD, _running_kind(heads), "Short-cycle guard: the compressor ran less "
+                  f"than 10 minutes; stop held {math.ceil(wait_s)} s.", heads)
 
 
 def _running_kind(heads: Sequence[HeadCommand]) -> StepKind:

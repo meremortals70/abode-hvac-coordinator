@@ -13,7 +13,7 @@ Entity ids below are for a room named Office; yours follow your room's name.
 | Dew point | `sensor.office_dew_point` | The room's dew point. Attributes: outdoor dew point, outdoor apparent temperature, free cooling advised, condensation risk |
 | Settings | `sensor.office_settings` | The number of air conditioners; attributes: every setting of the room (unset ones say so) and what the units can do. Diagnostic, disabled by default |
 | Controller | `sensor.office_controller` | Plan and PID, or the learned controller; attributes: the plan in force and the arbiter's record. Diagnostic |
-| Learning | `sensor.office_learning` | The last week's average error of the model's one-hour forecast, °C. Falls as the model learns. Diagnostic |
+| Learning | `sensor.office_learning` | The last week's average error of the model's one-hour forecast, °C. Falls as the model learns. Its attributes carry the learned cool, heat and dry curves, °C/h at the efforts the plan asks. Diagnostic |
 | Comfort in band | `sensor.office_comfort_in_band` | Yesterday's share of occupied time inside the band, %. Diagnostic |
 | Near the centre | `sensor.office_near_the_centre` | Yesterday's share of occupied time within 0.3 of the band's centre, %. Diagnostic |
 | Starts per running hour | `sensor.office_starts_per_running_hour` | Yesterday's compressor starts per hour run. Diagnostic, disabled by default |
@@ -68,4 +68,5 @@ Under the device **Abode HVAC Coordinator**:
 | Outdoor dew point | `sensor.abode_hvac_coordinator_outdoor_dew_point` | |
 | Forecast peak | `sensor.abode_hvac_coordinator_forecast_peak` | The highest temperature in the hourly forecast |
 | Stale feeds | `sensor.abode_hvac_coordinator_stale_feeds` | How many feeds are too old to use, with the list. Diagnostic |
+| Learned draw | `sensor.abode_hvac_coordinator_learned_draw` | How many outdoor units have a learned draw, with each unit's curve: effort, kW and the readings behind it. Diagnostic |
 | Rooms configured | `sensor.abode_hvac_coordinator_rooms_configured` | Diagnostic |

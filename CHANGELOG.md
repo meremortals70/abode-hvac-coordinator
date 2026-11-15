@@ -6,6 +6,66 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.11 - 2026-11-15
+
+### Added
+
+- **An outdoor unit's own meter answers whether its compressor runs [D110].**
+  A unit that reports neither its compressor's frequency nor `hvac_action` had
+  only the whole house's load, which cannot see a compressor whose draw is
+  small against the house's movement. The office, 14 November, asked for dry at
+  17:15:15: the load read 695 W before the command and 694 W a minute after,
+  the compressor never started, and the room's comfort index rose 27.94 → 28.11
+  while the component reported 0.81 °C/h delivered. Each air conditioner's
+  isolator feeds one circuit and one compressor, so a meter at the switch is
+  that compressor's alone, on a multihead as much as on a single head. The new
+  **Outdoor unit power meter** field on the air conditioner screen takes such a
+  sensor; one meter per unit, so every head on the same outdoor unit names the
+  same one, and a room is refused with "every head on {unit} must name the same
+  meter" where two names are given. The compressor ladder becomes frequency,
+  **meter**, `hvac_action`, house load, unknown.
+- **A metered unit's draw is measured, not inferred [D110].** The unit's
+  resting level is the median of its recent readings below 0.15 kW — its fan
+  with the compressor stopped — and its draw is the reading above that, at the
+  effort of the one head working. The house-load step is not consulted for that
+  unit at all. Two heads working at once cannot be told apart, and that reading
+  is skipped as the load step skips it.
+- **The learned curves are recorded.** The mode sensor's `model` attribute is
+  too large for the recorder, so the curves the plan reads never reached a
+  history or an export. `sensor.<room>_learning` now carries them as attributes
+  — cool, heat and dry, °C/h at the efforts the plan asks — and a new house
+  sensor, `sensor.abode_hvac_coordinator_learned_draw`, carries each outdoor
+  unit's draw curve: effort, kW and the readings behind it. What the model
+  believes can now be read from a night's export rather than reconstructed
+  from behaviour.
+
+### Changed
+
+- **The short-cycle guard times the minimum run from the compressor, not from
+  the command [D110].** At 17:15 on 14 November the office was held in dry for
+  exactly ten minutes on the strength of the command while the compressor was
+  stopped, and in the same cycle the plan's blocked reason said the unit had
+  stopped less than its minimum rest ago — two modules, one snapshot, opposite
+  answers. A unit whose compressor is seen running is now held to its minimum
+  run on that evidence and released as soon as the evidence says it stopped;
+  only where the compressor cannot be told either way does the command stand,
+  which is what every house had before [D016]. The heads on one unit share its
+  compressor, so the unit counts as running if any head on it is seen running
+  and as stopped only if every head on it is seen stopped.
+- **A block that still blocked no longer says "0 min left".** The plan's
+  reasons round the time left up a minute, as the guard's own message already
+  did, so a block with 29 seconds to run reads "1 min left".
+
+### Fixed
+
+- **A stop the guard refused wrote the rest step's fan onto the running
+  command.** A refused stop keeps the unit on its last running command, and it
+  took that command's mode and setpoint but the refused step's fan — the
+  resting fan — so a head kept running was put on `quiet`. Seen in the office
+  at 17:25:15 and 17:25:21 (dry, fan `quiet`, before the unit went to its fan)
+  and in the living room at 06:15:21-06:15:29 (`quiet`, `auto`, `quiet`). The
+  running command is now kept whole, fan included [D016].
+
 ## 0.10.10 - 2026-11-14
 
 ### Changed

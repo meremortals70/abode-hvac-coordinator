@@ -87,7 +87,7 @@ def build(
         "load_history": observe.LoadHistory(),
         "commands": {},
         "draw_kw": {},
-        "head_outdoor_units": {},
+        "unit_meters": {},
     }
     args.update(kw)
     obs = observer if observer is not None else observe.RoomObserver(r if r is not None else room())
@@ -463,6 +463,62 @@ class Tariff(unittest.TestCase):
         ended = models.TariffInterval(NOW - timedelta(hours=1), NOW, "old", 0.1)
         begun = models.TariffInterval(NOW, NOW + timedelta(hours=1), "new", 0.2)
         self.assertEqual(build(tariff=[ended, begun]).tariff_now, begun)
+
+
+class Meters(unittest.TestCase):
+    def test_resting_level_and_the_draw_above_it(self) -> None:
+        m = observe.UnitMeters()
+        m.add(NOW, "u1", 0.02)
+        m.add(NOW + timedelta(seconds=30), "u1", 0.03)
+        self.assertLess(m.draw("u1") or 0.0, 0.15)  # only the fan: nothing for the learner to keep
+        m.add(NOW + timedelta(seconds=60), "u1", 0.92)
+        self.assertAlmostEqual(m.resting("u1") or 0.0, 0.025, places=3)
+        self.assertAlmostEqual(m.draw("u1") or 0.0, 0.895, places=3)
+        self.assertTrue(m.has("u1"))
+        self.assertFalse(m.has("u2"))
+        self.assertIsNone(m.draw("u2"))  # no meter, no reading
+
+    def test_old_readings_lapse(self) -> None:
+        m = observe.UnitMeters()
+        m.add(NOW, "u1", 0.02)
+        m.add(NOW + timedelta(seconds=200), "u1", 0.9)  # longer than the meter's memory
+        self.assertIsNone(m.resting("u1"))  # the unit has not been seen resting since
+        self.assertIsNone(m.draw("u1"))
+
+    def test_a_bad_reading_is_not_kept(self) -> None:
+        m = observe.UnitMeters()
+        m.add(NOW, "u1", None)
+        m.add(NOW, "u1", float("nan"))
+        self.assertFalse(m.has("u1"))
+
+
+class MeteredCompressor(unittest.TestCase):
+    def states(self, watts: str, mode: str = "cool") -> dict[str, Any]:
+        states = base_states()
+        states["climate.office"] = raw("climate.office", mode, temperature=23.0, current_temperature=24.0,
+                                       fan_mode="auto")
+        states["sensor.meter"] = raw("sensor.meter", watts, unit_of_measurement="W")
+        return states
+
+    def test_the_meter_answers_before_the_house_load(self) -> None:
+        """A unit's own meter, not the whole house's load, says whether its
+        compressor runs [D110]."""
+        s = build(states=self.states("900"), unit_meters={"own:climate.office": "sensor.meter"})
+        self.assertEqual((s.heads[0].compressor, s.heads[0].compressor_source), (CS.RUNNING, SRC.METER))
+        self.assertAlmostEqual(s.heads[0].power.value or 0.0, 0.9, places=3)
+        s = build(states=self.states("20"), unit_meters={"own:climate.office": "sensor.meter"})
+        self.assertEqual((s.heads[0].compressor, s.heads[0].compressor_source), (CS.STOPPED, SRC.METER))
+
+    def test_a_head_on_its_fan_is_stopped_whatever_the_meter_says(self) -> None:
+        """The meter measures the circuit; a head in fan-only is not running
+        its compressor whatever the rest of the circuit draws [D025]."""
+        s = build(states=self.states("900", "fan_only"), unit_meters={"own:climate.office": "sensor.meter"})
+        self.assertEqual((s.heads[0].compressor, s.heads[0].compressor_source), (CS.STOPPED, SRC.MODE))
+
+    def test_no_meter_leaves_the_house_load_to_answer(self) -> None:
+        s = build(states=self.states("900"))
+        self.assertIsNot(s.heads[0].compressor_source, SRC.METER)
+        self.assertIs(s.heads[0].compressor_source, SRC.UNKNOWN)  # no house load learned yet
 
 
 class History(unittest.TestCase):

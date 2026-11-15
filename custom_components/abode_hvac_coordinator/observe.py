@@ -32,6 +32,8 @@ from .const import (
     LOAD_STEP_SHARE_OF_DRAW,
     LOAD_STEP_SIGMAS,
     LOAD_WATCH_RECENT_S,
+    METER_KEEP_S,
+    METER_RUNNING_KW,
     OUTDOOR_TOO_OLD_S,
     POWER_TOO_OLD_S,
     WINDOW_FACINGS,
@@ -210,6 +212,54 @@ class LoadHistory:
 
 
 @dataclass(slots=True)
+class UnitMeters:
+    """Each outdoor unit's own meter over the last few minutes [D110].
+
+    One meter measures one circuit, and each air conditioner's isolator feeds
+    one circuit, so the meter is the outdoor unit's: a unit with one head is
+    that head's own unit, and a unit with several heads is the system they
+    share. A reading below the running level is the unit with its compressor
+    stopped, so the resting level is the median of those readings, and the
+    draw is what the meter reads above it. Nothing is learned for a unit
+    until it has been seen resting, because until then its fan would be
+    counted as its compressor.
+    """
+
+    keep_s: float = METER_KEEP_S
+    samples: dict[str, deque[tuple[datetime, float]]] = field(default_factory=dict)
+
+    def add(self, when: datetime, unit: str, kw: float | None) -> None:
+        """Record one unit's meter reading in kW (None is not recorded)."""
+        if kw is None or not math.isfinite(kw):
+            return
+        readings = self.samples.setdefault(unit, deque())
+        readings.append((when, kw))
+        while readings and (when - readings[0][0]).total_seconds() > self.keep_s:
+            readings.popleft()
+
+    def has(self, unit: str) -> bool:
+        """Whether this unit has a meter that has reported."""
+        return bool(self.samples.get(unit))
+
+    def now(self, unit: str) -> float | None:
+        """The latest reading on this unit's meter, kW."""
+        readings = self.samples.get(unit)
+        return readings[-1][1] if readings else None
+
+    def resting(self, unit: str) -> float | None:
+        """The unit with its compressor stopped, kW: the median of the recent
+        readings below the running level. None until one is seen."""
+        low = [kw for _, kw in self.samples.get(unit, ()) if kw < METER_RUNNING_KW]
+        return statistics.median(low) if low else None
+
+    def draw(self, unit: str) -> float | None:
+        """What this unit draws now, kW: the meter above its resting level.
+        None while either the reading or the resting level is unknown."""
+        now, resting = self.now(unit), self.resting(unit)
+        return None if now is None or resting is None else max(0.0, now - resting)
+
+
+@dataclass(slots=True)
 class _LoadStepMemory:
     """One head's watch on the house power while it is in a working mode."""
 
@@ -245,7 +295,7 @@ class RoomObserver:
         load_history: LoadHistory,
         commands: Mapping[str, datetime],
         draw_kw: Mapping[str, float | None],
-        head_outdoor_units: Mapping[str, str],
+        unit_meters: Mapping[str, str] | None = None,
         system_temperature_unit: str = "°C",
         measured_clear: float | None = None,
     ) -> Snapshot:
@@ -254,19 +304,20 @@ class RoomObserver:
         commands: the time of the last command sent to each climate entity
         in the house (Act). draw_kw: each outdoor unit's learned draw at
         its running effort (Model), None while not yet learned.
-        head_outdoor_units: every head in the house and its outdoor unit,
-        so "no other unit changing" can be judged.
+        unit_meters: each outdoor unit and the meter on its circuit [D110].
         """
         r = _Reader(states, now, system_temperature_unit)
         room = self.room
+        meters = unit_meters or {}
 
         # ROOM TEMPERATURE and HUMIDITY: no age limit [D070]
         room_t = r.number(room.temperature_sensor, _TEMPERATURE, None)
         room_rh = r.number(room.humidity_sensor, _IDENTITY, None)
 
         heads = tuple(
-            self._head(r, h.climate, _outdoor_unit(h.climate, h.outdoor_unit), h.frequency_sensor, load_history,
-                       commands, draw_kw, head_outdoor_units)
+            self._head(r, h.climate, _outdoor_unit(h.climate, h.outdoor_unit), h.frequency_sensor,
+                       meters.get(_outdoor_unit(h.climate, h.outdoor_unit)) or h.unit_power,
+                       load_history, commands, draw_kw)
             for h in room.heads
         )
         room_t = _stand_in(room_t, [h.own_temperature for h in heads])
@@ -327,18 +378,19 @@ class RoomObserver:
         climate: str,
         outdoor_unit: str,
         frequency_sensor: str | None,
+        power_sensor: str | None,
         load_history: LoadHistory,
         commands: Mapping[str, datetime],
         draw_kw: Mapping[str, float | None],
-        head_outdoor_units: Mapping[str, str],
     ) -> HeadSnapshot:
         raw = r.raw(climate)
         frequency = (
             r.number(frequency_sensor, _IDENTITY, None) if frequency_sensor else Reading(None, ValueTag.MISSING)
         )
+        power = r.number(power_sensor, _POWER_KW, POWER_TOO_OLD_S) if power_sensor else Reading(None, ValueTag.MISSING)
         if raw is None or raw.state in MISSING_STATES:
             return HeadSnapshot(climate, outdoor_unit, False, None, None, None, None, None, None, None, None,
-                                frequency, CompressorState.UNKNOWN, CompressorSource.UNKNOWN)
+                                frequency, CompressorState.UNKNOWN, CompressorSource.UNKNOWN, power)
         attrs = raw.attributes
         setpoint = r.system_temperature(attrs.get("temperature"))
         if setpoint is None:
@@ -348,8 +400,8 @@ class RoomObserver:
             setpoint = (lo + hi) / 2.0 if lo is not None and hi is not None else None
         action_raw = attrs.get("hvac_action")
         action = str(action_raw) if action_raw is not None else None
-        state, source = self._compressor(climate, outdoor_unit, frequency, action, raw.state, load_history,
-                                         commands, draw_kw, head_outdoor_units, r.now)
+        state, source = self._compressor(climate, outdoor_unit, frequency, power, action, raw.state, load_history,
+                                         commands, draw_kw, r.now)
         return HeadSnapshot(
             climate=climate,
             outdoor_unit=outdoor_unit,
@@ -365,6 +417,7 @@ class RoomObserver:
             frequency=frequency,
             compressor=state,
             compressor_source=source,
+            power=power,
         )
 
     def _compressor(
@@ -372,15 +425,23 @@ class RoomObserver:
         climate: str,
         outdoor_unit: str,
         frequency: Reading,
+        power: Reading,
         action: str | None,
         mode: str,
         load_history: LoadHistory,
         commands: Mapping[str, datetime],
         draw_kw: Mapping[str, float | None],
-        head_outdoor_units: Mapping[str, str],
         now: datetime,
     ) -> tuple[CompressorState, CompressorSource]:
-        """COMPRESSOR STATE; the first answer that exists wins (4.8)."""
+        """COMPRESSOR STATE; the first answer that exists wins (4.8).
+
+        The ladder is: what the unit measures itself, then what the house
+        can infer [D110]. A compressor's frequency is the unit's own word;
+        failing that, a meter on the circuit the compressor is wired to;
+        failing that, the head's own hvac_action; failing that, the step in
+        the house load. A house with none of these still works: it infers,
+        which is what every house did before [D028].
+        """
         # a head that is off or in fan-only is not running a compressor,
         # whatever a frequency sensor says: one sensor is often chosen for
         # every head on an outdoor unit, and reads another head's compressor
@@ -395,17 +456,25 @@ class RoomObserver:
         if frequency.tag is ValueTag.MEASURED and frequency.value is not None:
             running = frequency.value > 0.0
             return (CompressorState.RUNNING if running else CompressorState.STOPPED), CompressorSource.FREQUENCY
-        # 2. hvac_action reported [D025]
+        # 2. the meter on this unit's circuit MEASURED [D110]. One meter per
+        # isolator switch, and an isolator feeds one compressor, so the
+        # reading is that compressor's whichever head is asking. The mode
+        # guard above keeps a head that is not working out of it; which head
+        # the draw belongs to is the learner's question, not this one
+        if power.tag is ValueTag.MEASURED and power.value is not None:
+            running = power.value >= METER_RUNNING_KW
+            return (CompressorState.RUNNING if running else CompressorState.STOPPED), CompressorSource.METER
+        # 3. hvac_action reported [D025]
         if action in _ACTION_RUNNING:
             return CompressorState.RUNNING, CompressorSource.HVAC_ACTION
         if action in _ACTION_NOT_RUNNING:
             return CompressorState.STOPPED, CompressorSource.HVAC_ACTION
         memory = self._load_steps.setdefault(climate, _LoadStepMemory())
-        # 3. the house power, watched while the head is in a working mode
+        # 4. the house power, watched while the head is in a working mode
         _watch_power(memory, load_history, draw_kw.get(outdoor_unit), now)
         if memory.state is not CompressorState.UNKNOWN:
             return memory.state, CompressorSource.LOAD_STEP
-        # 4. otherwise UNKNOWN [Prop]
+        # 5. otherwise UNKNOWN [Prop]
         return CompressorState.UNKNOWN, CompressorSource.UNKNOWN
 
 
