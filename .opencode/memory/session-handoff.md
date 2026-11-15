@@ -1,79 +1,75 @@
-> Last updated: 14 Nov 2026 (end of session)
+> Last updated: 15 Nov 2026 (end of session)
 
 ## Current task
 
-0.10.10 is out. The next session checks it in service: the **office** first,
-because dry is what changed, then the **living room**.
+0.10.11 is out. The next session checks it in service: the **office** first,
+because dry is what changed, then the **living room**. The per-unit power
+meters are the outstanding hardware.
 
 ## What's done
 
-- **0.10.8** (13 Nov): the plan forecasts from the measured room [D106]; the
-  mode sensor names its grace [D107]; `occupied_after`/`empty_after` renamed
-  to `occupied_grace`/`empty_grace` with a read-once migration. Issues #6-#8.
-- **0.10.9** (14 Nov): dry priced at its own share of the cooling floor
-  [D108]; `empty_grace` shown in a sleeping room; `decision.blocked` records
-  why the plan's first step could not be one of the kinds. Issues #9-#11.
-- **0.10.10** (14 Nov): dry runs on a **curve of its own** [D109], which
-  supersedes D108's share; the plan chooses the dry rate; `delivery` asks for
-  the rate chosen; a power ceiling is read on the effort a dry rate asks.
-  Issues #9 (reopened and closed), #12, #13. `main`, tag and release all on
-  `1415186`.
-- **The CI caught a hole in the simulation** (#14): the simulated unit had no
-  dry mode, so a dry command was learned as cool at that effort and the plant
-  delivered cooling's rate. `SimRoom` now takes `command_kind` and in dry
-  delivers 0.4 of what cooling delivers at the same effort (the office's
-  measurement). With it the loop reads 100 %/100 %/100 % in band, dry chosen
-  twice. The tag was moved to `1415186` so tag, main and release agree.
-- 547 pure tests, 3 simulation tests (`tests/sim`, ~16 min), `ruff` clean.
-  `tests/ha` cannot run on this machine; the CI is the only HA runner, and it
-  is green on `1415186` (all five jobs).
-
-## The measurement that decided it
-
-The office was put in dry manually on 14 Nov, 11:03-12:23, setpoint 18, doors
-shut, room empty: **28.09 → 24.33 °C = −2.56 °C/h**, 63 % → 43 % RH, house
-load 0.9 → 2.8-3.0 kW, the unit's own reading 28 → 24 (effort 6-7).
-
-At the floor — the only dry the component used to ask for — the same room
-gained **+0.14 °C/h** (12 Nov, effort 0-2) and the living room **+0.65 °C/h**
-(13-14 Nov, effort ~1). One share of the cooling curve cannot say both; a
-curve can. Numbers in issue #9, D108 and D109.
+- **0.10.11** (15 Nov): a unit's own power meter is a compressor source
+  [D110]; the short-cycle guard times the minimum run from the compressor, not
+  the command; a refused stop keeps the running command whole, fan included;
+  the learned curves reach the recorder. Issues #15-#18, all closed.
+- **The measurement that decided it** (office, 14 Nov): the plan asked
+  `dry 0.81` at 17:15:15, the house load read 695 W before and 694 W a minute
+  after, the compressor never started, the comfort index rose 27.94 → 28.11
+  over the ten minutes the guard held the stop, and in the same cycle the
+  plan's blocked reason said the unit stopped less than its minimum rest ago.
+  Numbers in #16 and D110.
+- **The ladder** now reads: head off/fan-only, frequency sensor, meter,
+  `hvac_action`, house load, unknown. A metered unit's draw is measured (the
+  reading above its resting level), not inferred.
+- **Curves are recorded**: `sensor.<room>_learning` carries `curves` and
+  `efforts` (cool, heat, dry in °C/h); `sensor.abode_hvac_coordinator_learned_draw`
+  carries each outdoor unit's draw curve. The mode sensor's `model` attribute
+  stays out of the recorder at 2-6 KB a cycle.
+- **CI**: the first run of the release failed on both Home Assistant jobs
+  because `tests/ha/test_entities.py` asserts the exact house entity set and
+  the new sensor was not in it. Fixed in a second commit; that red run
+  (`43681440155`, on `7bc9f16`) was left in the Actions tab because the token
+  here lacks Actions write — a permission problem, not a permanent one. The
+  commit that carries the fix was then rewritten to remove a byte-order mark
+  from its subject, which `b89defc` and `46333d1` did not survive: `main`, the
+  tag and the release now name the rewritten commit, and the run and SHA
+  quoted in the release and the issues are the rewritten ones.
+- 561 pure tests, 3 simulation tests, `ruff` clean. `tests/ha` cannot run on
+  this machine; the CI is the only HA runner.
 
 ## Next move
 
-**Office, on 0.10.10.** Export a window with `tools/export_window.sh` on the
-HA host (the archive copy is in `tools\`), upload the tarball to `tools\`, and
-check:
+**Office, on 0.10.11.** Export a window with `tools/export_window.sh` on the
+HA host (archive copy in `tools\`), upload the tarball to `tools\`, and check:
 
-- `model.curves.dry` in the diagnostics (or the mode sensor's `model`
-  attribute) — it starts at 0.4, 0.8, 1.2, 1.6, 2.0, 2.4 °C/h and should move
-  up on a room that cools while dry runs;
-- the plan choosing dry at a rate above its first step, not only at the floor;
-- `number.office_setpoint` during a plan-chosen dry run: it should now be the
-  setpoint for the rate chosen, not always the floor's;
-- the room's heat model restored across the restart, not relearnt
-  (`sensor.office_learning` unchanged).
+- a `dry` (or `cool`) command the compressor does not follow is released
+  inside a cycle or two instead of being held for ten minutes — the house has
+  no measured source until the meters arrive, so this depends on the load step
+  seeing the stop, which is the best effort the ladder has for now;
+- `sensor.office_learning` attributes: `curves.cool`, `curves.heat`,
+  `curves.dry` and `efforts` present in the recorder rows;
+- `sensor.abode_hvac_coordinator_learned_draw` lists the units with their
+  effort/kW/readings triples.
 
 **Living room, tonight.** Same export for 21:00 → 08:00 local = UTC
-`2026-11-13 11:00:00` → `2026-11-13 22:00:00` for the previous night; for
-tonight use the date of the run:
+`11:00:00` → `22:00:00` of the same calendar day.
 
-- in-band share, and whether the 00:50-class excursion (plan on dry with 0
-  minutes outside forecast) is gone;
-- `empty_grace` should appear if presence drops at night;
-- `decision.blocked` should say why any rest happened.
+**Meters.** One per isolator switch: the office circuit, the living-room
+circuit, and the multihead's outdoor circuit. Configure each on the head's
+air-conditioning screen once installed; every head on one outdoor unit names
+the same sensor, or the save is refused.
 
 ## Relevant files
 
-- `custom_components/abode_hvac_coordinator/model/physics.py` — the curves
-- `custom_components/abode_hvac_coordinator/model/filter.py` — `acting`, the
-  state migration
-- `custom_components/abode_hvac_coordinator/control/plan.py` — `dry_rates`,
-  `draw_of`, `_first_bar`
-- `custom_components/abode_hvac_coordinator/delivery.py` — the dry setpoint
-- `docs/decisions/D108.md`, `D109.md`, issue #9
-- `tools\_office_trial.py` — the trial analysis (start/end as arguments)
-- `tools\_publish.py`, `tools\_release_1010.py` — the API push and release
+- `custom_components/abode_hvac_coordinator/observe.py` — the compressor
+  ladder, `UnitMeters`
+- `custom_components/abode_hvac_coordinator/limits.py` — `HouseGuard.apply`,
+  `_seen`, `_keep_running`
+- `custom_components/abode_hvac_coordinator/model/unit.py` — `DrawLearner`,
+  `curve()`
+- `custom_components/abode_hvac_coordinator/sensor.py` — `learned_draw`, the
+  Learning sensor's attributes, `_UNRECORDED`
+- `docs/decisions/D110.md`
 
 ## Notes
 
@@ -86,8 +82,13 @@ tonight use the date of the run:
 - Windows on that command line are **UTC = local − 10 h**.
 - The band is in comfort index, not dry-bulb [D009]. Never compare
   `sensor.<room>_temperature` with band numbers.
-- Push mechanics: fine-grained PAT in `GITHUB_TOKEN` (needs "Workflows: write"
-  for `.github/workflows/`); GitHub strips the message's trailing newline, so
-  the rebuilt SHA differs — move the ref, then `git fetch` + `git reset
-  --soft origin/main`.
+- Push mechanics: `tools/_publish.py` rebuilds the local HEAD on GitHub and
+  moves `main`; `tools/_publish_force.py` is the same with `force: true`, for a
+  rewritten commit. GitHub strips the message's trailing newline, so the
+  rebuilt SHA differs — move the ref, then `git fetch` + `git reset --soft
+  origin/main`.
+- Write a commit message file with
+  `[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($false)))`.
+  PowerShell's `Set-Content -Encoding UTF8` writes a BOM, which lands in the
+  subject line.
 - `tests/ha` is the only suite that cannot run locally.

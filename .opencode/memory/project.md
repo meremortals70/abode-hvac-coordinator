@@ -6,6 +6,13 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 
 ## Active work
 
+- **0.10.11 is in service.** The next export should show the short-cycle guard
+  releasing a command whose compressor never started, the room's learned curves
+  in `sensor.<room>_learning`'s attributes, and each outdoor unit's draw curve
+  in `sensor.abode_hvac_coordinator_learned_draw`.
+- **Per-unit meters.** One power meter per isolator switch (office circuit,
+  living-room circuit, the multihead's outdoor circuit), configured per head in
+  the room's air conditioning screen once installed [D110].
 - Nightly Living Room performance reviews from the recorder export (see below).
 
 ## Night review workflow (Living Room)
@@ -76,6 +83,7 @@ extract it.
 
 | Date | What |
 | ---- | ---- |
+| 15 Nov 2026 | 0.10.11 released (tag `v0.10.11`, [release](https://github.com/meremortals70/abode-hvac-coordinator/releases/tag/v0.10.11), issues #15-#18 closed): an outdoor unit's own power meter is a compressor source, the short-cycle guard times its run from the compressor, a refused stop keeps the running command whole, and the learned curves are recorded [D110] |
 | 12 Nov 2026 | 0.10.7 released (tag `v0.10.7`, [release](https://github.com/meremortals70/abode-hvac-coordinator/releases/tag/v0.10.7), issue #5 closed): an opening is a model input (`vent`); free cooling is the plan's own counterfactual [D105] |
 | 12 Nov 2026 | FP2 presence reviewed; the room is to be configured with it and a 120-minute empty grace, with the zone/sensitivity fix still to do |
 | 12 Nov 2026 | Night review of 11–12 Nov; workflow recorded above |
