@@ -6,6 +6,12 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.12 - 2026-11-16
+
+### Fixed
+
+- **Editing a pre-0.10.8 room no longer resets its empty and occupied grace to defaults (#19, [D107]).** A room saved before the grace keys were renamed still stored `occupied_after` and `empty_after`; the edit form pre-filled defaults because it did not carry those old keys to `occupied_grace`/`empty_grace`, and saving the room dropped them. Editing such a room reset the empty grace to 10 minutes and the occupied grace to 2 minutes. The old values are now carried into the edit form so a save preserves them. `warning_grace` and `opening_grace` were not affected.
+
 ## 0.10.11 - 2026-11-15
 
 ### Added
