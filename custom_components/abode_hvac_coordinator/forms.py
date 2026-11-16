@@ -327,6 +327,12 @@ def room_answers(stored: Mapping[str, Any]) -> dict[str, Any]:
     """A stored room as the Room screens' answers, to pre-fill Edit: the
     heads' climate entities as one list, the defaults for anything unset."""
     out = {**ROOM_DEFAULTS, **{k: v for k, v in stored.items() if k not in (CONF_HEADS, CONF_PROFILE)}}
+    # a room saved before D107 holds the old grace key; carry its value to the
+    # new key so an Edit round-trip does not reset it to the default (#19)
+    if CONF_OCCUPIED_AFTER_OLD in stored and CONF_OCCUPIED_GRACE not in stored:
+        out[CONF_OCCUPIED_GRACE] = stored[CONF_OCCUPIED_AFTER_OLD]
+    if CONF_EMPTY_AFTER_OLD in stored and CONF_EMPTY_GRACE not in stored:
+        out[CONF_EMPTY_GRACE] = stored[CONF_EMPTY_AFTER_OLD]
     heads = stored.get(CONF_HEADS)
     out[CONF_CLIMATE] = [h[CONF_CLIMATE] for h in heads if isinstance(h, Mapping) and CONF_CLIMATE in h] if (
         isinstance(heads, list)

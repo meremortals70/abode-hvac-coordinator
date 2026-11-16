@@ -111,6 +111,17 @@ class Rooms(unittest.TestCase):
         self.assertEqual(answers["occupied_low"], 23.0)
         self.assertEqual(forms.room_answers(stored(heads="x"))["climate"], [])
 
+    def test_a_pre_d107_room_keeps_its_graces_through_an_edit(self) -> None:
+        """The Edit screens must round-trip the old occupancy keys (#19)."""
+        old = stored(occupied_after=4, empty_after=30)
+        answers = forms.room_answers(old)
+        screen1 = {k: answers[k] for k in forms.ROOM_SCREEN_1 if k in answers}
+        heads = old["heads"]
+        room = forms.build_room("r1", screen1, heads, answers, PROFILE)
+        r = forms.room_from_options(room)
+        self.assertEqual(r.occupied_grace_s, 240.0)
+        self.assertEqual(r.empty_grace_s, 1800.0)
+
     def test_build_room(self) -> None:
         room = forms.build_room("r9", {"name": "Den", "climate": ["climate.a"], "blinds": [], "presence_sensor": "",
                                        "temperature_sensor": "sensor.t", "humidity_sensor": "sensor.rh"},
