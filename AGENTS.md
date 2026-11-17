@@ -100,7 +100,48 @@ configuration and local LLMs. This repo is the Abode HVAC Coordinator custom
 component. For ESPHome or other projects, look for their own `AGENTS.md` or ask
 the user for their current goals.
 
+## Credentials — a token is never printed, by anything
+
+The GitHub token lives in the environment (`GITHUB_TOKEN`). It must never appear
+in output, in a log, in a file, or in this conversation. Two leaks happened on
+17 November 2026, both the same mistake: a token interpolated into a shell
+command.
+
+**Never interpolate it into a shell string.** `${GITHUB_TOKEN:+present}` looks
+like masking and is not — the `${VAR:-fallback}` form only substitutes when the
+variable is *unset*, so a set token is printed in full. This is what leaked:
+
+```sh
+echo "token: ${GITHUB_TOKEN:+present}${GITHUB_TOKEN:-absent}"   # prints the token
+```
+
+**Never `echo` it, `ls` it, `grep` its value, `curl -H` with it in the line, or
+pass it as an argument.** Arguments and shell strings are echoed into the tool
+output and archived on disk.
+
+**Read it inside the program and print only facts about it.** Python reads the
+environment itself; the shell never sees the value:
+
+```python
+tok = os.environ["GITHUB_TOKEN"]          # never printed
+print("auth ok:", get("/user")["login"])  # a fact, not a secret
+print("hits:", sum(t.encode() in open(f, "rb").read() for f in paths))
+```
+
+Allowed in output: whether a token is present, the authenticated login, HTTP
+codes, run IDs, URLs, commit and issue numbers, and **counts** of occurrences.
+Never a prefix, a suffix, a length, or a masked form — a masked form still
+narrows it and still teaches the wrong habit.
+
+**If a token is ever exposed, say so immediately and plainly.** Then: find every
+on-disk copy and redact it, check the repository, `/tmp` and the home directory
+for further copies, and tell the user to rotate it. The conversation transcript
+cannot be scrubbed, so rotation is the only remedy, and it is the user's call.
+
 ## Repository layout
+
+- `environment.md` — what is installed on which machine, and which checks can
+  actually run there. Read it before trusting a command from `Commands`.
 
 - `custom_components/abode_hvac_coordinator/` — the integration
   - Pure decision layer (no Home Assistant imports): `hci.py`, `psychro.py`,
