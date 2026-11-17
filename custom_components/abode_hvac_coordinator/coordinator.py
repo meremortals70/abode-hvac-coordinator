@@ -866,6 +866,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 if entity_id:
                     out.add(entity_id)
             out.update(room.openings)
+            out.update(room.interior_openings)
             out.update(room.blinds)
             for head in room.heads:
                 out.add(head.climate)
@@ -1888,6 +1889,7 @@ def settings_dict(r: RoomConfig) -> dict[str, Any]:
         "sleep_schedule": v(r.sleep_schedule),
         "sun_sensor": v(r.sun_sensor),
         "openings": v(r.openings),
+        "interior_openings": v(r.interior_openings),
         "blinds": v(r.blinds),
         "allow_blind_control": r.allow_blind_control,
         "window_facing": v(r.window_facing),

@@ -38,9 +38,10 @@ def comfort(rule: Any = BR.OCCUPIED, index: float | None = 24.0, low: float | No
                                 band_low=low, band_high=high)
 
 
-def limits(kind: Any = SK.COOL, *, lockout: bool = False, automatic_off: bool = False) -> Any:
+def limits(kind: Any = SK.COOL, *, lockout: bool = False, automatic_off: bool = False,
+           rule: Any = models.LimitRule.OPENING, reason: str | None = "A door is open.") -> Any:
     return models.LimitsResult(kind, (), (), (), (models.LimitRule.OPENING,), True, False, lockout, automatic_off,
-                               ("no_grid_import",), (), (), ("A door is open.",))
+                               ("no_grid_import",), (), (), ("A door is open.",), rule=rule, reason=reason)
 
 
 def plan() -> Any:
@@ -113,6 +114,19 @@ class Trace(unittest.TestCase):
         self.assertEqual(d["blocked"], [["cool", "the unit stopped less than its minimum rest ago: 3 min left"]])
         json.dumps(t)  # plain values only
 
+    def test_the_limit_that_decided_is_named(self) -> None:
+        """The whole limits object is too big for the recorder, so it is
+        dropped; the rule and its sentence must survive on their own, or an
+        off is recorded beside a control_reason that asks for cooling and no
+        night can say which rule won (defect of 17 November 2026)."""
+        t = self.build()
+        self.assertEqual((t["limit"], t["limit_reason"]), ("opening", "A door is open."))
+
+    def test_a_cycle_with_no_intervening_rule_names_none(self) -> None:
+        t = self.build(limits=limits(rule=None, reason=None))
+        self.assertIsNone(t["limit"])
+        self.assertIsNone(t["limit_reason"])
+
     def test_position_and_ceiling(self) -> None:
         self.assertEqual(self.build(comfort=comfort(index=22.0))["band"]["position"], "below")
         self.assertEqual(self.build(comfort=comfort(index=26.5))["band"]["position"], "above")
@@ -124,7 +138,7 @@ class Trace(unittest.TestCase):
     def test_parts_left_out_when_absent(self) -> None:
         t = self.build(control=None, economics=None, limits=None)
         self.assertEqual(t["action"], "none")
-        for key in ("plan", "pid", "power", "limits", "in_charge"):
+        for key in ("plan", "pid", "power", "limits", "in_charge", "limit", "limit_reason"):
             self.assertNotIn(key, t)
 
     def test_delivery(self) -> None:

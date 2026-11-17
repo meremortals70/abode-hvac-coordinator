@@ -136,6 +136,9 @@ class RoomConfig:
     sleep_schedule: str | None = None
     sun_sensor: str | None = None
     openings: tuple[str, ...] = ()
+    # doors to another room: they stop the unit, but they are not holes to the
+    # outdoors, so the vent term and free cooling never see them [D111]
+    interior_openings: tuple[str, ...] = ()
     blinds: tuple[str, ...] = ()
     allow_blind_control: bool = DEFAULT_ALLOW_BLIND_CONTROL
     window_facing: str | None = None
@@ -336,6 +339,10 @@ class Snapshot:
     tariff_now: TariffInterval | None
     tariff_ahead: tuple[TariffInterval, ...]
     stale: tuple[str, ...]
+    # doors to another room, kept apart from `openings`: whether they are open
+    # stops the unit [D050], but they carry no air changed with the outdoors, so
+    # the vent term reads only `openings` [D111]
+    interior_openings: tuple[Flag, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -682,6 +689,13 @@ class LimitsResult:
     # a door or window is open and the unit is still inside the opening
     # grace (it has not been stopped yet) [D107]
     opening_grace: bool = False
+    # the rule that set the step as it stands, and the sentence it gave. The
+    # trace keeps these on their own because the whole limits object is too
+    # big for the recorder; without them an off is recorded beside a
+    # control_reason that asks for cooling, and no night can say which rule
+    # won (defect of 17 November 2026)
+    rule: LimitRule | None = None
+    reason: str | None = None
 
 
 # --------------------------------------------------------------------------

@@ -360,6 +360,10 @@ class RoomObserver:
             leave_pressed_at=choices.leave_pressed_at,
             precool_ready_by=choices.precool_ready_by,
             openings=tuple(f for f in (r.flag(o) for o in room.openings) if f is not None),
+            # a door to another room is an opening for the stop, but not for the
+            # air: it is kept apart so only `openings` reaches the vent term
+            # [D111]
+            interior_openings=tuple(f for f in (r.flag(o) for o in room.interior_openings) if f is not None),
             blind_positions=blinds,
             sleep_schedule=r.flag(room.sleep_schedule),
             house_load_kw=load,

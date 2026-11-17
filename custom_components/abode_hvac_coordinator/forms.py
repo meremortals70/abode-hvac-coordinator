@@ -44,6 +44,7 @@ from .const import (
     CONF_OCCUPIED_LOW,
     CONF_OPENING_GRACE,
     CONF_OPENINGS,
+    CONF_INTERIOR_OPENINGS,
     CONF_OUTDOOR_HUMIDITY,
     CONF_OUTDOOR_TEMPERATURE,
     CONF_OUTDOOR_UNIT,
@@ -101,7 +102,8 @@ CONF_LOCKOUT_REASONS = "lockout_reasons"
 # The room settings each screen collects
 ROOM_SCREEN_1 = (
     CONF_NAME, CONF_CLIMATE, CONF_TEMPERATURE_SENSOR, CONF_HUMIDITY_SENSOR, CONF_PRESENCE_SENSOR,
-    CONF_SLEEP_SCHEDULE, CONF_SUN_SENSOR, CONF_OPENINGS, CONF_BLINDS, CONF_ALLOW_BLIND_CONTROL,
+    CONF_SLEEP_SCHEDULE, CONF_SUN_SENSOR, CONF_OPENINGS, CONF_INTERIOR_OPENINGS, CONF_BLINDS,
+    CONF_ALLOW_BLIND_CONTROL,
     CONF_WINDOW_FACING, CONF_OVERHANG_PROJECTION, CONF_OVERHANG_HEIGHT, CONF_OCCUPIED_GRACE, CONF_EMPTY_GRACE,
     CONF_WARNING_GRACE, CONF_ANNOUNCE, CONF_ANNOUNCE_THROUGH, CONF_OPENING_GRACE, CONF_LOCKOUT_REASON,
 )
@@ -286,6 +288,7 @@ def room_from_options(data: Mapping[str, Any]) -> RoomConfig:
         sleep_schedule=_text(data.get(CONF_SLEEP_SCHEDULE)),
         sun_sensor=_text(data.get(CONF_SUN_SENSOR)),
         openings=_texts(data.get(CONF_OPENINGS)),
+        interior_openings=_texts(data.get(CONF_INTERIOR_OPENINGS)),
         blinds=_texts(data.get(CONF_BLINDS)),
         allow_blind_control=_flag(data.get(CONF_ALLOW_BLIND_CONTROL), DEFAULT_ALLOW_BLIND_CONTROL),
         window_facing=facing.upper() if facing is not None and facing.upper() in WINDOW_FACINGS else None,

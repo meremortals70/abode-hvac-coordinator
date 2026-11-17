@@ -6,6 +6,23 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.13 - 2026-11-17
+
+### Fixed
+
+- **A door to another room no longer pretends to be a window.** An opening listed
+  for a room did two things: it stopped the unit past its grace [D050], and it
+  fed the heat balance as air changed with the **outdoors** [D105]. An interior
+  door has no business doing the second. The office on 16 November was told three
+  air changes an hour of outdoor air were arriving through its hall door for the
+  six hours fifty minutes it stood open — a false input to every forecast made in
+  that time. Rooms now name their doors to other rooms in a new **Doors to
+  another room** field; those still stop the unit after the opening grace, with
+  the same warnings, but they never reach the vent term and are never offered as
+  free cooling. Existing rooms are unaffected until a door is moved into the new
+  field [D111].
+- **A forced stop now records which rule forced it.** The room's mode sensor carried `action: off` but not the reason: the whole `limits` object, including the rule that set the step and the sentence it gave, was dropped from the recorder for its size. Reading a night back, a unit held off behind an open door therefore looked like the plan asking to cool while nothing happened — the office on 16 November, off for 6h58m with `control_reason` still naming "cool at 1.86 C/h", took an hour of inference to explain. Two short attributes, `limit` and `limit_reason`, now carry the rule that set the step as it stands and the sentence it gave, so the same cycle reads `limit: opening`, `limit_reason: "A door or window has been open past its grace: off."` No control behaviour changes [D006].
+
 ## 0.10.12 - 2026-11-16
 
 ### Fixed

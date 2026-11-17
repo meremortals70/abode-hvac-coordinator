@@ -65,6 +65,10 @@ CONF_PRESENCE_SENSOR: Final = "presence_sensor"
 CONF_SLEEP_SCHEDULE: Final = "sleep_schedule"
 CONF_SUN_SENSOR: Final = "sun_sensor"
 CONF_OPENINGS: Final = "openings"
+# a door to another room: it stops the unit after its grace like any opening,
+# but it is not air changed with the outdoors, so it never feeds the vent term
+# and is never offered as free cooling [D111]
+CONF_INTERIOR_OPENINGS: Final = "interior_openings"
 CONF_BLINDS: Final = "blinds"
 CONF_ALLOW_BLIND_CONTROL: Final = "allow_blind_control"
 CONF_WINDOW_FACING: Final = "window_facing"

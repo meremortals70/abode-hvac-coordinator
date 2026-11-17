@@ -94,6 +94,33 @@ def build(
     return obs.build(**args)
 
 
+class Openings(unittest.TestCase):
+    """A door to another room is an opening for the stop and nothing else
+    [D111]."""
+
+    def test_kept_apart_from_the_doors_to_outdoors(self) -> None:
+        states = base_states()
+        states["binary_sensor.window"] = raw("binary_sensor.window", "off")
+        states["binary_sensor.hall_door"] = raw("binary_sensor.hall_door", "on")
+        s = build(r=room(openings=("binary_sensor.window",),
+                         interior_openings=("binary_sensor.hall_door",)), states=states)
+        self.assertEqual([f.entity_id for f in s.openings], ["binary_sensor.window"])
+        self.assertEqual([(f.entity_id, f.value) for f in s.interior_openings],
+                         [("binary_sensor.hall_door", True)])
+
+    def test_an_interior_door_does_not_reach_the_vent_term(self) -> None:
+        states = base_states()
+        states["binary_sensor.hall_door"] = raw("binary_sensor.hall_door", "on")
+        s = build(r=room(interior_openings=("binary_sensor.hall_door",)), states=states)
+        # the vent term is driven by `openings` alone
+        self.assertEqual(1.0 if any(f.value is True for f in s.openings) else 0.0, 0.0)
+        self.assertIs(s.interior_openings[0].value, True)
+
+    def test_a_room_with_neither_is_unchanged(self) -> None:
+        s = build()
+        self.assertEqual((s.openings, s.interior_openings), ((), ()))
+
+
 class Readings(unittest.TestCase):
     def test_room_readings_have_no_age_limit(self) -> None:
         s = build()

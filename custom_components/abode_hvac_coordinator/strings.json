@@ -210,6 +210,7 @@
           "sleep_schedule": "Sleep schedule",
           "sun_sensor": "Sun on window sensor",
           "openings": "Doors and windows",
+          "interior_openings": "Doors to another room",
           "blinds": "Blinds",
           "allow_blind_control": "Allow blind control",
           "window_facing": "Windows face",

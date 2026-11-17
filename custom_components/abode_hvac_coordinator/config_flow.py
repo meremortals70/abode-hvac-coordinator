@@ -65,6 +65,7 @@ from .const import (
     CONF_OCCUPIED_GRACE,
     CONF_OPENING_GRACE,
     CONF_OPENINGS,
+    CONF_INTERIOR_OPENINGS,
     CONF_OUTDOOR_HUMIDITY,
     CONF_OUTDOOR_TEMPERATURE,
     CONF_OUTDOOR_UNIT,
@@ -346,6 +347,10 @@ class _RoomScreens:
             probatio.Optional(CONF_SLEEP_SCHEDULE): _entity(["schedule", "input_boolean", "binary_sensor"]),
             probatio.Optional(CONF_SUN_SENSOR): _entity("binary_sensor"),
             probatio.Optional(CONF_OPENINGS): _entity("binary_sensor", multiple=True),
+            # a door to another room: it stops the unit after its grace like any
+            # opening, but the air it exchanges is the house's, not the sky's, so
+            # it never feeds the vent term or free cooling [D111]
+            probatio.Optional(CONF_INTERIOR_OPENINGS): _entity("binary_sensor", multiple=True),
             probatio.Optional(CONF_BLINDS): _entity("cover", multiple=True),
             probatio.Optional(CONF_ALLOW_BLIND_CONTROL): BooleanSelector(),
             probatio.Optional(CONF_WINDOW_FACING): SelectSelector(SelectSelectorConfig(

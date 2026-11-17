@@ -190,6 +190,12 @@ def trace(
             "reasons": list(delivery.reasons),
         }
     if limits is not None:
+        # which rule decided the step as it stands, and why. The whole limits
+        # object is dropped from the recorder for its size, so without these
+        # two an off is recorded beside a control_reason that asks for cooling
+        # and no night can say which rule won (defect of 17 November 2026)
+        out["limit"] = limits.rule.value if limits.rule is not None else None
+        out["limit_reason"] = limits.reason or None
         out["limits"] = {
             "changed": [r.value for r in limits.changed],
             "not_delivered": limits.not_delivered,

@@ -67,10 +67,16 @@ class RoomStep:
     unknown_constraints: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
     opening_grace: bool = False  # a door or window open, inside its grace [D107]
+    # the rule that set the step as it stands now, and the sentence it gave:
+    # last writer wins, the same way kind does, so the recorder can say which
+    # rule the unit was actually stopped by (defect of 17 November 2026)
+    rule: LimitRule | None = None
+    reason: str | None = None
 
     def to(self, rule: LimitRule, kind: StepKind, reason: str, heads: tuple[HeadCommand, ...] = ()) -> None:
         """Set the step to kind, recording the rule and why."""
         self.kind, self.heads = kind, heads
+        self.rule, self.reason = rule, reason
         if kind in (StepKind.OFF, StepKind.NONE):
             self.blinds = ()
         self.changed.append(rule)
@@ -200,7 +206,11 @@ class RoomLimits:
         (a + v o), so the next plan rests when the room is being ventilated
         better than the unit can cool it [D105]. The stop is held to the
         minimum run like any other, which is the short-cycle guard."""
-        open_now = [f for f in snapshot.openings if f.value is True]
+        # a door or window: to the outdoors, or to another room. Either being
+        # open holds the unit to its grace and then stops it [D050]; only the
+        # ones to the outdoors carry air, which is the vent term's business and
+        # not this rule's [D111]
+        open_now = [f for f in (*snapshot.openings, *snapshot.interior_openings) if f.value is True]
         if not open_now:
             return False
         if any(f.since is None for f in open_now):
@@ -577,4 +587,6 @@ def _result(s: RoomStep, held_off: bool) -> LimitsResult:
         missing=s.missing,
         reasons=tuple(r for r in s.reasons if r),
         opening_grace=s.opening_grace,
+        rule=s.rule,
+        reason=s.reason or None,
     )

@@ -114,3 +114,5 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D107](D107.md) | The mode sensor says which grace the room is in (`occupied_grace`, `empty_grace`, `opening_grace`), not the old answer it is holding; the occupancy waits are renamed to match |
 | [D108](D108.md) | Dry is a cooling mode that removes little of the heat cooling removes: its sensible rate is its own learned share of the cooling curve, not the cooling floor |
 | [D109](D109.md) | Dry runs on a curve of its own, the plan chooses its rate, and a power ceiling is applied to the effort a dry rate asks rather than to the rate itself (supersedes D108's single share) |
+| [D110](D110.md) | A meter on the outdoor unit's own circuit says when its compressor runs and what it draws |
+| [D111](D111.md) | A door to another room is an opening for the stop, and nothing else: it is never air changed with the outdoors and never offered as free cooling |

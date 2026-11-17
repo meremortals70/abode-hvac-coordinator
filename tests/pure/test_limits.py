@@ -60,10 +60,11 @@ def proposed(kind: Any = SK.COOL, heads: tuple[Any, ...] | None = None, advised:
 
 
 def snap(*, mode: str = "cool", comp: Any = CS.STOPPED, openings: tuple[Any, ...] = (),
-         t_tag: Any = VT.MEASURED, tariff: Any = None) -> Any:
+         interior: tuple[Any, ...] = (), t_tag: Any = VT.MEASURED, tariff: Any = None) -> Any:
     base = SimRoom().snapshot()
     h = dataclasses.replace(base.heads[0], climate="climate.r1", mode=mode, compressor=comp)
-    return dataclasses.replace(base, heads=(h,), openings=openings, tariff_now=tariff,
+    return dataclasses.replace(base, heads=(h,), openings=openings, interior_openings=interior,
+                               tariff_now=tariff,
                                room_temperature=models.Reading(25.0 if t_tag is VT.MEASURED else None, t_tag,
                                                                "sensor.t"))
 
@@ -225,6 +226,48 @@ class Openings(unittest.TestCase):
         self.assertEqual([w.kind for w in r.warnings], [WK.OPENING_FINAL])
         r = allowed(rl, s=running, now=T0 + 5 * MIN, running=True)
         self.assertEqual((r.kind, r.changed), (SK.OFF, (LR.OPENING,)))
+
+    def test_the_rule_that_decided_is_named_with_the_reason(self) -> None:
+        """The mode sensor records `action: off` but not why it was off, so a
+        night read back from history cannot say which rule stopped the unit and
+        reads as the plan contradicting itself. The rule that set the step as
+        it stands, and the sentence it gave, must travel with the result
+        (defect of 17 November 2026)."""
+        rl = limits.RoomLimits(room())
+        r = allowed(rl, s=snap(comp=CS.RUNNING, openings=(opening(T0),)), now=T0 + 5 * MIN, running=True)
+        self.assertEqual((r.kind, r.rule), (SK.OFF, LR.OPENING))
+        self.assertEqual(r.reason, "A door or window has been open past its grace: off.")
+
+    def test_the_last_rule_to_touch_the_step_is_the_one_named(self) -> None:
+        # the short-cycle guard runs after the room's rules; what it says is
+        # what the unit was actually told, so it is what must be recorded
+        g, rl = limits.HouseGuard(), limits.RoomLimits(room())
+        allowed(rl, g, p=proposed(SK.COOL), now=T0)
+        allowed(rl, g, p=proposed(SK.REST), now=T0 + 11 * MIN)
+        r = allowed(rl, g, p=proposed(SK.COOL), now=T0 + 14 * MIN)
+        self.assertEqual((r.kind, r.rule), (SK.REST, LR.SHORT_CYCLE_GUARD))
+        self.assertIn("Short-cycle guard", r.reason or "")
+
+    def test_nothing_named_when_no_rule_intervened(self) -> None:
+        r = allowed(limits.RoomLimits(room()), s=snap(comp=CS.RUNNING))
+        self.assertEqual((r.kind, r.rule, r.reason), (SK.COOL, None, None))
+
+    def test_an_interior_door_stops_the_unit_too(self) -> None:
+        """A door to another room stops the unit after its grace like any
+        opening [D050]; leaving the room open to the house is still not a
+        reason to cool it [D111]."""
+        rl = limits.RoomLimits(room())
+        running = snap(comp=CS.RUNNING, interior=(opening(T0),))
+        self.assertEqual(allowed(rl, s=running).kind, SK.COOL)  # inside the grace
+        r = allowed(rl, s=running, now=T0 + 5 * MIN, running=True)
+        self.assertEqual((r.kind, r.rule), (SK.OFF, LR.OPENING))
+
+    def test_an_interior_door_is_not_air_from_outdoors(self) -> None:
+        """The vent term reads `openings` alone, so an interior door must never
+        reach it: the air it swaps is the house's, not the sky's [D111]."""
+        s = snap(interior=(opening(T0),))
+        self.assertEqual((s.openings, len(s.interior_openings)), ((), 1))
+        self.assertEqual(1.0 if any(f.value is True for f in s.openings) else 0.0, 0.0)
 
     def test_earliest_opening_counts_and_closing_resets(self) -> None:
         rl = limits.RoomLimits(room())
