@@ -6,6 +6,18 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.15 - unreleased
+
+### Fixed
+
+- **The demand forecast is read once every five minutes, not every cycle.**
+  `sensor.abode_hvac_coordinator_demand_forecast` publishes the energy left to
+  the next tariff change, which falls as the interval is used up — so it
+  changed on every 30-second cycle and the recorder kept every one: **17,287
+  rows in the week to 24 November 2026**, the largest single writer in that
+  export. It is now read at the plan's five-minute boundary, which is the
+  fastest anything consuming it works, cutting it to about 2,000 [D005].
+
 ## 0.10.14 - 2026-11-24
 
 ### Fixed

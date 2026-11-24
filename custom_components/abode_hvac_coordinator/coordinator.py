@@ -590,6 +590,11 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         self.solar_error: str | None = None
         self._due: dict[str, datetime] = {}
         self._last_cycle: datetime | None = None
+        # the demand forecast as last read, and the five-minute boundary it was
+        # read at: the figure falls as the tariff interval is used up, so it
+        # would otherwise be republished every cycle [D005]
+        self._demand_read: tuple[datetime, tuple[float | None, tuple[Mapping[str, Any], ...], float | None,
+                                                     datetime | None, bool]] | None = None
         self._running_since: dict[str, datetime] = {}
         self._stopped_since: dict[str, datetime] = {}
         self._unit_way: dict[str, int] = {}
@@ -1626,7 +1631,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         peak = max((h.temperature for h in first.forecast if h.temperature is not None), default=None) if first \
             else None
         stale = tuple(sorted({s for snap in snaps for s in snap.stale}))
-        total, per, cost, until, reaches = self._demand(now)
+        total, per, cost, until, reaches = self._demand_now(now)
         return HouseView(
             demand_kwh=total,
             demand_per_interval=per,
@@ -1661,6 +1666,19 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         rows = tuple({"start": iv.start.isoformat(), "end": iv.end.isoformat(), "rate": iv.rate_name,
                       "kwh": round(kwh, 3)} for iv, kwh in f.per_interval)
         return round(f.kwh, 3), rows, round(f.cost, 2) if f.cost is not None else None, f.until, f.to_change
+
+    def _demand_now(self, now: datetime) -> tuple[float | None, tuple[Mapping[str, Any], ...], float | None,
+                                                  datetime | None, bool]:
+        """The demand forecast, read once at each five-minute boundary the plan
+        works to. The figure falls as the tariff interval is used up, so reading
+        it every cycle republishes a new number every 30 seconds and the
+        recorder keeps every one of them: 17,287 rows in the week to 24 November
+        2026, against 2,016 at the plan's rate. Nothing that reads it works
+        faster than the plan [D005]."""
+        stamp = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+        if self._demand_read is None or self._demand_read[0] != stamp:
+            self._demand_read = (stamp, self._demand(now))
+        return self._demand_read[1]
 
     def grid_sign_suggestion(self, grid_kw: float | None) -> bool | None:
         """Which way a positive grid reading points, from a moment of grid

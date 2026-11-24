@@ -925,6 +925,33 @@ async def test_a_plan_starts_from_the_measured_room_not_the_estimate(
     assert starts and starts[0] == pytest.approx(25.0)
 
 
+async def test_the_demand_forecast_is_read_once_per_five_minutes(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """The demand figure falls as the tariff interval is used up, so reading it
+    every cycle republishes a number every 30 seconds and the recorder keeps
+    every one; it is read at the plan's five-minute boundary instead [D005]."""
+    set_house_states(hass)
+    entry = await setup_entry(hass)
+    c = entry.runtime_data.coordinator
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    reads: list[Any] = []
+    real = type(c)._demand
+
+    def spy(self: Any, now: Any) -> Any:
+        reads.append(now)
+        return real(self, now)
+
+    with patch.object(type(c), "_demand", spy):
+        c._demand_read = None  # noqa: SLF001 - the cache is what is under test
+        c._house_view()
+        c._house_view()
+        assert len(reads) == 1, "the forecast is re-read inside the same five minutes"
+        freezer.tick(timedelta(minutes=5, seconds=1))
+        c._house_view()
+    assert len(reads) == 2, "the forecast is not re-read at the next five-minute boundary"
+
+
 async def test_a_heating_pid_is_held_to_the_heating_ceiling_in_the_cycle(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
