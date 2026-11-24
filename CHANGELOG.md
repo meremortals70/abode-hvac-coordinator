@@ -6,6 +6,19 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.16 - 2026-11-24
+
+### Fixed
+
+- **The setpoint control no longer goes blank while the unit rests (#29,
+  [D049]).** A head in fan only, or off, reports no setpoint of its own, and the
+  control mirrored that blank while the component was holding the room at one:
+  on 24 November the office's page showed an empty setpoint with the room 1.1
+  points above its band and Automatic control on. While Automatic control is on
+  the control now shows the coordinator's commanded setpoint; when the user is in
+  charge the blank stays, because there is then no setpoint the room is being
+  held at.
+
 ## 0.10.15 - 2026-11-24
 
 ### Added
