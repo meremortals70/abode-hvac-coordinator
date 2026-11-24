@@ -31,6 +31,7 @@ from ..const import (
     FILTER_JACOBIAN_DELTA,
     HUMIDITY_NOISE_E_PER_H,
     HUMIDITY_NOISE_FIGURE,
+    HUMIDITY_OCC_SETTLE_CORRECTIONS,
     HUMIDITY_START_COOLING_HPA_PER_C,
     HUMIDITY_START_DRYING_HPA_PER_H,
     HUMIDITY_START_H_PER_H,
@@ -164,6 +165,7 @@ class HumidityFilter:
     _prior_avg: float | None = None  # running average of P-[e,e] less vapour_noise
     seen_occupied: bool = False  # the room has been seen with someone in it
     seen_empty: bool = False  # and seen empty
+    occ_corrections: int = 0  # corrections taken since the room was identified
     # a source that only acts while someone is there cannot be told apart
     # from the steady one until the room has been seen both ways [D113]
     _step_readings: deque[float] = field(default_factory=lambda: deque(maxlen=3))
@@ -191,11 +193,22 @@ class HumidityFilter:
         return self.seen_occupied and self.seen_empty
 
     @property
+    def occ_settled(self) -> bool:
+        """Whether people's vapour has been corrected enough to be priced:
+        one hour of steps after the room was identified. Pricing it at the
+        starting guess cost 24 minutes below the band on the first morning of
+        the whole-loop simulation [D113]."""
+        return self.occ_corrections >= HUMIDITY_OCC_SETTLE_CORRECTIONS
+
+    @property
     def priced_occ(self) -> float:
         """People's vapour as a plan or a forecast should price it: zero until
-        the room has been seen both ways [D113]. One accessor, so the filter,
-        the plan and the forecast cannot disagree about when it counts."""
-        return moisture_figures(self.z).occ if self.occupancy_identified else 0.0
+        the room has been seen both ways and the figure has settled on what it
+        has seen [D113]. One accessor, so the filter, the plan and the
+        forecast cannot disagree about when it counts."""
+        if not (self.occupancy_identified and self.occ_settled):
+            return 0.0
+        return moisture_figures(self.z).occ
 
     def observe_e(self, e: float | None) -> None:
         """The smallest non-zero change seen in the room's vapour pressure."""
@@ -252,6 +265,8 @@ class HumidityFilter:
                 # the figure keeps its start until the room is seen both ways
                 acts[H_LN_OCC] = False
             self._correct(reading_e, acts)
+            if acts[H_LN_OCC]:
+                self.occ_corrections += 1
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z)):
             self.z, self.p = z0, p0
             reason = "a figure was not a finite number; step undone"
@@ -309,6 +324,7 @@ class HumidityFilter:
             "jitter": self.reading_jitter,
             "prior_avg": self._prior_avg,
             "seen": [self.seen_occupied, self.seen_empty],
+            "occ_corrections": self.occ_corrections,
         }
 
     @classmethod
@@ -339,6 +355,9 @@ class HumidityFilter:
             v = data.get(key)
             if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(float(v)):
                 setattr(out, attr, float(v))
+        cc = data.get("occ_corrections")
+        if isinstance(cc, int) and not isinstance(cc, bool) and cc >= 0:
+            out.occ_corrections = cc
         seen = data.get("seen")
         if isinstance(seen, list) and len(seen) == 2:
             out.seen_occupied, out.seen_empty = bool(seen[0]), bool(seen[1])

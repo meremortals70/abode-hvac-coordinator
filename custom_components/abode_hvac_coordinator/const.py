@@ -293,6 +293,10 @@ HUMIDITY_START_VAR_LOG_FIGURE: Final = 1.0  # [NYE]
 HUMIDITY_START_VAR_Q: Final = 0.25  # [NYE]
 HUMIDITY_NOISE_E_PER_H: Final = 1e-2  # hPa^2 per hour [NYE]
 HUMIDITY_NOISE_FIGURE: Final = 1e-6  # per step [NYE]
+# how many corrections the occupancy source takes before a plan may price it:
+# an hour of five-minute steps, the time the filter needs to pull it off its
+# starting guess [D113]
+HUMIDITY_OCC_SETTLE_CORRECTIONS: Final = 12
 COIL_REBOUND_S: Final = 15 * 60.0  # [D060]
 TRUST_ONE_HOUR_C: Final = 0.3  # [Prop][NYE]
 TRUST_HOURS_KEPT: Final = 48  # [Prop][NYE]

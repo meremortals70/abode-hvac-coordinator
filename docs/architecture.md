@@ -165,7 +165,10 @@ Also learned, outside the filter:
 \frac{de}{dt} = h\,(e_{out} - e) + q + q_{occ}\,[occupied] - D_{mode} + R_{coil}(t)
 ```
 
-- **h** is exchange with outdoor air and **q** a steady indoor source [Prop].
+- **h** is exchange with outdoor air and **q** the net steady moisture term
+  [Prop]: positive where sources outweigh what the fabric absorbs, negative
+  where it is the other way, as in a room held below the outdoor vapour
+  pressure. It is not clamped, because a net sink is real [D113].
 - **q\_occ** is the vapour people add while the room is occupied, learned only
   from minutes the room was occupied and priced only once it has been seen both
   occupied and empty, or it cannot be told apart from q [D113].

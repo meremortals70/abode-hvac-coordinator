@@ -18,15 +18,21 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
   no part of the model could have seen it coming. It is added as a learned
   figure that acts only on the minutes the room was occupied, not as a rule
   about humidity, so a night with nobody in the room learns it is not there
-  [D104]. The plan carries the same source through its six hours while the room
-  is occupied, so the rise is forecast from the occupancy the room has now rather
-  than only corrected after it happens — it cannot anticipate an arrival, nor
-  stop pricing people once they have gone to bed. The figure is learned, and
-  priced, only once the room has been seen both occupied and empty. The heat side already carries a learned daily pattern, which is
-  the same information smoothed over the usual hours; moisture had no such
-  pattern.
-  A saved model from before this keeps everything it learned — the new figure
-  joins at its starting value.
+  [D104]. The figure is learned, and priced, only once the room has been seen
+  both occupied and empty and the filter has had an hour to settle it. The heat
+  side already carries a learned daily pattern, which is the same information
+  smoothed over the usual hours; moisture had no such pattern. A saved model
+  from before this keeps everything it learned — the new figure joins at its
+  starting value.
+
+- **The plan expects the room's own hours ([D114]).** Occupancy changes inside a
+  plan's six hours, and the plan used to carry the room's occupancy *now* over
+  the whole horizon: it could not anticipate the arrival that adds vapour, and it
+  went on pricing people after they had gone to bed. The room now keeps a share
+  per hour of the day, learned from its own occupancy — one observation an hour,
+  a week to settle, no schedule to configure — and the plan prices people in
+  proportion to it. An hour nobody has seen yet falls back to the room as it is
+  now, and a one-off visit or a holiday is priced as the ordinary week [D113].
 
 ### Fixed
 

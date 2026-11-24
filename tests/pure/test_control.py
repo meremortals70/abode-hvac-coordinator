@@ -999,13 +999,25 @@ class StartTemperature(unittest.TestCase):
 
 
 def identified_humidity() -> Any:
-    """A moisture filter that has seen the room both occupied and empty, so
-    people's vapour can be told apart from the steady source [D113]."""
+    """A moisture filter that has seen the room both occupied and empty and has
+    settled the figure, so people's vapour is priced [D113]."""
     h = hum.HumidityFilter.start(E_ROOM)
     for occupied in (True, False):
         m = [hum.MoistureMinute(outdoor_e=E_ROOM, dry=False, cooling_rate=0.0, rebound=False,
                                 occupied=occupied)] * 5
         h.five_minutes(m, E_ROOM, False)  # no correction: only the room's states are noted
+    # the figure is priced only once it has been corrected for an hour, and a
+    # reading that never moves teaches the filter nothing: vary it a little
+    busy = [hum.MoistureMinute(outdoor_e=E_ROOM, dry=False, cooling_rate=0.0, rebound=False,
+                               occupied=True)] * 5
+    # two different readings prime the filter's own step, or the first
+    # correction is refused for want of one
+    h.observe_e(E_ROOM)
+    h.observe_e(E_ROOM + 0.1)
+    for n in range(hum.HUMIDITY_OCC_SETTLE_CORRECTIONS):
+        reading = E_ROOM + (0.1 if n % 2 else 0.0)
+        h.observe_e(reading)
+        h.five_minutes(busy, reading, True)
     return h
 
 
@@ -1029,6 +1041,30 @@ class OccupancyMoisture(unittest.TestCase):
         h = hum.HumidityFilter.start(E_ROOM)  # neither seen occupied nor empty
         inp = inputs(humidity=h, occupied=True, modes=frozenset({"fan_only"}))
         self.assertEqual(plan._fixed(inp).occ, 0.0)
+
+
+class TheHorizonPricesTheHoursItExpects(unittest.TestCase):
+    """The plan expects the room's own hours, not just the room as it is now
+    [D114]."""
+
+    def _index(self, occupancy: tuple[float, ...], occupied: bool) -> float:
+        h = identified_humidity()
+        inp = inputs(humidity=h, occupied=occupied, modes=frozenset({"fan_only"}), occupancy=occupancy)
+        return plan.make_plan(inp).points[-1].hci
+
+    def test_a_horizon_that_expects_people_ends_damper(self) -> None:
+        points = len(inputs().conditions)
+        busy = tuple([1.0] * points)
+        empty = tuple([0.0] * points)
+        self.assertGreater(self._index(busy, False), self._index(empty, False))
+
+    def test_without_learned_hours_the_room_as_it_is_now_holds(self) -> None:
+        points = len(inputs().conditions)
+        h = identified_humidity()
+        with_fallback = plan.make_plan(inputs(humidity=h, occupied=True)).points[-1].hci
+        explicit = plan.make_plan(inputs(humidity=h, occupied=True,
+                                         occupancy=tuple([1.0] * points))).points[-1].hci
+        self.assertAlmostEqual(with_fallback, explicit, places=6)
 
 
 if __name__ == "__main__":

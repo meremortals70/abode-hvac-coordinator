@@ -55,7 +55,8 @@ def learned_state() -> Any:
     choices = models.RoomChoices(automatic_control=False, automatic_vane_control=True,
                                  comfort_mode=models.ComfortMode.SLEEP, leave_pressed_at=T0,
                                  precool_ready_by=T0 + timedelta(hours=1))
-    return mem.RoomState(rm, a, choices, True, PROFILE, models.DayScore(98.5, 40.0, 0.5, 1.25))
+    return mem.RoomState(model=rm, arbiter=a, choices=choices, occupied=True, profile=PROFILE,
+                         yesterday=models.DayScore(98.5, 40.0, 0.5, 1.25))
 
 
 class Kept(unittest.TestCase):

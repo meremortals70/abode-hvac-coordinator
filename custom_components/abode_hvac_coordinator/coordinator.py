@@ -1053,6 +1053,13 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                                           model.heat.last_outdoor if model.heat is not None else None,
                                           self._clear_now)
         if hour:
+            # one observation of this hour of the day, kept for the plan's
+            # horizon and for the next plan after it [D114]. The comfort of the
+            # cycle before is the room's own answer, as the minute step takes it
+            here = (run.comfort_result.occupied if run.comfort_result is not None
+                    else bool(run.comfort.occupied))
+            run.state.occupancy.observe(_local_hour(now), here)
+            self.memory.learned()
             await self._hour(run, now)
         outdoor = snap.outdoor_temperature.value
         if outdoor is None and model.heat is not None:
@@ -1397,6 +1404,13 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             last_way=next(iter(ways)) if len(ways := {self._unit_way[u] for u in units if u in self._unit_way}) == 1
             else 0,
             t_now=start_temperature(snap.room_temperature.value, _estimate_now(run, now)[0]),
+            # the room's own hours: where an hour has been seen, the plan
+            # expects what usually happens in it [D114]
+            occupancy=tuple(
+                (share if (share := run.state.occupancy.at(c.hour)) is not None
+                 else (1.0 if comfort.occupied else 0.0))
+                for c in conds
+            ),
         )
 
     async def _act_and_record(

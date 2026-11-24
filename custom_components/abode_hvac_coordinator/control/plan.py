@@ -105,6 +105,10 @@ class PlanInputs:
     running_since: datetime | None = None
     stopped_since: datetime | None = None
     occupied: bool = True
+    # the share of the room being occupied at each point of the horizon, from
+    # its own learned hours; None where nothing is known and `occupied` holds
+    # [D114]
+    occupancy: tuple[float, ...] | None = None
     # the share of the room's openings open now: the air's coupling to
     # outdoors is a + v o, so the forecast carries the opening as it is
     # [D105]
@@ -677,11 +681,10 @@ def _extend(
                 fx.cooling * u if action.kind is StepKind.COOL else 0.0
             )
             gain = fx.rebound if n.rebound > 0 else 0.0
-            if inp.occupied:
-                # people keep arriving over the plan's six hours: the room is
-                # taken as staying as it is, the only thing a forecast can say
-                # about them [D113]
-                gain += fx.occ
+            # people are priced by the hour the room usually keeps, so an
+            # arrival and a bedtime inside the horizon are both expected [D114]
+            share = inp.occupancy[i] if inp.occupancy is not None else (1.0 if inp.occupied else 0.0)
+            gain += fx.occ * share
             e_out = _vp(c.outdoor, c.outdoor_rh) if c.outdoor_rh is not None else n.e
             target = (fx.h * e_out + fx.q - removed + gain) / fx.h
             n.e = target + (n.e - target) * math.exp(-fx.h * _POINT_H)

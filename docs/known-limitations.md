@@ -1,11 +1,10 @@
 # Known limitations
 
-- **Occupancy is not forecast, in either direction.** The model learns what
-  people add to a room's moisture while it is occupied, but the plan carries the
-  room's occupancy *now* over its whole six hours: a room empty at 17:00 plans as
-  if it stays empty, and a room occupied at 22:00 keeps pricing people's vapour
-  until 04:00 after everyone has gone to bed. The first minutes of an evening,
-  and the first hours after bedtime, are unmodelled [D113].
+- **Occupancy is a habit, not a calendar.** The plan prices people by the share
+  of days each hour of the day has been occupied, so the usual evening is
+  expected and the usual bedtime stops it. It takes about a week to settle, an
+  hour nobody has seen falls back to the room as it is now, and a one-off visit,
+  a holiday or a guest is priced as the ordinary week [D114].
 - **The first morning of a room's occupancy source over-cools slightly.** The
   figure starts from a guess (1.0 hPa/h) and is first priced on the morning the
   room has been seen both occupied and empty; until the filter corrects the guess

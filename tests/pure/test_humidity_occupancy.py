@@ -163,5 +163,60 @@ class ThePredictionWaitsForTheRoomToBeSeenBothWays(unittest.TestCase):
         self.assertTrue(back.occupancy_identified, "a saved model forgot which states it had seen")
 
 
+class TheSteadyTermMayBeASink(unittest.TestCase):
+    """q is the *net* steady moisture term, not only a source. A room whose
+    fabric absorbs water needs a negative one, and the whole-loop simulation is
+    exactly that case: the room is held at 55 % while outdoors is 60 %, so the
+    exchange pulls vapour in and only a negative q holds the level. Clamping it
+    at zero removed the model's only sink and cost comfort in both simulations
+    (98.3 % -> 97.8 % in the loop, 85 % -> 84.2 % in the whole-degree unit)."""
+
+    def test_a_stored_negative_term_is_kept(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        saved = f.as_dict()
+        saved["z"][hum.H_Q] = -0.4
+        back = hum.HumidityFilter.from_dict(saved)
+        self.assertIsNotNone(back)
+        assert back is not None
+        self.assertAlmostEqual(back.z[hum.H_Q], -0.4)
+
+    def test_a_correction_may_take_it_negative(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        f.z[hum.H_Q] = 0.01
+        f.p[hum.H_Q][hum.H_E] = f.p[hum.H_E][hum.H_Q] = 0.05
+        f.observe_e(20.0)
+        f.observe_e(20.2)  # two different readings teach the filter its own step
+        f.five_minutes([minute(occupied=False)] * 5, 10.0, True)
+        self.assertLess(f.z[hum.H_Q], 0.01)
+
+
+class TheSourceIsPricedOnlyOnceItHasSettled(unittest.TestCase):
+    """Pricing the starting guess cost 24 minutes below the band on the first
+    morning of the whole-loop simulation [D113]."""
+
+    def test_nothing_is_priced_before_settling(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        busy = [minute(occupied=True)] * 5
+        f.observe_e(20.0)
+        f.five_minutes([minute(occupied=False)] * 5, 20.0, True)  # both ways: identified
+        f.observe_e(20.0)
+        f.five_minutes(busy, 20.0, True)
+        self.assertTrue(f.occupancy_identified)
+        self.assertFalse(f.occ_settled, "an hour of corrections is the settle time")
+        self.assertEqual(f.priced_occ, 0.0)
+
+    def test_it_is_priced_after_an_hour_of_occupied_steps(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        # the reading must move at all for the filter to learn its own step
+        for reading in (20.0, 20.1):
+            f.observe_e(reading)
+        f.five_minutes([minute(occupied=False)] * 5, 20.1, True)
+        for n in range(hum.HUMIDITY_OCC_SETTLE_CORRECTIONS):
+            f.observe_e(20.0 if n % 2 else 20.1)
+            f.five_minutes([minute(occupied=True)] * 5, 20.1, True)
+        self.assertTrue(f.occ_settled, "an hour of corrections did not settle the figure")
+        self.assertGreater(f.priced_occ, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
