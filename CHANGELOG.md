@@ -6,7 +6,7 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
-## 0.10.15 - unreleased
+## 0.10.15 - 2026-11-24
 
 ### Added
 
