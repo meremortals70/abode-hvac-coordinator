@@ -125,6 +125,40 @@ negative across a Leave; a clamp was suggested and not done. And `q_occ` is one
 number for all occupied minutes, so a 07:00 shower is smeared over fourteen
 hours — the term can match an evening's level, never its shape.
 
+### 6. Second review pass on the release — the feature was inert (24 Nov)
+
+The fresh-eyes pass on `v0.10.14..HEAD` found that the identifiability guard
+added in the first review **deadlocked**: `_moisture_minute` suppressed the
+occupied flag until `occupancy_identified`, and that needs an occupied minute —
+so `q_occ` never learned and the plan never priced it. The changelog claimed a
+behaviour that did not exist.
+
+Two latent faults sat behind it, both released by the obvious fix: the ten-day
+**seed replay** (`memory.py`) claimed the room was occupied throughout, and the
+**first cycle after a start** recorded an empty minute (`bool(None)`), sticky and
+enough to unlock the source for a room with no presence sensor.
+
+Also from that pass: the trust check's forward run now carries the source; the
+identifiability gate lives in one accessor (`HumidityFilter.priced_occ`) instead
+of three copies; `docs/architecture.md` describes the term in all three places;
+`known-limitations` states the approximation in both directions; the `seen` flags
+have a round-trip test.
+
+**The simulation failed when the term went live, and the failure was read, not
+reverted.** 24 minutes below band, all of them 08:00-09:00 on day 1 — the hour
+the source first activates and is priced at its 1.0 hPa/h guess. Days 2-3 were
+100%, the figure learned to 0.26. Half the failure was the fixture: the sim told
+the model occupancy at night and the plan "occupied" all day, which production
+never does. Both sims now give the plan and the model the same occupancy.
+
+Committed `a5edd38`; CI run
+[`45324252038`](https://github.com/meremortals70/abode-hvac-coordinator/actions/runs/45324252038)
+green on all five jobs.
+
+**Lesson worth keeping:** a test that cannot fail is not evidence. The feature
+passed 584 pure tests and a 3-test simulation while doing nothing, because no
+test drove the live path. Two tests through `RoomModel` now do.
+
 ## Next move
 
 **Why is a plan not carried out?** This is the question left standing after the

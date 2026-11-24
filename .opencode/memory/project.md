@@ -33,10 +33,20 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
     (`coordinator._demand_now`), not every cycle: 17,287 recorder rows a week
     become about 2,000.
   - **#27** — occupancy is a learned moisture source [D113], carried into the
-    plan's six hours, and held back until the room has been seen both occupied
-    and empty (a room with no presence sensor counts as occupied for ever, and
-    then `q` and `q_occ` cannot be told apart — a four-day replay dragged `h`
-    from 0.50 to 0.365/h).
+    plan's six hours and the trust check's forward run, and held back until the
+    room has been seen both occupied and empty (a room with no presence sensor
+    counts as occupied for ever, and then `q` and `q_occ` cannot be told apart —
+    a four-day replay dragged `h` from 0.50 to 0.365/h).
+    **The first version of that guard deadlocked**: it suppressed the occupied
+    flag until the room was identified, and identification needs an occupied
+    minute, so nothing was ever priced. The observation now keeps the raw flag
+    and the *prediction* leaves the term out; `HumidityFilter.priced_occ` is the
+    single place that decides when people are priced.
+    **The prior is a guess** (1.0 hPa/h). In the whole-loop sim it costs 24
+    minutes below the band, all in the 08:00-09:00 hour of the first day, before
+    the filter learns down (to 0.26 there, where nobody really adds vapour). The
+    house should show what it settles at; do not move the starting value without
+    that measurement.
   Release both together on the next release day, then close #25 and #27.
 - **Review precedes every commit** (global instruction, 24 Nov): verify, then
   the full `review` skill — correctness, security, architecture, AI-tell, fresh
