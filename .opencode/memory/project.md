@@ -1,93 +1,118 @@
+# Abode HVAC Coordinator — working notes for agents
+
 > Project memory for Abode HVAC Coordinator. Update at the end of each session.
 
 ## Current objective
 
-Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration. It learns a thermal model of each room and decides how to run that room's air conditioners.
+Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration. It learns a thermal model of each room and decides how to run that room's air conditioners: a plan every 5 minutes and a PID every 30 seconds.
 
 ## Active work
 
-- **0.10.11 is in service.** The next export should show the short-cycle guard
-  releasing a command whose compressor never started, the room's learned curves
-  in `sensor.<room>_learning`'s attributes, and each outdoor unit's draw curve
-  in `sensor.abode_hvac_coordinator_learned_draw`.
-- **Per-unit meters.** One power meter per isolator switch (office circuit,
-  living-room circuit, the multihead's outdoor circuit), configured per head in
-  the room's air conditioning screen once installed [D110].
-- Nightly Living Room performance reviews from the recorder export (see below).
+- **0.10.14 is in service (released 24 Nov 2026, `c7b507d`).** The plan and
+  the PID now start from the measured room, not the model's estimate of it
+  (#23, [D106]). Tag `v0.10.14`, release and `main` all name `c7b507d`.
+- **The standing technical question: the filter does not track the room while
+  the unit is idle.** Over 17–24 Nov the plan started each night's automatic
+  run **3.7 comfort-index points below the measured room** (median 3.86, worst
+  5.9 at Mon 23 Nov 21:10 — 29.4 measured against 23.5 from the model), and
+  agreed to within 0.08 only after four hours. **The filter is not paused for
+  this**: `_observe_and_learn` runs for every room every cycle with no
+  Automatic-control gate, and `model.five_minutes()` steps the filter every
+  5 min. So this is a *tracking* failure, not a stall. Suspects, untested:
+  - the innovation gate `FILTER_GATE_NIS = 10.83` rejecting a large correction
+    as an outlier and waiting for the model's own dynamics to catch up;
+  - the humidity state (the index is 1/T vapour pressure; the diagnostics
+    showed model and reading agreeing at a calm moment, so this is unproven);
+  - the daily heat pattern absorbing what the physics should explain.
+  **0.10.14 only stops the estimate reaching the unit; it does not fix this.**
+  Next session's job, with a test that fails first.
+- **One change a day** (stated 17 Nov). Do not stack proposals, commits or
+  releases in a single day. 24 Nov's change was 0.10.14.
+- **Occupancy is a heat and moisture source** (agreed 24 Nov, not built). On
+  Mon 23 Nov the living room gained ~2.6 g/kg of water in 45 minutes, starting
+  two minutes after bed occupancy came on. The filter has a *steady* indoor
+  moisture source (`HUMIDITY_START_Q_HPA_PER_H`) and a smooth two-harmonic
+  daily heat pattern; neither knows when someone gets into bed. Per [D104]
+  this is a missing term, so give the model the term — do not widen a band.
+- **Queued behind that:** the `number.<room>_setpoint` shows `unknown` while a
+  head rests (143 rows/week living room, 18 office), because `number.py:50`
+  returns `None` when the head has no target temperature.
 
 ## Night review workflow (Living Room)
 
-Verified 12 Nov 2026 by running it for the night of 11–12 Nov.
+Verified 12 Nov 2026, and used again for the 17–24 Nov seven-day review.
 
 `/config/export_window.sh` (archive copy: `tools\export_window.sh`) exports any
 room over any window. Arguments: room substring, output tag, start UTC, end UTC,
 and a label for the summary:
 
 ```sh
-sh /config/export_window.sh living_room living_2026-11-13 '2026-11-12 11:00:00' '2026-11-12 22:00:00' '21:00 Thu -> 08:00 Fri'
+sh /config/export_window.sh living_room living_2026-11-24 '2026-11-17 06:00:00' '2026-11-24 00:34:09' 'Tue 17 Nov 16:00 -> now'
 ```
 
 It writes `abode_<tag>.csv`, `abode_<tag>_summary.txt` and `abode_<tag>.tar.gz`
 and prints `OK: upload <path>`. `/config/export_night.sh` is the older
 living-room-only script, still on the host.
 
-**The script that runs lives on the HA host**, not on Windows; the copies in
-this repo are archives only — `tools/` is git-ignored.
+**The script that runs lives on the HA host**, not on Windows; the copies in this
+repo are archives only — `tools/` is git-ignored.
 
 Run it in the HA SSH add-on (Advanced SSH & Web Terminal). It needs `sqlite3`
-(`apk add sqlite` if missing) and reads `/homeassistant/home-assistant_v2.db`
-(the script's `CFG` falls back to `/config` when `/homeassistant` is absent).
+(`apk add sqlite`). Windows are **in UTC** on the command line. Brisbane is +10
+with no daylight saving, so local 21:00 → 08:00 is UTC 11:00 → 22:00.
 
-Windows are **in UTC** on the command line. Brisbane is +10 with no daylight
-saving, so local 21:00 → 08:00 is UTC 11:00 → 22:00 of the same calendar day.
-
-Success prints `OK: upload /homeassistant/abode_<tag>.tar.gz (132.0K)`. Upload
-that tarball to `C:\Users\jason\Nextcloud\opencode\projects\abode-hvac-coordinator\tools\` and
-extract it.
+For a window that ends "now", pass `"$(date -u '+%Y-%m-%d %H:%M:%S')"` as the
+end argument — the script feeds it to `strftime('%s', ...)`, which accepts it.
 
 ### Gotchas
 
 - **A pasted script arrives with CRLF and will not parse.** Run
   `sed -i 's/\r$//' /config/export_window.sh` before the first use, then
-  `sh -n` it. A bare `{\r` is not the reserved word, so the group's closing `}`
-  is reported as `syntax error: unexpected "}"` — 13 Nov 2026.
+  `sh -n` it.
 - The tarball lands in `/homeassistant`, not `/config`, whenever that directory
-  exists. Take the path from the `OK:` line, not from the script's variables.
-- The summary's `window local:` line is a hardcoded `echo` and keeps the old
-  date. It is **not** evidence of the exported window — check the first
-  `local_time` in the csv instead.
-- `abode_night.csv` begins with a stray `10000` line (sqlite3 echoing
-  `.timeout 10000`). Skip it before parsing: `next(f)` before `csv.DictReader`,
-  or `Get-Content | Select-Object -Skip 1` in PowerShell. `Import-Csv` alone
-  reads that line as the header and returns empty fields.
-- `tools\ha_history_dump.py` exists but is not the nightly workflow.
+  exists. Take the path from the `OK:` line.
+- The summary's `window local:` line is a hardcoded `echo`. Ignore it.
+- `abode_night.csv` (the old script) begins with a stray `10000` line from
+  sqlite3. The window script's csv does not.
+- A seven-day export is ~60 MB of csv, ~3–4 MB gzipped. A night is ~0.15–0.6 MB.
+- The recorder keeps 10 days by default, so a seven-day review must run before
+  the first day purges.
 
 ### Review metrics
 
-- **The band is in comfort index, not dry-bulb** [D009]: `sensor.living_room`
-  attributes `band.low` / `band.high` are on the Steadman apparent-temperature
-  scale (shade, wind zero) [D010]. On the night reviewed the sleep band was
-  23.0–25.5 index, whose dry-bulb centre (`band.centre_c`) was 22.12 °C.
-  Never compare `sensor.living_room_temperature` against these numbers.
-- Time in band: time-weighted on `sensor.living_room_comfort_index` against
-  `band.low` / `band.high`, holding the last value across gaps. Its own
-  attributes carry `band_low` / `band_high` for cross-checking.
-- Dry-bulb temperature (`sensor.living_room_temperature`) is reported as a range
-  and mean only; it has no band.
-- `band_rule` says why a band applies (`left`, `automatic_off`, `sleep`).
-- Also count setpoint writes (`number.living_room_setpoint`), mode changes
-  (`select.living_room_unit_mode`, `climate.living_room_aircon`) and fan
-  changes (`select.living_room_fan_speed`).
+- **The band is in comfort index, not dry-bulb** [D009]: `band.low` / `band.high`
+  on `sensor.<room>` are Steadman apparent temperature. `band.centre_c` is the
+  dry-bulb equivalent and moves with the room's humidity — do not read it as
+  the band moving.
+- **Judge only the cycles where Automatic control was on**, and only where a
+  band was actually in force: a room unoccupied, `left`, or with automatic
+  control off has `band: null`, and carrying the last band across those gaps
+  inflates every percentage (this bug was made and fixed on 24 Nov).
+- Dry-bulb (`sensor.<room>_temperature`) updates only when the value changes —
+  every few minutes at night, hours apart by day. Do not compute rates from it
+  over short windows.
+- `band_rule` says why a band applies (`sleep`, `occupied`, `unoccupied`, `left`).
+- Count setpoint writes (`number.<room>_setpoint`), mode changes
+  (`select.<room>_unit_mode`, `climate.<room>_aircon`) and fan changes
+  (`select.<room>_fan_speed`).
+
+### The review scripts
+
+`tools/_rev24/` holds the seven-day analysis used on 24 Nov — `an.py` (per-day
+table, rules, commands, plan, curves, gaps), `auto.py` (everything restricted to
+Automatic-control intervals) and `deep.py` (commanded setpoint, flap context,
+compressor sources). They take a csv path and a room prefix.
 
 ## Recently completed
 
 | Date | What |
 | ---- | ---- |
-| 15 Nov 2026 | 0.10.11 released (tag `v0.10.11`, [release](https://github.com/meremortals70/abode-hvac-coordinator/releases/tag/v0.10.11), issues #15-#18 closed): an outdoor unit's own power meter is a compressor source, the short-cycle guard times its run from the compressor, a refused stop keeps the running command whole, and the learned curves are recorded [D110] |
-| 12 Nov 2026 | 0.10.7 released (tag `v0.10.7`, [release](https://github.com/meremortals70/abode-hvac-coordinator/releases/tag/v0.10.7), issue #5 closed): an opening is a model input (`vent`); free cooling is the plan's own counterfactual [D105] |
-| 12 Nov 2026 | FP2 presence reviewed; the room is to be configured with it and a 120-minute empty grace, with the zone/sensitivity fix still to do |
-| 12 Nov 2026 | Night review of 11–12 Nov; workflow recorded above |
-| Earlier | Shipped 0.10.4 |
+| 24 Nov 2026 | 0.10.14 released (`c7b507d`): the plan and the PID start from the measured room (#23, [D106]) |
+| 24 Nov 2026 | #22 closed `not_planned`: the head is an IntesisBox reporting the indoor unit's state a few seconds behind; reproduced with no command sent |
+| 24 Nov 2026 | Seven-day review of 17–24 Nov, autonomy-only; living room 86.6% in band overall, 88.5% of 47h02m asleep |
+| 18 Nov 2026 | 0.10.13 released (`de4d6c6`): the forced stop names its rule; an interior door is an opening for the stop only [D111] |
+| 17 Nov 2026 | Daily review of 16–17 Nov; the office door stop verified as [D050] working as designed |
+| 15 Nov 2026 | 0.10.11 released: an outdoor unit's own meter is a compressor source [D110] |
 
 ## Decisions
 
@@ -96,58 +121,52 @@ extract it.
 | Design | Comfort index (HCI) is Steadman apparent temperature with wind zero | Occupants feel humidity, not just dry-bulb temperature |
 | Design | Two-store thermal model (air + mass) | Captures building inertia and solar gain |
 | Design | No runtime dependencies | `requirements` is empty; stdlib only |
-| 12 Nov 2026 | An opening is an input to the heat balance with a learned coupling (`vent`); no hold and no at-once stop; free cooling is the plan's own counterfactual [D105] | A sealed double-brick room cannot use outdoor air, so the model must say so rather than a rule |
+| 12 Nov 2026 | An opening is an input to the heat balance with a learned coupling (`vent`) [D105] | A sealed double-brick room cannot use outdoor air, so the model must say so rather than a rule |
+| 24 Nov 2026 | The present is measured; the future is modelled [D106] | The filter's estimate can be degrees from the room, and a plan that starts there rests when the room is already above its band. **D106 already said this**; 0.10.14 made the code obey it |
 
 ## Model facts (do not re-litigate)
 
 - `k` **is** in the heat model and **is** learned: `physics.py:4`
   (`dM/dt = c (T - M) + k (T_out - M) + m S`), state index `I_LN_K = 5`
-  (`physics.py:33`), started at 0.1/h and estimated by the filter
-  (`filter.py:171`, `_LOG_FIGURES` at `filter.py:205`).
+  (`physics.py:33`), started at 0.1/h and estimated by the filter.
 - `h` is the moisture exchange with outdoor air, also learned
   (`humidity.py:158`, `docs/architecture.md:164`).
-- `vent` (`I_LN_VENT = 27`, `STATE_SIZE = 28`) is the air an opening changes
-  with outdoors, per hour: `dT/dt = (a + vent·o)(T_out − T) + …`, `o` = 1
-  while an opening reads open [D105]. It is learned only from minutes an
-  opening was open; a 27-state save is migrated on load.
+- `vent` (`I_LN_VENT = 27`, `STATE_SIZE = 34`) is the air an opening changes
+  with outdoors, per hour [D105]. It is learned only from minutes an opening
+  was open; a room with no outdoor openings keeps its start value (the living
+  room's is exactly 3.0/h, never used). The office's learned value is
+  **0.087/h** — a sealed room, and evidence [D111] is keeping the hall door out.
+- The plan starts from the **measured** vapour pressure (`e_now`) and, since
+  0.10.14, the **measured** temperature `control.plan.start_temperature`.
+  The filter supplies the figures the forecast moves with, not the start.
+- `s` and `m` in `trace.model.figures` sat at exactly `0.4` and `0.1` — their
+  starting values — in **both** rooms on 24 Nov, after three weeks of running,
+  while `g0` and the harmonics differ between rooms. Unexplained; possibly
+  unobservable at night (no sun), possibly a prior that never moves. Worth a
+  look alongside the tracking question.
 - Free cooling is **not** a rule: the plan carries the room forward with an
-  opening open and the unit resting, beside the plan, and advises when the
-  opening moves the index by more than the forecast's own sigma and costs
-  less over the same window (`plan._opening_advice`). The dew point margin
-  (`psychro.outdoor_air_dry`) is the one measured constraint left, because
-  there is no learned moisture coupling for an opening.
+  opening open and the unit resting, beside the plan (`plan._opening_advice`).
 - Announcements are blocked while the room is asleep, and "asleep" is the
   Comfort mode or the sleep schedule (`comfort.py:115-122`), not a clock.
-  With the window shut, a warning can still be spoken by day [D071].
 
-## Living Room presence (Aqara FP2, 12 Nov 2026)
+## Diagnostics download
 
-Reviewed from `tools/presence_2026-11-12/` (48 h of `binary_sensor.presence_living_room_zone1`).
-
-- Two nights: 11–12 Nov **0** state changes (on throughout 21:13:28–07:05:43);
-  10–11 Nov two short `off` blips (6 min 48 s, 2 min 32 s).
-- Daytime, with her in the room: one **88.5-minute** `off` (09:37:51–11:06:24)
-  and 22.9 minutes at 17:29. The office sensor had someone in the office for
-  most of the first, so it may have been a true absence; unresolved.
-- 126 real state changes in 48 h, median stretch 1.4 min, 53 under 60 s, and
-  three `unavailable` spells (35 s, 17 min, 1 min) — the integration does mark
-  dropouts, so a silent night is a live `on`.
-- The FP2 is in HA **twice**: `binary_sensor.presence_sensor_fp2_6a04_presence_sensor_2`
-  (native, leads) and `presence_living_room_zone1` (HomeKit bridge, 1 s behind).
-  Same signal. Use the native one.
-- A false "empty" is not a band nudge: `comfort.py:141-144` returns `off` with
-  no band. So the room is configured with **empty grace 120 min** until the
-  sensor is proven.
-- Outstanding: raise presence sensitivity for the bed zone and redraw it to the
-  mattress edges in the Aqara app; the FP2 exposes no absence delay to HA.
+- Settings → Devices & Services → Abode HVAC Coordinator → ⋮ → Download
+  diagnostics. It lands as `config_entry-abode_hvac_coordinator-<entry>.json`.
+- **The payload is under `data`**, not at the top level: `data.rooms[<id>]` →
+  `settings`, `learned` (`heat`/`humidity` filter states, with the `z` vector),
+  `plan`, `trace`, `arbitrary`. `data.commands` is the last 200 commands, with
+  `by_user` — the only way to tell a user's command from the component's.
+- `trace.model.figures` decodes the state vector into a, b, c, k, s, m, g0 and
+  the harmonics; `trace.model.curves` gives the cool/heat/dry curves in C/h.
 
 ## Blockers
 
-- None currently.
+- None. `GITHUB_TOKEN` is present and works (`gh` is not installed).
 
 ## Known issues
 
-See `docs/known-limitations.md` and GitHub issues at `https://github.com/meremortals70/abode-hvac-coordinator/issues`.
+See `docs/known-limitations.md` and GitHub issues at `https://github.com/meremortals70/abode-hvac-coordinator/issues` (none open as of 24 Nov 2026).
 
 ## Glossary
 
@@ -159,3 +178,4 @@ See `docs/known-limitations.md` and GitHub issues at `https://github.com/meremor
 | PID | 30-second setpoint adjustment |
 | Pure layer | Decision modules with no Home Assistant imports |
 | D-record | Numbered design rule in `docs/decisions/D###.md` |
+| Autonomy | Automatic control on; the component is in charge of the unit |
