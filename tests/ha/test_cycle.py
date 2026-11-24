@@ -943,7 +943,7 @@ async def test_the_demand_forecast_is_read_once_per_five_minutes(
         return real(self, now)
 
     with patch.object(type(c), "_demand", spy):
-        c._demand_read = None  # noqa: SLF001 - the cache is what is under test
+        c._demand_read = None  # the cache is what is under test
         c._house_view()
         c._house_view()
         assert len(reads) == 1, "the forecast is re-read inside the same five minutes"
