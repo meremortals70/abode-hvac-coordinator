@@ -955,6 +955,26 @@ async def test_the_setpoint_shows_the_room_s_hold_while_the_head_rests(
         "the control does not show what the room is being held at"
 
 
+async def test_the_setpoint_is_blank_after_leave_even_though_one_was_commanded(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A commanded setpoint outlives the step that sent it. After Leave the room
+    is being stopped, so there is no setpoint it is being held at, whatever was
+    commanded before [D049]."""
+    set_house_states(hass, mode="cool")
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    assert room.commanded_c is not None, "nothing was commanded"
+    resting = dict(CLIMATE_ATTRS)
+    resting["temperature"] = None
+    hass.states.async_set("climate.office", "fan_only", resting)
+    await hass.services.async_call("button", "press", {"entity_id": "button.office_leave"}, blocking=True)
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    number = hass.states.get("number.office_setpoint")
+    assert number is not None and number.state == "unknown"
+
+
 async def test_the_setpoint_is_blank_when_the_user_is_in_charge_and_the_head_reports_none(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:

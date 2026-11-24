@@ -24,6 +24,7 @@ from .capabilities import TO_C
 from .const import NO_STEP_ADVERTISED
 from .coordinator import AbodeHvacCoordinator
 from .entity import RoomControlEntity, add_room_entities
+from .models import StepKind
 
 PARALLEL_UPDATES = 1
 
@@ -61,7 +62,16 @@ class SetpointNumber(RoomControlEntity, NumberEntity):
         # one while the component is holding it, and showing a blank there said
         # nothing true about the room [D049]
         run = self.run
-        if run is not None and run.state.choices.automatic_control and run.commanded_c is not None:
+        if (
+            run is not None
+            and run.state.choices.automatic_control
+            # a commanded setpoint outlives the step that sent it, so it says
+            # nothing while the room is being stopped: Leave, an empty room, a
+            # door left open. Only a step that still holds the room has one
+            and run.step is not None
+            and run.step.kind not in (StepKind.OFF, StepKind.NONE)
+            and run.commanded_c is not None
+        ):
             return round(run.commanded_c, 2)
         return None
 
