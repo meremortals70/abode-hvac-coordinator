@@ -8,22 +8,22 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 
 ## Active work
 
-- **0.10.16 was released and rolled back the same day (24 Nov 2026).** The
-  release and its tag were deleted; the latest published release is
-  `v0.10.15` (`695f8c0`). `main` still carries the 0.10.16 work with the
-  manifest set back to 0.10.15, and the changelog heading is
-  `0.10.16 - unreleased`. Nothing is published until CI is green **and the
-  user has said so**: three releases on 24 Nov and a force-moved tag were cut
-  without that, which is the failure the user was angry about.
-- **The setpoint control (#29) is fixed in the working tree, not released.**
-  `number.<room>_setpoint` shows the setpoint last sent while Automatic
-  control is on and the head reports none, and the blank otherwise. The figure
-  is kept in `RoomState.commanded_c` (so a restart does not blank the control),
-  cleared when the user takes charge, gated on the step that actually reached
-  the unit (`run.limits_result`) and on `run.failed`, and only the room's first
-  head's setpoint is recorded. With nothing sent since the spell began the
-  band's own centre is shown. [D049] amended; `docs/entities.md` and the
-  changelog corrected to "the setpoint last sent".
+- **0.10.16 released (24 Nov 2026, `f94c731`).** Tag `v0.10.16`, the release
+  and `main` all named `f94c731` at the time. It carries #29 and #30 in full.
+  The earlier 0.10.16 of the same day was rolled back: its release and tag were
+  deleted because it was cut before CI and its own review then found the fix
+  incomplete. Latest published release is 0.10.16; the rollback is history.
+- **The setpoint control (#29) is fixed and released.** `number.<room>_setpoint`
+  shows the setpoint last sent while Automatic control is on and the head
+  reports none, and the blank otherwise. The figure is kept in
+  `RoomState.commanded_c` (so a restart does not blank the control), cleared
+  when the user takes charge, gated on the step that actually reached the unit
+  (`run.limits_result`) and on `run.failed`, and only the room's first head's
+  setpoint is recorded. With nothing sent since the spell began the band's own
+  centre is shown. [D049] amended; `docs/entities.md` and the changelog
+  corrected to "the setpoint last sent".
+- **The next defect is #31, open and unfixed:** the plan is not carried out. Do
+  not change the model for it.
 
 - **0.10.15 is the latest published release (24 Nov 2026, `695f8c0`); 0.10.14
   released before it (`c7b507d`).** 0.10.14 made the plan and the PID start

@@ -4,11 +4,11 @@
 
 ## Current task (later on 24 Nov 2026)
 
-**The setpoint control (#29) is being finished after a rollback.** `v0.10.16`
-and its release were deleted on the user's instruction; the latest published
-release is `v0.10.15` (`695f8c0`). `main` still carries the 0.10.16 work, the
-manifest was set back to 0.10.15, and the changelog heading is
-`0.10.16 - unreleased`.
+**0.10.16 is released (`f94c731`, tag `v0.10.16`); #29 and #30 are closed; #31
+is open.** The afternoon's rollback of the first 0.10.16 is history: that
+release was cut before CI, its review found the fix incomplete, and the release
+and tag were deleted. What shipped is the corrected control, with the Home
+Assistant suite run here before publishing instead of after.
 
 ### What the fix now does
 
