@@ -863,7 +863,7 @@ async def test_an_enforced_ceiling_reaches_the_pid_and_the_plan_in_the_cycle(
     assert tops and max(tops) <= 0.7
 
 
-async def test_a_plan_starts_from_the_estimate_the_pid_acts_on(
+async def test_a_plan_starts_from_the_same_reading_the_pid_acts_on(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
     """A plan made between filter steps starts from the same reading the PID
@@ -918,11 +918,20 @@ async def test_a_plan_starts_from_the_measured_room_not_the_estimate(
         starts.append(inputs.t_now)
         return replan(self, inputs, g)
 
+    pids: list[float] = []
+    cycle = kind.cycle
+
+    def spy_cycle(self: Any, **kw: Any) -> Any:
+        pids.append(kw["t_est"])
+        return cycle(self, **kw)
+
     econ = RoomEconomics((1.0,) * 12, 1.0, 0.7, None, False, 0.5, "ceiling 0.70 C/h")
-    with patch.object(kind, "replan", spy_replan), \
+    with patch.object(kind, "replan", spy_replan), patch.object(kind, "cycle", spy_cycle), \
             patch("custom_components.abode_hvac_coordinator.coordinator.room_economics", return_value=econ):
         await _tick(hass, freezer, timedelta(minutes=2))  # between filter steps: replanned for the ceiling
     assert starts and starts[0] == pytest.approx(25.0)
+    # and the PID acts on the same reading: reverting one side alone now fails
+    assert pids and pids[0] == pytest.approx(25.0)
 
 
 async def test_the_demand_forecast_is_read_once_per_five_minutes(
