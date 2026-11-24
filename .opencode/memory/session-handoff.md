@@ -159,6 +159,25 @@ green on all five jobs.
 passed 584 pure tests and a 3-test simulation while doing nothing, because no
 test drove the live path. Two tests through `RoomModel` now do.
 
+### 7. 0.10.15 released (24 Nov 2026, `695f8c0`)
+
+Contains #25 (demand forecast cadence), #27 (the occupancy moisture source, after
+two review passes), #26's test gap, [D114] (the plan expects the room's own
+hours) and the settle gate. Tag, release and `main` all name `695f8c0`.
+
+**Attempted and reverted, with the measurement recorded:** [D115] priced the stop
+a plan makes, to damp the churn in #24. Charging every stop in the horizon at half
+a start dropped the settled day of the whole-degree simulation to 73.4% in band
+against 85%; charging only the first step at 5% still dropped the loop to 97.7%
+against 99%. Both reverted. #24 is closed with that evidence and the reopen
+conditions: a metered compressor to count starts, or a plan cost on a horizon that
+does not slide.
+
+**The rule that would not hold up without measurement.** Three of today's changes
+were judged by the simulation rather than by reasoning: the q clamp (wrong), the
+stop cost (wrong), and the fixture inconsistency (right). Each looked defensible
+on paper.
+
 ## Next move
 
 **Why is a plan not carried out?** This is the question left standing after the

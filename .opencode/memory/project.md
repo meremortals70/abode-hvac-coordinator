@@ -27,7 +27,15 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
   (dry↔rest 186 of those; median action lifetime 12 min). Candidates: the
   short-cycle guard's min run 10 / rest 5, the 5-minute replan overwriting the
   plan before it can run, and the limits turning a cool into a rest or an off.
-- **0.10.15 is built, unreleased, and awaiting its day.** Two fixes are in
+- **0.10.15 is released (24 Nov 2026, `695f8c0`).** Tag `v0.10.15`, release
+  and `main` all name it; CI run `45332107800` was green on `d724318` and the
+  release commit changes only the manifest and the changelog heading. It carries
+  #25, #27, #26's test gap, [D114] and the settle gate.
+- **No open issues** as of 24 Nov 2026. #24 (plan churn) was closed with the
+  record rather than a change: two pricing designs were measured and both cost
+  comfort (73.4% and 97.7% in band against 85% and 99%) while the churn itself
+  costs none. Reopen conditions are written into the issue.
+- **The old bullet, kept for the history:** Two fixes are in
   `main` and in the changelog under `0.10.15 - unreleased`:
   - **#25** — the demand forecast is read once per five-minute boundary
     (`coordinator._demand_now`), not every cycle: 17,287 recorder rows a week
