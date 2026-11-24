@@ -17,7 +17,9 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
   points above its band and Automatic control on. While Automatic control is on
   the control now shows the coordinator's commanded setpoint; when the user is in
   charge the blank stays, because there is then no setpoint the room is being
-  held at.
+  held at. A room being stopped — Leave, an empty room, a door left open — shows
+  the blank too: a commanded setpoint outlives the step that sent it, and it says
+  nothing while the unit is being turned off.
 
 ## 0.10.15 - 2026-11-24
 
