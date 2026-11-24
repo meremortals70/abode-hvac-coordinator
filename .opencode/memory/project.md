@@ -11,21 +11,22 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 - **0.10.14 is in service (released 24 Nov 2026, `c7b507d`).** The plan and
   the PID now start from the measured room, not the model's estimate of it
   (#23, [D106]). Tag `v0.10.14`, release and `main` all name `c7b507d`.
-- **The standing technical question: the filter does not track the room while
-  the unit is idle.** Over 17–24 Nov the plan started each night's automatic
-  run **3.7 comfort-index points below the measured room** (median 3.86, worst
-  5.9 at Mon 23 Nov 21:10 — 29.4 measured against 23.5 from the model), and
-  agreed to within 0.08 only after four hours. **The filter is not paused for
-  this**: `_observe_and_learn` runs for every room every cycle with no
-  Automatic-control gate, and `model.five_minutes()` steps the filter every
-  5 min. So this is a *tracking* failure, not a stall. Suspects, untested:
-  - the innovation gate `FILTER_GATE_NIS = 10.83` rejecting a large correction
-    as an outlier and waiting for the model's own dynamics to catch up;
-  - the humidity state (the index is 1/T vapour pressure; the diagnostics
-    showed model and reading agreeing at a calm moment, so this is unproven);
-  - the daily heat pattern absorbing what the physics should explain.
-  **0.10.14 only stops the estimate reaching the unit; it does not fix this.**
-  Next session's job, with a test that fails first.
+- **The model is calibrated; the plan is not followed.** Measured correctly on
+  24 Nov, the forecast is accurate whenever its plan is carried out: at
+  +30 minutes the mean error is **+0.12** for a cool plan held 95–100% of the
+  half hour, **+0.02** for dry, **−0.32** for rest. The large errors appear only
+  where the executed action is not the planned one.
+  **An earlier claim in these notes — "the plan starts 3.7 index points below
+  the room" — was wrong and is withdrawn:** `decision.index[0]` is the forecast
+  thirty minutes ahead (`evidence.py:144` samples `points[5]`), not the room
+  now. The estimate was never shown to be wrong, and 0.10.14 rests on [D106]
+  alone.
+  **The open question is plan-versus-execution:** when the plan says cool, the
+  component cools for less than a quarter of the half hour **56%** of the time;
+  the first action changes between consecutive plans 231 times in 1,847
+  (dry↔rest 186 of those; median action lifetime 12 min). Candidates: the
+  short-cycle guard's min run 10 / rest 5, the 5-minute replan overwriting the
+  plan before it can run, and the limits turning a cool into a rest or an off.
 - **One change a day** (stated 17 Nov). Do not stack proposals, commits or
   releases in a single day. 24 Nov's change was 0.10.14.
 - **Occupancy is a heat and moisture source** (agreed 24 Nov, not built). On
@@ -122,7 +123,7 @@ compressor sources). They take a csv path and a room prefix.
 | Design | Two-store thermal model (air + mass) | Captures building inertia and solar gain |
 | Design | No runtime dependencies | `requirements` is empty; stdlib only |
 | 12 Nov 2026 | An opening is an input to the heat balance with a learned coupling (`vent`) [D105] | A sealed double-brick room cannot use outdoor air, so the model must say so rather than a rule |
-| 24 Nov 2026 | The present is measured; the future is modelled [D106] | The filter's estimate can be degrees from the room, and a plan that starts there rests when the room is already above its band. **D106 already said this**; 0.10.14 made the code obey it |
+| 24 Nov 2026 | The present is measured; the future is modelled [D106] | The forecast must open from the reading, not the filter's estimate. **D106 already said so**; 0.10.14 made the code obey it. No wrong-estimate measurement is claimed — the earlier one was misaligned and is withdrawn |
 
 ## Model facts (do not re-litigate)
 
@@ -139,6 +140,14 @@ compressor sources). They take a csv path and a room prefix.
 - The plan starts from the **measured** vapour pressure (`e_now`) and, since
   0.10.14, the **measured** temperature `control.plan.start_temperature`.
   The filter supplies the figures the forecast moves with, not the start.
+- **Reading the trace:** `decision.index[k]` and `decision.actions[k]` are
+  **30-minute steps** — `evidence.py:144` samples
+  `points[PLAN_POINTS_PER_STEP - 1::PLAN_POINTS_PER_STEP]` with six five-minute
+  points per step. So `index[0]` is the forecast **+30 min**, not the room now,
+  and `actions[0]` is what the plan intends for the next half hour. `sigma`
+  follows the same sampling. Comparing `index[0]` with the current reading
+  measures the room's expected cooling, not any error — this mistake was made
+  on 24 Nov and cost a false claim.
 - `s` and `m` in `trace.model.figures` sat at exactly `0.4` and `0.1` — their
   starting values — in **both** rooms on 24 Nov, after three weeks of running,
   while `g0` and the harmonics differ between rooms. Unexplained; possibly

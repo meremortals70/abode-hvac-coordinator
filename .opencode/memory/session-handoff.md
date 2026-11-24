@@ -62,13 +62,21 @@ A thread-based controller is planned that takes the IntesisBox out of the path.
 - **Verified:** pure 574 OK, sim 3 OK (486 s), CI run
   [`45306912346`](https://github.com/meremortals70/abode-hvac-coordinator/actions/runs/45306912346)
   green on all five jobs including both Home Assistant versions.
-- Released: `main` and tag `v0.10.14` both at `c7b507d`; #23 closed `completed`
-  with the test names and the CI run.
+- Released: `main` and tag `v0.10.14` both at `c7b507d`; #23 closed `completed`.
+- **Correction, same day.** The evidence published with #23 — "the plan starts
+  3.7 comfort-index points below the measured room" — was **misaligned and is
+  withdrawn**. `decision.index[0]` is the forecast **30 minutes ahead**
+  (`evidence.py:144` samples `points[5]`), not the room now, so that comparison
+  measured the room's expected cooling. The changelog, the release body and #23
+  all carry the correction. The change stands on [D106] alone, and no claim
+  about a wrong estimate is made.
 
 ### 4. Defects found and NOT fixed (in the order I would take them)
 
-1. **The filter does not track the room while the unit is idle** — the big one,
-   below.
+1. **The plan is not carried out.** The big one, below: when the plan says
+   cool, the component cools for less than a quarter of the half hour 56% of
+   the time. The model is not at fault — a plan that *is* carried out is
+   forecast to +0.12 index at 30 minutes.
 2. **Occupancy is not a heat or moisture source.** Mon 23 Nov: +2.6 g/kg of
    water in 45 minutes, two minutes after bed occupancy came on. The filter has
    a steady moisture source and a smooth two-harmonic heat pattern; neither
@@ -90,50 +98,62 @@ A thread-based controller is planned that takes the IntesisBox out of the path.
 
 ## Next move
 
-**Find out why the filter does not track the room.** Facts to start from:
+**Why is a plan not carried out?** This is the question left standing after the
+correction. The model itself is calibrated.
 
-- It is **not** paused. `_observe_and_learn` runs every cycle for every room,
-  and `model.five_minutes(now)` steps the filter every five minutes, with or
-  without Automatic control.
-- The failure is one-directional (the estimate sits below the room) and decays
-  over about an hour inside each autonomy spell:
+24 Nov, a fresh plan's forecast at +30 minutes against the measured index at
++30 minutes:
 
-  | Time into the spell | Gap (measured − plan's start) |
-  | --- | --- |
-  | 0–15 min | **+3.67 mean, +3.86 median** |
-  | 15–30 min | +2.07 |
-  | 30–60 min | +0.33 |
-  | 1–2 h | +1.09 |
-  | 2–4 h | +0.38 |
-  | 4 h + | +0.20 (median +0.08) |
+| Plan's first action | Mean error (positive = warmer than forecast) | Optimistic | n |
+| --- | --- | --- | --- |
+| rest | **−0.32** | 33% | 451 |
+| dry | +0.92 | 90% | 726 |
+| cool | +2.85 | 93% | 839 |
 
-- Mon 23 Nov, in the raw trace: measured 29.38 vs the model's 23.48 at 21:10,
-  closing over the following hour.
+and the cool plans split by how much of the half hour was actually spent
+cooling:
 
-**Order of work, cheapest first**
+| Time cooling | Mean error | n |
+| --- | --- | --- |
+| < 25% | +4.23 | 468 |
+| 25–60% | +1.98 | 129 |
+| 60–95% | +1.06 | 142 |
+| **95–100%** | **+0.12** | 100 |
 
-1. **Two diagnostics downloads, one at +5 min and one at +30 min after
-   switching Automatic control on.** `data.rooms[<id>].learned.heat.z[0]` is the
-   model's room temperature and `learned.humidity.z[0]` its vapour pressure; the
-   trace gives the measured index. That splits the gap into temperature and
-   moisture in one shot, which the recorded history cannot do.
-2. **Read `filter.py` for the innovation gate** (`FILTER_GATE_NIS = 10.83`). If a
-   large correction is rejected outright, that alone explains a slowly-walked-in
-   estimate; if Q is inflated instead, it is something else.
-3. **Check `u`** — the unit input the filter is told about. With the Intesis box
-   reporting `fan_only`/`off` and `hvac_action` unknown most of the day, the
-   filter may be told the unit is doing nothing while the room is being heated
-   by the sun and the house, and `s`/`m` (below) are frozen at their priors.
-4. **Try to reproduce in the sim** — `tests/sim/intesis_loop.py` models the
-   house's Intesis units (whole-degree reading and setpoint, its own thermostat)
-   and is run as a regression by `tests/sim/test_intesis_loop.py`. If the sim's
-   filter tracks through an idle day, the cause is in the real inputs.
+When the component does what the plan said, the forecast is right to a tenth of
+a point. The error is the distance between plan and execution — and `dry` shows
+the same shape (+0.02 at 95–100%).
 
-**A second thread worth a look, not urgent:** `trace.model.figures` on 24 Nov
-showed `s = 0.4` and `m = 0.1` — exactly their starting values — in **both**
-rooms after three weeks, while `g0` and the harmonics differ between them. If
-two figures have never moved, the heat balance is missing the two terms they
-stand for, and the daily pattern is absorbing their work.
+Churn: 1,847 plans in the week, **231 first-action changes** (dry↔rest 186 of
+them), median action lifetime 12 minutes, a new plan about every 5.3 minutes.
+
+Hypotheses, cheapest first:
+
+1. **The replan overwrites the plan before it can run.** `run.replan` is set by
+   the 5-minute timer and `plan.first` is what the PID holds, so a new plan
+   every five minutes means no 30-minute intent is ever executed as forecast.
+2. **The short-cycle guard** (min run 10 / rest 5) holds a stop the plan asked
+   for, or a start, so the executed action differs from the allowed step.
+3. **The limits override the kind** — `empty_room`, `leave`, `opening`,
+   `automatic_control` set the step to off or rest whatever the plan wanted.
+4. **Delivery reads a rate below the unit's floor as the floor**, so a "cool at
+   0.4 C/h" becomes a minimum run that moves more heat than the forecast
+   assumes.
+
+Test first: an HA test that holds a plan whose first action is cool, ticks the
+coordinator twice, and asserts the executed action is still cool — that a second
+plan does not silently replace a live one. If it passes, move to the guard and
+then the limits.
+
+**Do not change the model. It is not the problem.**
+
+### A second thread, not urgent
+
+`trace.model.figures` on 24 Nov showed `s = 0.4` and `m = 0.1` — exactly their
+starting values — in **both** rooms after three weeks, while `g0` and the
+harmonics differ between them. If two figures have never moved, the heat balance
+is missing the terms they stand for and the daily pattern is absorbing their
+work.
 
 ## Relevant files
 
