@@ -1,9 +1,17 @@
 # Known limitations
 
-- **Occupancy is not forecast.** The model learns what people add to a room's
-  moisture while it is occupied, but it cannot know when someone will walk in: a
-  room empty at 17:00 plans as if it stays empty. The first minutes of an evening
-  are still unmodelled [D113].
+- **Occupancy is not forecast, in either direction.** The model learns what
+  people add to a room's moisture while it is occupied, but the plan carries the
+  room's occupancy *now* over its whole six hours: a room empty at 17:00 plans as
+  if it stays empty, and a room occupied at 22:00 keeps pricing people's vapour
+  until 04:00 after everyone has gone to bed. The first minutes of an evening,
+  and the first hours after bedtime, are unmodelled [D113].
+- **The first morning of a room's occupancy source over-cools slightly.** The
+  figure starts from a guess (1.0 hPa/h) and is first priced on the morning the
+  room has been seen both occupied and empty; until the filter corrects the guess
+  the plan expects moisture that may not be there. In the whole-loop simulation
+  that was 24 minutes below the band, all between 08:00 and 09:00 of day one,
+  with the following days inside [D113].
 - **A room with no presence sensor has no occupancy source.** Such a room counts
   as occupied for ever, so people's vapour cannot be told apart from the steady
   indoor source; the term is held back and the steady source carries it, as

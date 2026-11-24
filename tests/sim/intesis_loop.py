@@ -67,9 +67,10 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
             else (SRC.MODE if mode in ("off", "fan_only") else SRC.UNKNOWN),
         )
         snap = dataclasses.replace(snap, heads=(h,))
-        # people are in the room from 18:00 to 08:00: enough for the
-        # occupancy source to be identifiable at all [D113]
-        rm.minute(snap, sim.hour, occupied=(sim.hour < 8.0 or sim.hour >= 18.0))
+        # the plan and the model must be told the same occupancy, as
+        # coordinator._plan_inputs does [D113]
+        occupied = sim.hour < 8.0 or sim.hour >= 18.0
+        rm.minute(snap, sim.hour, occupied=occupied)
         if sim.minute % 5 == 0 and rm.heat is not None:
             rm.five_minutes(sim.now)
             bands = rc.evaluate(snap, M.RoomChoices(), sim.now).points

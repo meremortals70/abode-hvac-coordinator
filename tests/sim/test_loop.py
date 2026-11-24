@@ -45,7 +45,11 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
     for _ in range(days * 1440):
         sim.advance()
         snap = sim.snapshot()
-        rm.minute(snap, sim.hour, occupied=(sim.hour < 8.0 or sim.hour >= 18.0))
+        # the plan and the model must be told the same occupancy, as
+        # coordinator._plan_inputs does: a fixture that tells them different
+        # things is not a place to measure the source [D113]
+        occupied = sim.hour < 8.0 or sim.hour >= 18.0
+        rm.minute(snap, sim.hour, occupied=occupied)
         if sim.minute % 5 == 0 and rm.heat is not None:
             rm.five_minutes(sim.now)
             bands = rc.evaluate(snap, models.RoomChoices(), sim.now).points
@@ -62,6 +66,7 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
                 compressor_running=running,
                 running_since=since.get("run"), stopped_since=since.get("stop"),
                 last_kind=ctl.plan.first.kind if ctl.plan else models.StepKind.REST,
+                occupied=occupied,
             )
             fig = physics.figures(rm.heat.z)
             ctl.replan(inp, pid.gains(fig, rm.heat.delay_min, rm.heat.lag_min, pid.actuation_minutes(0.1)))

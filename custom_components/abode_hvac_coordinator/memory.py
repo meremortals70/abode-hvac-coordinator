@@ -348,7 +348,10 @@ def replay(
                 system_temperature_unit=system_temperature_unit,
             )
             local = t.astimezone(tz)
-            model.minute(snap, local.hour + local.minute / 60.0)
+            # the replay does not load the presence sensor, so it cannot say
+            # anyone was there: the source must not be seeded as if it could
+            # [D113]
+            model.minute(snap, local.hour + local.minute / 60.0, occupied=False)
             if first is None and model.heat is not None:
                 first = t
             if t.minute % 5 == 0:

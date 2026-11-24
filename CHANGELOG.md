@@ -19,8 +19,10 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
   figure that acts only on the minutes the room was occupied, not as a rule
   about humidity, so a night with nobody in the room learns it is not there
   [D104]. The plan carries the same source through its six hours while the room
-  is occupied, so the evening rise is forecast rather than only corrected after
-  it happens. The heat side already carries a learned daily pattern, which is
+  is occupied, so the rise is forecast from the occupancy the room has now rather
+  than only corrected after it happens — it cannot anticipate an arrival, nor
+  stop pricing people once they have gone to bed. The figure is learned, and
+  priced, only once the room has been seen both occupied and empty. The heat side already carries a learned daily pattern, which is
   the same information smoothed over the usual hours; moisture had no such
   pattern.
   A saved model from before this keeps everything it learned — the new figure

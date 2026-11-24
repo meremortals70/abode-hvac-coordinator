@@ -97,14 +97,17 @@ class MoistureMinute:
     occupied: bool = False  # someone is in the room: they add vapour [D113]
 
 
-def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute) -> float:
-    """de/dt in hPa per hour."""
+def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute, *, use_occ: bool = True) -> float:
+    """de/dt in hPa per hour. use_occ is False until the room has been seen
+    both occupied and empty, when people's vapour cannot yet be told apart from
+    the steady source: it is then predicted as absent, but still observed
+    [D113]."""
     out = fig.h * (m.outdoor_e - e) + fig.q
     if m.dry:
         out -= fig.drying
     elif m.cooling_rate > 0.0:
         out -= fig.cooling * m.cooling_rate
-    if m.occupied:
+    if m.occupied and use_occ:
         out += fig.occ
     if m.rebound:
         out += fig.rebound
@@ -114,7 +117,8 @@ def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute) -> float:
 _LOG_FIGURES = (H_LN_H, H_LN_DRY, H_LN_COOL, H_LN_REB, H_LN_OCC)
 
 
-def moisture_step(z: Sequence[float], minutes: Sequence[MoistureMinute]) -> list[float]:
+def moisture_step(z: Sequence[float], minutes: Sequence[MoistureMinute],
+                  *, use_occ: bool = True) -> list[float]:
     """Five one-minute steps, each by the exact solution with its inputs
     held, as the plan and the forecast step: a straight-line minute
     diverges once h passes 120 per hour [Der]. The figures are unchanged."""
@@ -122,7 +126,7 @@ def moisture_step(z: Sequence[float], minutes: Sequence[MoistureMinute]) -> list
     e = z[H_E]
     for m in minutes:
         # de/dt = h (target - e), with target where the room's moisture settles
-        target = e + rate_of_change(fig, e, m) / fig.h
+        target = e + rate_of_change(fig, e, m, use_occ=use_occ) / fig.h
         e = target + (e - target) * math.exp(-fig.h * _MINUTE_H)
     out = list(z)
     out[H_E] = e
@@ -186,6 +190,13 @@ class HumidityFilter:
         at all: only once the room has been seen both occupied and empty [D113]."""
         return self.seen_occupied and self.seen_empty
 
+    @property
+    def priced_occ(self) -> float:
+        """People's vapour as a plan or a forecast should price it: zero until
+        the room has been seen both ways [D113]. One accessor, so the filter,
+        the plan and the forecast cannot disagree about when it counts."""
+        return moisture_figures(self.z).occ if self.occupancy_identified else 0.0
+
     def observe_e(self, e: float | None) -> None:
         """The smallest non-zero change seen in the room's vapour pressure."""
         if e is None:
@@ -209,12 +220,13 @@ class HumidityFilter:
         self.seen_occupied = self.seen_occupied or any(m.occupied for m in minutes)
         self.seen_empty = self.seen_empty or any(not m.occupied for m in minutes)
         z0, p0 = list(self.z), [r[:] for r in self.p]
-        base = moisture_step(self.z, minutes)
+        use_occ = self.occupancy_identified
+        base = moisture_step(self.z, minutes, use_occ=use_occ)
         f = [[0.0] * H_SIZE for _ in range(H_SIZE)]
         for j in range(H_SIZE):
             moved = list(self.z)
             moved[j] += FILTER_JACOBIAN_DELTA
-            out = moisture_step(moved, minutes)
+            out = moisture_step(moved, minutes, use_occ=use_occ)
             for i in range(H_SIZE):
                 f[i][j] = (out[i] - base[i]) / FILTER_JACOBIAN_DELTA
         q = diagonal([HUMIDITY_NOISE_E_PER_H * len(minutes) / 60.0 + self.vapour_noise]
@@ -235,9 +247,9 @@ class HumidityFilter:
             self._correct(reading_e, only_e, learn=False)
         else:
             acts = acting(minutes)
-            if not self.occupancy_identified:
+            if not use_occ:
                 # nothing yet separates people's vapour from the steady source:
-                # the figure stays at its start, and the source is not used
+                # the figure keeps its start until the room is seen both ways
                 acts[H_LN_OCC] = False
             self._correct(reading_e, acts)
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z)):

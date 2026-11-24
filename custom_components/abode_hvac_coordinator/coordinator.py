@@ -1042,7 +1042,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             # the occupancy the room last decided: while this cycle runs, that
             # is the cycle before, a grace flag a few seconds old [D113]
             occupied = (run.comfort_result.occupied if run.comfort_result is not None
-                        else bool(run.comfort.occupied))
+                        else run.comfort.occupied is not False)
             model.minute(snap, _local_hour(now), occupied=occupied)
         if five:
             model = await self._in_executor(run, lambda m: m.five_minutes(now))

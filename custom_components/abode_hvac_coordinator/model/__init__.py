@@ -87,7 +87,7 @@ class RoomModel:
                 dry=wet_now and sample.dry,
                 cooling_rate=max(u, 0.0) if wet_now and not sample.dry else 0.0,
                 rebound=in_rebound(self.humidity.last_wet_stop, sample.time),
-                occupied=sample.occupied and self.humidity.occupancy_identified,
+                occupied=sample.occupied,
             )
         )
 
@@ -112,7 +112,11 @@ class RoomModel:
         # resting only when every step's compressor was known and stopped: an
         # hour cooling unseen is not scored as a rest forecast [Prop]
         resting = len(steps) >= 12 and all(s.compressor_known and not s.compressor_ran for s in steps)
-        ahead = forecast(self.heat, self.humidity, rest_inputs[:12], e_now=e_now)
+        # the room as it is now is the best the check can say about people:
+        # the plan assumes the same, so the trust score is not penalised for a
+        # source the model has learned [D113]
+        ahead = forecast(self.heat, self.humidity, rest_inputs[:12], e_now=e_now,
+                         occupied=bool(self._last_minute.occupied) if self._last_minute is not None else False)
         next_hour = ahead[-1].t if len(ahead) == 12 else None
         six_error: float | None = None
         then = next(((t, z) for t, z in self._hourly_z if abs((now - t).total_seconds() - 6 * 3600) < 900), None)

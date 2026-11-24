@@ -122,8 +122,8 @@ def forecast(
             elif step_in.kind is StepKind.COOL and step_in.rate > 0.0:
                 removed = mfig.cooling * step_in.rate
             gain = mfig.rebound if rebound > 0 else 0.0
-            if occupied and humidity is not None and humidity.occupancy_identified:
-                gain += mfig.occ
+            if occupied and humidity is not None:
+                gain += humidity.priced_occ
             e_out = _vp(step_in.outdoor, step_in.outdoor_rh)
             target = (mfig.h * e_out + mfig.q - removed + gain) / mfig.h
             e = target + (e - target) * math.exp(-mfig.h * STEP_H)

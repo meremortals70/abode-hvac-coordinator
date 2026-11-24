@@ -6,8 +6,10 @@ from __future__ import annotations
 import unittest
 
 from tests.pure._load import load
+from tests.pure.sim_room import SimRoom
 
 hum = load("model.humidity")
+model_pkg = load("model")
 
 
 def minute(*, occupied: bool) -> hum.MoistureMinute:
@@ -97,6 +99,68 @@ class TheSaveFromBeforeOccupancy(unittest.TestCase):
             self.assertAlmostEqual(back.z[i], f.z[i])
         self.assertGreater(back.p[hum.H_LN_OCC][hum.H_LN_OCC], 0.0,
                            "the new figure starts with no uncertainty, so it could never learn")
+
+
+class TheLivePathCanIdentifyPeople(unittest.TestCase):
+    """The flags must be able to accumulate from the live path. An occupied
+    minute suppressed until the room was identified could never set
+    `seen_occupied`, so the source could never be identified at all — the
+    deadlock this test exists to stop [D113]."""
+
+    def test_alternating_occupancy_identifies_the_source(self) -> None:
+        sim = SimRoom(seed=5)
+        m = model_pkg.RoomModel()
+        for _ in range(2 * 1440):
+            sim.advance()
+            occupied = sim.hour < 8.0 or sim.hour >= 18.0
+            m.minute(sim.snapshot(), sim.hour, occupied=occupied)
+            if sim.minute % 5 == 0:
+                m.five_minutes(sim.now)
+        hum_f = m.humidity
+        self.assertIsNotNone(hum_f, "no moisture model was started")
+        assert hum_f is not None
+        self.assertTrue(hum_f.seen_occupied, "an occupied minute never reached the filter")
+        self.assertTrue(hum_f.seen_empty)
+        self.assertTrue(hum_f.occupancy_identified)
+        self.assertGreater(hum_f.priced_occ, 0.0)
+
+    def test_a_room_that_is_never_empty_stays_unidentified(self) -> None:
+        sim = SimRoom(seed=5)
+        m = model_pkg.RoomModel()
+        for _ in range(1440):
+            sim.advance()
+            m.minute(sim.snapshot(), sim.hour, occupied=True)
+            if sim.minute % 5 == 0:
+                m.five_minutes(sim.now)
+        hum_f = m.humidity
+        assert hum_f is not None
+        self.assertFalse(hum_f.occupancy_identified)
+        self.assertEqual(hum_f.priced_occ, 0.0)
+
+
+class ThePredictionWaitsForTheRoomToBeSeenBothWays(unittest.TestCase):
+    def test_the_rate_ignores_people_until_they_can_be_told_apart(self) -> None:
+        f = hum.HumidityFilter.start(20.0)  # never seen either way
+        busy, quiet = minute(occupied=True), minute(occupied=False)
+        # predicted as absent while the room has not been seen both ways ...
+        self.assertAlmostEqual(hum.moisture_step(f.z, [busy] * 5, use_occ=False)[hum.H_E],
+                               hum.moisture_step(f.z, [quiet] * 5)[hum.H_E])
+        # ... and the filter is what decides that, from its own flags
+        self.assertAlmostEqual(hum.moisture_step(f.z, [busy] * 5, use_occ=f.occupancy_identified)[hum.H_E],
+                               hum.moisture_step(f.z, [quiet] * 5)[hum.H_E])
+        # with the term priced, people make the room damper
+        self.assertGreater(hum.moisture_step(f.z, [busy] * 5)[hum.H_E],
+                           hum.moisture_step(f.z, [quiet] * 5)[hum.H_E])
+
+    def test_the_seen_flags_survive_a_save(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        for m in ([minute(occupied=True)] * 5, [minute(occupied=False)] * 5):
+            f.observe_e(20.0)
+            f.five_minutes(m, 20.0, True)
+        back = hum.HumidityFilter.from_dict(f.as_dict())
+        self.assertIsNotNone(back)
+        assert back is not None
+        self.assertTrue(back.occupancy_identified, "a saved model forgot which states it had seen")
 
 
 if __name__ == "__main__":

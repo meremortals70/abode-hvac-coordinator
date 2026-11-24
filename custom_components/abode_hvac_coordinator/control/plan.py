@@ -371,10 +371,9 @@ def _fixed(inp: PlanInputs, opening: float | None = None) -> _Fixed:
         drying=mf.drying if mf else 0.0,
         cooling=mf.cooling if mf else 0.0,
         rebound=mf.rebound if mf else 0.0,
-        # people's vapour is priced only once the room has been seen both ways:
-        # until then it cannot be told apart from the steady source [D113]
-        occ=mf.occ if mf is not None and inp.humidity is not None
-        and inp.humidity.occupancy_identified else 0.0,
+        # people's vapour is priced only once the room has been seen both ways,
+        # which the filter decides in one place [D113]
+        occ=inp.humidity.priced_occ if inp.humidity is not None else 0.0,
         have_moisture=mf is not None,
         u_decay=decay,
         u_mean=tau / _POINT_H * (1.0 - decay),

@@ -162,10 +162,13 @@ Also learned, outside the filter:
 **Humidity** is modelled in vapour pressure e, which changes only when water moves; relative humidity also changes with temperature [Der]:
 
 ```latex
-\frac{de}{dt} = h\,(e_{out} - e) + q - D_{mode} + R_{coil}(t)
+\frac{de}{dt} = h\,(e_{out} - e) + q + q_{occ}\,[occupied] - D_{mode} + R_{coil}(t)
 ```
 
 - **h** is exchange with outdoor air and **q** a steady indoor source [Prop].
+- **q\_occ** is the vapour people add while the room is occupied, learned only
+  from minutes the room was occupied and priced only once it has been seen both
+  occupied and empty, or it cannot be told apart from q [D113].
 - **D\_mode** is the water removed: the drying rate in dry mode, the response in cool mode, zero otherwise [D026][D029][Prop].
 - **R\_coil** is water the coil gives back for 15 minutes after the compressor stops cooling or drying, learned in its own right [D060].
 
@@ -240,7 +243,7 @@ The same test is applied to six-hour forecasts over 14 days. Trust is published,
 
 **A metered unit's draw is measured, not inferred** [D110]. Where a meter is configured on the unit's circuit, its reading less the unit's resting level — the median of its recent readings below 0.15 kW, the fan with the compressor stopped — is the draw at the effort the one working head asks, and the house load is not consulted for that unit at all: two heads working at once cannot be told apart and that reading is skipped, as the house-load step skips it. Nothing is learned until the unit has been seen resting, because until then its fan would be counted as its compressor.
 
-**Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response and the coil rebound, each learned only from steps where it acts [D026][D060][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
+**Learning humidity.** A second, smaller filter of the same kind carries e and the figures h, q, the drying rate, the cooling response, the coil rebound and people's vapour while the room is occupied, each learned only from steps where it acts [D026][D060][D113][Prop]. It splits what its innovations show between the reading and the room as the heat filter does: R from the reading's second differences, the rest the room's own unforecast change in e [R17][R21]. A step whose inputs were stood in or unknown corrects e and teaches no figure [D074]. Taking the whole miss as sensor noise learned 6.5 hPa² in the house's history and left the estimate 2 hPa or more from the room's vapour pressure on a quarter of its steps; with the split, the mean gap is 0.06 hPa [Sim: the house's replay].
 
 **What uses the model.** Every other part asks the model; none keeps its own idea of the room [Prop]:
 
@@ -871,8 +874,10 @@ WORKS IN vapour pressure e (hci.py); turned back into relative humidity
 with the room's temperature whenever the index needs it            [Der]
 
 A second Kalman filter of the same kind as filter.py:
-  STATE: e, ln h, q, ln drying rate, ln cooling response, ln rebound
-  MODEL: de/dt = h (e_outdoor - e) + q - drying - cooling x rate
+  STATE: e, ln h, q, ln drying rate, ln cooling response, ln rebound,
+         ln people's vapour while occupied                     [D113]
+  MODEL: de/dt = h (e_outdoor - e) + q + q_occ [occupied]
+                 - drying - cooling x rate
                  + rebound for 15 minutes after the compressor stops
                  cooling or drying                             [D060]
   each minute by the exact solution, inputs held:
