@@ -934,6 +934,27 @@ async def test_a_plan_starts_from_the_measured_room_not_the_estimate(
     assert pids and pids[0] == pytest.approx(25.0)
 
 
+async def test_the_setpoint_shows_the_room_s_hold_while_the_head_rests(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A head in fan-only reports no setpoint of its own. While the component is
+    holding the room, the control shows what it is held at instead of a blank —
+    the blank told the user nothing about the room [D049]."""
+    set_house_states(hass, mode="cool")
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    resting = dict(CLIMATE_ATTRS)
+    resting["temperature"] = None
+    hass.states.async_set("climate.office", "fan_only", resting)
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    number = hass.states.get("number.office_setpoint")
+    assert number is not None
+    assert number.state not in ("unknown", "unavailable"), "the control went blank while the room was held"
+    assert room.commanded_c is not None, "nothing was commanded"
+    assert float(number.state) == pytest.approx(room.commanded_c, abs=0.01), \
+        "the control does not show what the room is being held at"
+
+
 async def test_the_demand_forecast_is_read_once_per_five_minutes(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:

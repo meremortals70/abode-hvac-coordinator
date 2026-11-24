@@ -155,7 +155,8 @@ async def test_a_unit_that_refuses_a_command(hass: HomeAssistant, climate_calls:
 async def test_the_unit_controls_follow_the_unit(hass: HomeAssistant,
                                                  climate_calls: dict[str, list[ServiceCall]]) -> None:
     set_house_states(hass)
-    await setup_entry(hass)
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
     assert _state(hass, "select.office_unit_mode") == "cool"
     assert _state(hass, "number.office_setpoint") == "24.0"
     hass.states.async_set("climate.office", "dry", {**CLIMATE_ATTRS, "fan_mode": "high", "temperature": 23.0})
@@ -167,12 +168,14 @@ async def test_the_unit_controls_follow_the_unit(hass: HomeAssistant,
     hass.states.async_set("climate.office", "cool", {**attrs, "target_temp_low": 22.0, "target_temp_high": 26.0})
     await hass.async_block_till_done()
     assert _state(hass, "number.office_setpoint") == "24.0"  # a range: its middle [D081]
+    # the head reports no setpoint, and Automatic control is holding the room:
+    # the control shows what the component commands rather than a blank [D049]
     hass.states.async_set("climate.office", "cool", {**attrs, "target_temp_low": "x", "target_temp_high": 26.0})
     await hass.async_block_till_done()
-    assert _state(hass, "number.office_setpoint") == "unknown"
+    assert float(_state(hass, "number.office_setpoint")) == pytest.approx(room.commanded_c, abs=0.01)
     hass.states.async_set("climate.office", "cool", {**CLIMATE_ATTRS, "temperature": "x"})
     await hass.async_block_till_done()
-    assert _state(hass, "number.office_setpoint") == "unknown"
+    assert float(_state(hass, "number.office_setpoint")) == pytest.approx(room.commanded_c, abs=0.01)
     hass.states.async_set("climate.office", "unavailable")
     await hass.async_block_till_done()
     assert _state(hass, "select.office_unit_mode") == "unavailable"
