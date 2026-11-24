@@ -866,8 +866,8 @@ async def test_an_enforced_ceiling_reaches_the_pid_and_the_plan_in_the_cycle(
 async def test_a_plan_starts_from_the_estimate_the_pid_acts_on(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
-    """A plan made between filter steps starts from the filter's estimate
-    carried forward, the same one the PID is given that cycle (4.5) [Der]."""
+    """A plan made between filter steps starts from the same reading the PID
+    is given that cycle, so the two never steer by different rooms [D106]."""
     from custom_components.abode_hvac_coordinator.models import RoomEconomics
 
     set_house_states(hass)
@@ -894,6 +894,35 @@ async def test_a_plan_starts_from_the_estimate_the_pid_acts_on(
     assert starts and estimates and starts[0] is not None
     assert starts[0] == pytest.approx(estimates[0])
     assert run.control.plan_t0 == pytest.approx(estimates[0])
+
+
+async def test_a_plan_starts_from_the_measured_room_not_the_estimate(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A filter left five degrees below the room does not decide where the
+    room is: the plan starts from the sensor's reading [D106]."""
+    from custom_components.abode_hvac_coordinator.models import RoomEconomics
+
+    set_house_states(hass)  # the office's sensor reads 25.0 C
+    entry = await setup_entry(hass)
+    run = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))  # a plan in force
+    heat = run.model.heat
+    assert heat is not None
+    heat.z[0] = 20.0  # the filter has drifted five degrees below the room
+    starts: list[Any] = []
+    kind = type(run.control)
+    replan = kind.replan
+
+    def spy_replan(self: Any, inputs: Any, g: Any) -> Any:
+        starts.append(inputs.t_now)
+        return replan(self, inputs, g)
+
+    econ = RoomEconomics((1.0,) * 12, 1.0, 0.7, None, False, 0.5, "ceiling 0.70 C/h")
+    with patch.object(kind, "replan", spy_replan), \
+            patch("custom_components.abode_hvac_coordinator.coordinator.room_economics", return_value=econ):
+        await _tick(hass, freezer, timedelta(minutes=2))  # between filter steps: replanned for the ceiling
+    assert starts and starts[0] == pytest.approx(25.0)
 
 
 async def test_a_heating_pid_is_held_to_the_heating_ceiling_in_the_cycle(

@@ -6,6 +6,25 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.14 - unreleased
+
+### Fixed
+
+- **A plan and the PID start from the measured room, not the model's estimate
+  of it (#23, [D106]).** [D106] requires the forecast to open from the measured
+  temperature and the measured vapour pressure. The moisture half was done —
+  `e_now` is the room's own reading, the filter's used only where there is none
+  — but the temperature half was not: the plan and the PID both started from
+  the heat filter's estimate carried forward. After a spell with Automatic
+  control off that estimate can be a long way from the room. Over 17-24
+  November 2026 the living room's plan started each night **3.7 comfort-index
+  points below the measured room** in its first fifteen minutes (median 3.86,
+  5.9 at worst: Mon 23 November 21:10, 29.4 measured against 23.5 from the
+  model), and agreed to within 0.08 only after four hours. A plan made on that
+  picture rests while the room is already above its band, and the hour of its
+  band change is spent chasing it. Both now start from the sensor's reading and
+  fall back on the estimate only where the room gives no fresh reading.
+
 ## 0.10.13 - 2026-11-17
 
 ### Fixed

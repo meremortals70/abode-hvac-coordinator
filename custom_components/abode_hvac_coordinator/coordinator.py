@@ -62,7 +62,7 @@ from .const import (
 )
 from .control import RoomControl
 from .control.pid import actuation_minutes, estimate_now, gains
-from .control.plan import Conditions, PlanInputs, conditions_ahead
+from .control.plan import Conditions, PlanInputs, conditions_ahead, start_temperature
 from .delivery import RoomDelivery
 from .economics import (
     GridChecks,
@@ -472,9 +472,11 @@ def _still_coming(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _estimate_now(run: RoomRun, now: datetime) -> tuple[float, float]:
     """The room estimate now and its rate, C/h: the filter's estimate at its
-    last step carried forward on the model's own rate since (4.5) [Der].
-    The PID acts on it and the plan starts from it, so a plan made between
-    filter steps does not start where the room was minutes ago."""
+    last step carried forward on the model's own rate since (4.5) [Der]. It
+    is what a plan and the PID fall back on where the room's sensor gives no
+    reading, so a plan made between filter steps does not start where the
+    room was minutes ago; where there is a reading, the reading is used and
+    this estimate does not reach the unit [D106]."""
     heat, snap = run.model.heat, run.snapshot
     assert heat is not None and snap is not None
     outdoor = snap.outdoor_temperature.value
@@ -1275,6 +1277,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         if heat is not None and fig is not None and run.control.plan is not None:
             direction = 1 if run.control.plan.first.rate >= 0 else -1
             t_est, slope = _estimate_now(run, now)
+            # the PID acts on the room the sensor reports, and on the
+            # filter's estimate only where there is no reading [D106]
+            t_est = start_temperature(snap.room_temperature.value, t_est)
             control = run.control.cycle(
                 now=now,
                 t_est=t_est,
@@ -1370,7 +1375,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             last_kind=last_kind,
             last_way=next(iter(ways)) if len(ways := {self._unit_way[u] for u in units if u in self._unit_way}) == 1
             else 0,
-            t_now=_estimate_now(run, now)[0],
+            t_now=start_temperature(snap.room_temperature.value, _estimate_now(run, now)[0]),
         )
 
     async def _act_and_record(

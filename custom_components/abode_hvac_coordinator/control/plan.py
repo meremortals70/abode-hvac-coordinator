@@ -124,6 +124,23 @@ class PlanInputs:
     t_now: float | None = None
 
 
+def start_temperature(measured: float | None, estimate: float) -> float:
+    """Where a plan and the PID start, C: the room the sensor reports where
+    it reports one, the filter's estimate carried forward where it does not
+    [D106].
+
+    [D106] already says the forecast opens from the measured temperature and
+    the measured vapour pressure, and the moisture half of it is done this
+    way: `e_now` is the reading, and the filter's vapour pressure is used
+    only where there is none. The temperature half was not, and a filter
+    whose estimate has drifted — after hours with the plan resting, or with
+    Automatic control off — left the plan forecasting from a room that is not
+    there, resting while the room was already above its band. The estimate
+    is still needed: a sensor can drop out, and a plan still has to be
+    made."""
+    return measured if measured is not None else estimate
+
+
 def conditions_ahead(
     snapshot: Snapshot,
     room: RoomConfig,

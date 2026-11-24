@@ -983,5 +983,19 @@ class RoomControlTests(unittest.TestCase):
         self.assertEqual(rc.pid.integral, 0.0)
 
 
+class StartTemperature(unittest.TestCase):
+    """Where a plan and the PID start [D106]."""
+
+    def test_the_reading_wins_over_the_filter(self) -> None:
+        # a filter left five degrees below the room must not decide where
+        # the room is: the sensor says 25.0, so the plan starts there
+        self.assertEqual(plan.start_temperature(25.0, 20.0), 25.0)
+
+    def test_the_estimate_is_used_where_there_is_no_reading(self) -> None:
+        # a sensor that has gone: the filter's estimate carried forward is
+        # all there is, and a plan still has to be made
+        self.assertEqual(plan.start_temperature(None, 20.0), 20.0)
+
+
 if __name__ == "__main__":
     unittest.main()
