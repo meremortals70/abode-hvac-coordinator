@@ -18,8 +18,11 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
   no part of the model could have seen it coming. It is added as a learned
   figure that acts only on the minutes the room was occupied, not as a rule
   about humidity, so a night with nobody in the room learns it is not there
-  [D104]. The heat side already carries a learned daily pattern, which is the
-  same information smoothed over the usual hours; moisture had no such pattern.
+  [D104]. The plan carries the same source through its six hours while the room
+  is occupied, so the evening rise is forecast rather than only corrected after
+  it happens. The heat side already carries a learned daily pattern, which is
+  the same information smoothed over the usual hours; moisture had no such
+  pattern.
   A saved model from before this keeps everything it learned — the new figure
   joins at its starting value.
 

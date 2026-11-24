@@ -45,7 +45,7 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
     for _ in range(days * 1440):
         sim.advance()
         snap = sim.snapshot()
-        rm.minute(snap, sim.hour)
+        rm.minute(snap, sim.hour, occupied=(sim.hour < 8.0 or sim.hour >= 18.0))
         if sim.minute % 5 == 0 and rm.heat is not None:
             rm.five_minutes(sim.now)
             bands = rc.evaluate(snap, models.RoomChoices(), sim.now).points

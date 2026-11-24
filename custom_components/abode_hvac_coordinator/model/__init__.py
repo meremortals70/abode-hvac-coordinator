@@ -39,10 +39,13 @@ class RoomModel:
     _last_minute: MinuteSample | None = None
     _hourly_z: deque[tuple[datetime, list[float]]] = field(default_factory=lambda: deque(maxlen=7))
 
-    def minute(self, snapshot: Snapshot, local_hour: float, occupied: bool = False) -> MinuteSample:
+    def minute(self, snapshot: Snapshot, local_hour: float, occupied: bool = True) -> MinuteSample:
         """Every minute: the step averages and the unit's rate. `occupied` is the
         room's occupancy as last decided, which is the cycle before this one
-        while the cycle runs: a grace flag a few seconds old [D107][D113]."""
+        while the cycle runs: a grace flag a few seconds old [D107][D113]. It
+        defaults to true because a room with no presence sensor counts as
+        occupied (`comfort.evaluate`), and a caller that has not been told is in
+        the same position."""
         sample = replace(minute_sample(snapshot, local_hour), occupied=occupied)
         if self.heat is None and sample.reading is not None:
             self.heat = HeatFilter.start(sample.reading)
@@ -84,7 +87,7 @@ class RoomModel:
                 dry=wet_now and sample.dry,
                 cooling_rate=max(u, 0.0) if wet_now and not sample.dry else 0.0,
                 rebound=in_rebound(self.humidity.last_wet_stop, sample.time),
-                occupied=sample.occupied,
+                occupied=sample.occupied and self.humidity.occupancy_identified,
             )
         )
 

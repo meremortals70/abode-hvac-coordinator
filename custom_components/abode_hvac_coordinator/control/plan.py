@@ -332,6 +332,7 @@ class _Fixed:
     drying: float
     cooling: float
     rebound: float
+    occ: float  # vapour added per hour while the room is occupied [D113]
     have_moisture: bool
     u_decay: float  # e^(-5 min / (lag + delay))
     u_mean: float  # the share of the step's change in rate seen on average over it
@@ -370,6 +371,10 @@ def _fixed(inp: PlanInputs, opening: float | None = None) -> _Fixed:
         drying=mf.drying if mf else 0.0,
         cooling=mf.cooling if mf else 0.0,
         rebound=mf.rebound if mf else 0.0,
+        # people's vapour is priced only once the room has been seen both ways:
+        # until then it cannot be told apart from the steady source [D113]
+        occ=mf.occ if mf is not None and inp.humidity is not None
+        and inp.humidity.occupancy_identified else 0.0,
         have_moisture=mf is not None,
         u_decay=decay,
         u_mean=tau / _POINT_H * (1.0 - decay),
@@ -673,6 +678,11 @@ def _extend(
                 fx.cooling * u if action.kind is StepKind.COOL else 0.0
             )
             gain = fx.rebound if n.rebound > 0 else 0.0
+            if inp.occupied:
+                # people keep arriving over the plan's six hours: the room is
+                # taken as staying as it is, the only thing a forecast can say
+                # about them [D113]
+                gain += fx.occ
             e_out = _vp(c.outdoor, c.outdoor_rh) if c.outdoor_rh is not None else n.e
             target = (fx.h * e_out + fx.q - removed + gain) / fx.h
             n.e = target + (n.e - target) * math.exp(-fx.h * _POINT_H)

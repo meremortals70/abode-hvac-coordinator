@@ -31,11 +31,56 @@ class OccupancyAddsVapour(unittest.TestCase):
         expected = hum.moisture_figures(f.z).occ * 5.0 / 60.0
         self.assertAlmostEqual(busy - quiet, expected, delta=expected * 0.15)
 
-    def test_the_figure_learns_only_on_an_occupied_step(self) -> None:
+    def test_the_figure_acts_only_on_an_occupied_step(self) -> None:
         quiet, busy = [minute(occupied=False)] * 5, [minute(occupied=True)] * 5
         self.assertEqual(len(hum.acting(quiet)), hum.H_SIZE)
         self.assertFalse(hum.acting(quiet)[hum.H_LN_OCC])
         self.assertTrue(hum.acting(busy)[hum.H_LN_OCC])
+
+    def test_a_quiet_step_does_not_move_the_figure(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        busy, quiet = [minute(occupied=True)] * 5, [minute(occupied=False)] * 5
+        for m in (busy, quiet):  # seen both ways, so it may learn
+            f.observe_e(20.0)
+            f.five_minutes(m, 20.0, True)
+        before = f.z[hum.H_LN_OCC]
+        for _ in range(10):
+            f.observe_e(25.0)
+            f.five_minutes(quiet, 25.0, True)
+        self.assertEqual(f.z[hum.H_LN_OCC], before)
+
+
+class TheSourceIsOnlyPricedWhereItCanBeToldApart(unittest.TestCase):
+    """A room with no presence sensor counts as occupied for ever, and then
+    people's vapour cannot be separated from the steady source: learning it
+    anyway drags h and q with it [D113]."""
+
+    def test_a_room_always_occupied_learns_nothing_about_people(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        busy = [minute(occupied=True)] * 5
+        for reading in [20.0] * 20:
+            f.observe_e(reading)
+            f.five_minutes(busy, reading, True)
+        self.assertFalse(f.occupancy_identified)
+        held = f.z[hum.H_LN_OCC]
+        for reading in (20.0, 30.0, 30.0, 40.0):
+            f.observe_e(reading)
+            f.five_minutes(busy, reading, True)
+        self.assertEqual(f.z[hum.H_LN_OCC], held,
+                         "the figure learned with no empty minute to compare against")
+
+    def test_it_learns_once_the_room_has_been_seen_both_ways(self) -> None:
+        f = hum.HumidityFilter.start(20.0)
+        busy, quiet = [minute(occupied=True)] * 5, [minute(occupied=False)] * 5
+        for m in (busy, quiet):
+            f.observe_e(20.0)
+            f.five_minutes(m, 20.0, True)
+        self.assertTrue(f.occupancy_identified)
+        before = f.z[hum.H_LN_OCC]
+        for _ in range(10):
+            f.observe_e(24.0)
+            f.five_minutes(busy, 24.0, True)
+        self.assertNotEqual(f.z[hum.H_LN_OCC], before)
 
 
 class TheSaveFromBeforeOccupancy(unittest.TestCase):

@@ -8,7 +8,8 @@ Works in vapour pressure e (hPa), which changes only when water moves:
             + rebound [15 minutes after the compressor stops cooling or drying]
 
 A second Kalman filter of the same kind as filter.py learns e and the
-figures h, q, drying, cooling response and rebound. Each figure moves only
+figures h, q, drying, cooling response, rebound and the vapour people add
+while the room is occupied [D113]. Each figure moves only
 on steps where it acts: its gain is set to zero on the others, and the
 uncertainty is then updated in Joseph form, which stays correct for any
 gain. Not simulated [NYE].
@@ -157,6 +158,10 @@ class HumidityFilter:
     vapour_noise: float = 0.0  # learned: the room's own unforecast change in e, hPa^2 per step
     reading_jitter: float | None = None  # learned: the reading's own noise, hPa^2
     _prior_avg: float | None = None  # running average of P-[e,e] less vapour_noise
+    seen_occupied: bool = False  # the room has been seen with someone in it
+    seen_empty: bool = False  # and seen empty
+    # a source that only acts while someone is there cannot be told apart
+    # from the steady one until the room has been seen both ways [D113]
     _step_readings: deque[float] = field(default_factory=lambda: deque(maxlen=3))
 
     @classmethod
@@ -174,6 +179,12 @@ class HumidityFilter:
             + [HUMIDITY_START_VAR_LOG_FIGURE] * 4
         )
         return cls(z=z, p=p)
+
+    @property
+    def occupancy_identified(self) -> bool:
+        """Whether people's vapour can be told apart from the steady source
+        at all: only once the room has been seen both occupied and empty [D113]."""
+        return self.seen_occupied and self.seen_empty
 
     def observe_e(self, e: float | None) -> None:
         """The smallest non-zero change seen in the room's vapour pressure."""
@@ -195,6 +206,8 @@ class HumidityFilter:
         Gives back the reason it did not correct, or None."""
         if not minutes:
             return "no minutes were seen"
+        self.seen_occupied = self.seen_occupied or any(m.occupied for m in minutes)
+        self.seen_empty = self.seen_empty or any(not m.occupied for m in minutes)
         z0, p0 = list(self.z), [r[:] for r in self.p]
         base = moisture_step(self.z, minutes)
         f = [[0.0] * H_SIZE for _ in range(H_SIZE)]
@@ -221,7 +234,12 @@ class HumidityFilter:
             only_e[H_E] = True
             self._correct(reading_e, only_e, learn=False)
         else:
-            self._correct(reading_e, acting(minutes))
+            acts = acting(minutes)
+            if not self.occupancy_identified:
+                # nothing yet separates people's vapour from the steady source:
+                # the figure stays at its start, and the source is not used
+                acts[H_LN_OCC] = False
+            self._correct(reading_e, acts)
         if not (is_finite(self.p) and all(math.isfinite(x) for x in self.z)):
             self.z, self.p = z0, p0
             reason = "a figure was not a finite number; step undone"
@@ -278,6 +296,7 @@ class HumidityFilter:
             "vapour_noise": self.vapour_noise,
             "jitter": self.reading_jitter,
             "prior_avg": self._prior_avg,
+            "seen": [self.seen_occupied, self.seen_empty],
         }
 
     @classmethod
@@ -308,6 +327,9 @@ class HumidityFilter:
             v = data.get(key)
             if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(float(v)):
                 setattr(out, attr, float(v))
+        seen = data.get("seen")
+        if isinstance(seen, list) and len(seen) == 2:
+            out.seen_occupied, out.seen_empty = bool(seen[0]), bool(seen[1])
         vn = data.get("vapour_noise")
         if isinstance(vn, int | float) and not isinstance(vn, bool) and math.isfinite(float(vn)):
             out.vapour_noise = max(float(vn), 0.0)

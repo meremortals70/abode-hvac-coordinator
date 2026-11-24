@@ -29,7 +29,7 @@ class UnknownCompressorHourIsNotResting(unittest.TestCase):
             head = dataclasses.replace(snap.heads[0], compressor=models.CompressorState.UNKNOWN,
                                        compressor_source=models.CompressorSource.UNKNOWN)
             snap = dataclasses.replace(snap, heads=(head,))
-            m.minute(snap, sim.hour)
+            m.minute(snap, sim.hour, occupied=True)
             if sim.minute % 5 == 0:
                 m.five_minutes(sim.now)
             if sim.minute % 60 == 0 and m.heat is not None:

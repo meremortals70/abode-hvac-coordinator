@@ -241,7 +241,7 @@ class Seed(unittest.TestCase):
                                              "uv_index": None}],
                                   forecast_temperature_unit=None, forecast_wind_unit=None, tariff=(),
                                   load_history=load("observe").LoadHistory(), commands={}, draw_kw={})
-            live.minute(snap, t.hour + t.minute / 60.0)
+            live.minute(snap, t.hour + t.minute / 60.0, occupied=True)
             if t.minute % 5 == 0:
                 live.five_minutes(t)
             t += timedelta(minutes=1)

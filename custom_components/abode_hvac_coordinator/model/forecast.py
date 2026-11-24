@@ -68,13 +68,16 @@ def forecast(
     *,
     e_now: float,
     rebound_steps: int = 0,
+    occupied: bool = False,
 ) -> list[ForecastPoint]:
     """FORECAST: from T, M and e now, five minutes at a time with Phi and
     Gam, with the uncertainty carried forward [Der].
 
     e_now is used where there is no humidity filter yet. rebound_steps is
     how many 5-minute steps of coil rebound remain from a stop before now;
-    a stop within the forecast starts 15 minutes more [D060].
+    a stop within the forecast starts 15 minutes more [D060]. occupied adds
+    people's vapour while the room stays occupied, the way the plan carries
+    them [D113].
     """
     fig = figures(heat.z)
     # Phi and Gam depend on the opening only through the air's coupling
@@ -119,6 +122,8 @@ def forecast(
             elif step_in.kind is StepKind.COOL and step_in.rate > 0.0:
                 removed = mfig.cooling * step_in.rate
             gain = mfig.rebound if rebound > 0 else 0.0
+            if occupied and humidity is not None and humidity.occupancy_identified:
+                gain += mfig.occ
             e_out = _vp(step_in.outdoor, step_in.outdoor_rh)
             target = (mfig.h * e_out + mfig.q - removed + gain) / mfig.h
             e = target + (e - target) * math.exp(-mfig.h * STEP_H)

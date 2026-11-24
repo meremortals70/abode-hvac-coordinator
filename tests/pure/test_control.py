@@ -22,6 +22,7 @@ unit = load("model.unit")
 physics = load("model.physics")
 models = load("models")
 hci = load("hci")
+hum = load("model.humidity")
 SK = models.StepKind
 
 NOW = datetime(2026, 1, 10, 10, 0, tzinfo=UTC)
@@ -995,6 +996,39 @@ class StartTemperature(unittest.TestCase):
         # a sensor that has gone: the filter's estimate carried forward is
         # all there is, and a plan still has to be made
         self.assertEqual(plan.start_temperature(None, 20.0), 20.0)
+
+
+def identified_humidity() -> Any:
+    """A moisture filter that has seen the room both occupied and empty, so
+    people's vapour can be told apart from the steady source [D113]."""
+    h = hum.HumidityFilter.start(E_ROOM)
+    for occupied in (True, False):
+        m = [hum.MoistureMinute(outdoor_e=E_ROOM, dry=False, cooling_rate=0.0, rebound=False,
+                                occupied=occupied)] * 5
+        h.five_minutes(m, E_ROOM, False)  # no correction: only the room's states are noted
+    return h
+
+
+class OccupancyMoisture(unittest.TestCase):
+    """People add vapour, and the plan carries it forward [D113]."""
+
+    def _resting_plan_index(self, occupied: bool) -> float:
+        # a unit that can only rest, so both plans take the same actions and the
+        # only difference between them is the source
+        h = identified_humidity()
+        inp = inputs(humidity=h, occupied=occupied, modes=frozenset({"fan_only"}))
+        return plan.make_plan(inp).points[-1].hci
+
+    def test_the_plan_reads_the_source(self) -> None:
+        self.assertGreater(plan._fixed(inputs(humidity=identified_humidity())).occ, 0.0)
+
+    def test_an_occupied_plan_ends_damper_than_an_empty_one(self) -> None:
+        self.assertGreater(self._resting_plan_index(True), self._resting_plan_index(False))
+
+    def test_a_room_that_has_never_been_seen_empty_prices_no_source(self) -> None:
+        h = hum.HumidityFilter.start(E_ROOM)  # neither seen occupied nor empty
+        inp = inputs(humidity=h, occupied=True, modes=frozenset({"fan_only"}))
+        self.assertEqual(plan._fixed(inp).occ, 0.0)
 
 
 if __name__ == "__main__":
