@@ -955,6 +955,39 @@ async def test_the_setpoint_shows_the_room_s_hold_while_the_head_rests(
         "the control does not show what the room is being held at"
 
 
+async def test_the_setpoint_is_blank_when_the_user_is_in_charge_and_the_head_reports_none(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """With Automatic control off the head is the user's: what it reports is the
+    truth, and a head reporting no setpoint has nothing to show [D049]."""
+    set_house_states(hass, mode="fan_only")
+    await setup_entry(hass)
+    resting = dict(CLIMATE_ATTRS)
+    resting["temperature"] = None
+    hass.states.async_set("climate.office", "fan_only", resting)
+    await _tick(hass, freezer, timedelta(seconds=30))
+    await hass.services.async_call("switch", "turn_off",
+                                   {"entity_id": "switch.office_automatic_control"}, blocking=True)
+    await hass.async_block_till_done()
+    number = hass.states.get("number.office_setpoint")
+    assert number is not None and number.state == "unknown"
+
+
+async def test_the_setpoint_is_blank_when_the_house_unit_is_not_known(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A house whose temperature unit the integration does not know gets no
+    number rather than a wrong one."""
+    set_house_states(hass)
+    await setup_entry(hass)
+    with patch("custom_components.abode_hvac_coordinator.number.TO_C", {}):
+        # a head change forces the control to be written, which reads the unit
+        hass.states.async_set("climate.office", "cool", {**CLIMATE_ATTRS, "temperature": 25.5})
+        await hass.async_block_till_done()
+    number = hass.states.get("number.office_setpoint")
+    assert number is not None and number.state == "unknown"
+
+
 async def test_the_demand_forecast_is_read_once_per_five_minutes(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
