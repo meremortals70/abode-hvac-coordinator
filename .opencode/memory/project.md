@@ -27,8 +27,10 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
   (dry↔rest 186 of those; median action lifetime 12 min). Candidates: the
   short-cycle guard's min run 10 / rest 5, the 5-minute replan overwriting the
   plan before it can run, and the limits turning a cool into a rest or an off.
-- **One change a day** (stated 17 Nov). Do not stack proposals, commits or
-  releases in a single day. 24 Nov's change was 0.10.14.
+- **One release a day** (corrected by the user, 24 Nov — the earlier note said
+  "one change a day" and was wrong). Fixes and commits can stack; **only one
+  release per day**. 24 Nov's release was 0.10.14, so anything finished today
+  ships in the next release, not another one today.
 - **Occupancy is a heat and moisture source** (agreed 24 Nov, not built). On
   Mon 23 Nov the living room gained ~2.6 g/kg of water in 45 minutes, starting
   two minutes after bed occupancy came on. The filter has a *steady* indoor
