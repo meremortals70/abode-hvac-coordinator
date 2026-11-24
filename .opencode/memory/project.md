@@ -25,10 +25,10 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 - **The next defect is #31, open and unfixed:** the plan is not carried out. Do
   not change the model for it.
 
-- **0.10.15 is the latest published release (24 Nov 2026, `695f8c0`); 0.10.14
-  released before it (`c7b507d`).** 0.10.14 made the plan and the PID start
-  from the measured room, not the model's estimate of it (#23, [D106]).
-  0.10.15 carries #25, #27, #26's test gap, [D114] and the settle gate.
+- **The releases before 0.10.16:** 0.10.15 (`695f8c0`), then 0.10.14
+  (`c7b507d`). 0.10.14 made the plan and the PID start from the measured room,
+  not the model's estimate of it (#23, [D106]). 0.10.15 carries #25, #27,
+  #26's test gap, [D114] and the settle gate.
 - **The model is calibrated; the plan is not followed.** Measured correctly on
   24 Nov, the forecast is accurate whenever its plan is carried out: at
   +30 minutes the mean error is **+0.12** for a cool plan held 95–100% of the
