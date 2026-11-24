@@ -96,6 +96,35 @@ A thread-based controller is planned that takes the IntesisBox out of the path.
    always while Automatic control is off. Probably intended (nothing is being
    commanded) but it writes 4,100 rows to say so. The user's intent is unstated.
 
+### 5. Occupancy as a learned moisture source (#27, [D113]) — built, unreleased
+
+Two commits: `8e1fffb` (the term) and `d658650` + `73c0122` (what the review
+found), all green on CI run
+[`45316157695`](https://github.com/meremortals70/abode-hvac-coordinator/actions/runs/45316157695).
+
+What it does: `q_occ`, a figure learned only from minutes the room was occupied,
+in the moisture balance; carried into the plan's six hours and the trust check's
+forward run; the state vector 6 → 7 with a **migration** that keeps a saved
+model (a length mismatch otherwise discards the whole filter).
+
+**The review changed it materially.** Correctness found the forecast path was
+not wired (the term was learned and never priced). Fresh eyes found the worse
+one: a room with no presence sensor counts as occupied for ever
+(`comfort.evaluate`), so `q` and `q_occ` are unidentifiable; pinned true for four
+days, `h` was dragged from 0.500 to 0.365/h and `q_occ` doubled. Now the figure
+learns, and the source is priced, only once the room has been seen both occupied
+and empty — so such a room behaves exactly as before.
+
+Also fixed from the review: a quiet step's figure is asserted not to move;
+diagnostics decodes `moisture {h, q, drying, cooling, rebound, occ, identified}`;
+the first cycle after a restart uses the restored occupancy; `minute()` defaults
+to true as `comfort.evaluate` does; both sims pass a 18:00–08:00 pattern.
+
+**Open, noted, not filed:** `H_Q` is unbounded (linear), so `q` can go transiently
+negative across a Leave; a clamp was suggested and not done. And `q_occ` is one
+number for all occupied minutes, so a 07:00 shower is smeared over fourteen
+hours — the term can match an evening's level, never its shape.
+
 ## Next move
 
 **Why is a plan not carried out?** This is the question left standing after the

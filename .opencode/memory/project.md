@@ -27,6 +27,27 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
   (dry↔rest 186 of those; median action lifetime 12 min). Candidates: the
   short-cycle guard's min run 10 / rest 5, the 5-minute replan overwriting the
   plan before it can run, and the limits turning a cool into a rest or an off.
+- **0.10.15 is built, unreleased, and awaiting its day.** Two fixes are in
+  `main` and in the changelog under `0.10.15 - unreleased`:
+  - **#25** — the demand forecast is read once per five-minute boundary
+    (`coordinator._demand_now`), not every cycle: 17,287 recorder rows a week
+    become about 2,000.
+  - **#27** — occupancy is a learned moisture source [D113], carried into the
+    plan's six hours, and held back until the room has been seen both occupied
+    and empty (a room with no presence sensor counts as occupied for ever, and
+    then `q` and `q_occ` cannot be told apart — a four-day replay dragged `h`
+    from 0.50 to 0.365/h).
+  Release both together on the next release day, then close #25 and #27.
+- **Review precedes every commit** (global instruction, 24 Nov): verify, then
+  the full `review` skill — correctness, security, architecture, AI-tell, fresh
+  eyes — then commit. The fresh-eyes pass is the one that pays: on #27 it found
+  the identifiability failure, which no reading of my own diff would have
+  shown. Hand it the artefact, never the conversation.
+- **`ruff` is installable here** after all: `python3 -m venv /tmp/rv && /tmp/rv/bin/pip
+  install "ruff==0.17.3"`, then `/tmp/rv/bin/ruff check custom_components tests`.
+  Three CI failures on 24 Nov were lint, not behaviour (unused `noqa` RUF100, an
+  inline lambda PLC3002, a quoted annotation UP037). `mypy --strict` still
+  cannot run without the Home Assistant stack; CI is its only runner.
 - **One release a day** (corrected by the user, 24 Nov — the earlier note said
   "one change a day" and was wrong). Fixes and commits can stack; **only one
   release per day**. 24 Nov's release was 0.10.14, so anything finished today
