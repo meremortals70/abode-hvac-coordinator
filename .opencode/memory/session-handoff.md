@@ -2,7 +2,49 @@
 
 > Last updated: 24 Nov 2026 (end of session)
 
-## Current task
+## Current task (later on 24 Nov 2026)
+
+**The setpoint control (#29) is being finished after a rollback.** `v0.10.16`
+and its release were deleted on the user's instruction; the latest published
+release is `v0.10.15` (`695f8c0`). `main` still carries the 0.10.16 work, the
+manifest was set back to 0.10.15, and the changelog heading is
+`0.10.16 - unreleased`.
+
+### What the fix now does
+
+- `number.<room>_setpoint`, while Automatic control is on and the head reports
+  no setpoint: the setpoint last sent; with nothing sent since the spell began,
+  the band's own centre (`comfort_result.centre_c`); blank while the room is
+  being stopped (`off`/`none`), after a failed cycle, and whenever the user is
+  in charge.
+- The figure moved from `RoomRun.commanded_c` to `RoomState.commanded_c`, so it
+  is saved with the room and a restart no longer blanks the control
+  (`memory.py` round trip covered in `tests/pure/test_memory.py`). It is
+  cleared when Automatic control goes off, and only the room's **first** head's
+  setpoint is recorded (the control mirrors the first head).
+- The step checked is `run.limits_result` (what the short-cycle guard allowed),
+  not `run.step` (what was proposed).
+- A house whose temperature unit cannot be converted now still shows the room's
+  hold, which is already in C.
+
+### Reviews already applied
+
+The fresh-eyes pass on the shipped 0.10.16 found: the restart blank (BLOCKER,
+fixed), the unknown-unit return suppressing the hold, `commanded_c` not cleared
+on take-charge, the gate reading the pre-guard step, no `run.failed` check, the
+two docs still describing the old rule, and the missing `### Fixed` entry. All
+are in this change. It also caught `tests/ha/test_handed_on.py:72` still
+reading `run.commanded_c`.
+
+### Still to do
+
+1. CI green on the commit (HA tests and the per-file coverage gate run only
+   there).
+2. One release, 0.10.16, **only after the run reports and the user says so.**
+3. `.opencode/memory` was corrected on the way: 0.10.15 is the latest release,
+   not 0.10.14.
+
+## Earlier: current task
 
 **0.10.14 is shipped and closed out.** The next session starts on the filter's
 tracking failure — see "Next move".
@@ -309,10 +351,14 @@ is the state vector, `data.commands` the last 200 commands with `by_user`. See
 
 ### Tests
 
-- Pure: `python3 -m unittest discover -s tests/pure -t .` — 574 tests, ~110 s.
-- Sim: `python3 -m unittest discover -s tests/sim -t .` — 3 tests, ~490 s.
-- `ruff` and `tests/ha` cannot run in this sandbox. CI is the only runner for
-  those; watch it with the API (`/actions/runs?head_sha=<sha>`).
+- Pure: `python3 -m unittest discover -s tests/pure -t .` — 600 tests, ~130 s.
+- Sim: `python3 -m unittest discover -s tests/sim -t .` — 3 tests, ~505 s.
+- **`ruff` and `tests/ha` DO run here** from temporary venvs (see
+  `environment.md`). That is the correction of 24 November 2026: my own two
+  setpoint tests were asserting nothing, and only running the HA suite here
+  showed it. Run it before pushing, not in CI afterwards:
+  `. /tmp/ha/bin/activate` (or use the absolute path) and
+  `python -m pytest tests/pure tests/ha -q --cov=... --cov-branch`.
 - PowerShell/CI both print "Exited with code 1" on stderr even when the suite
   passes — always read the `OK` line.
 

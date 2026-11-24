@@ -69,7 +69,7 @@ async def test_the_commanded_setpoint_of_a_range_only_unit_is_its_middle(
         await _tick(hass, freezer, timedelta(seconds=30))
     sent = [c.data for c in climate_calls.get("set_temperature", []) if "target_temp_low" in c.data]
     assert sent, "no range was sent"
-    assert run.commanded_c == pytest.approx((sent[-1]["target_temp_low"] + sent[-1]["target_temp_high"]) / 2)
+    assert run.state.commanded_c == pytest.approx((sent[-1]["target_temp_low"] + sent[-1]["target_temp_high"]) / 2)
 
 
 async def test_a_unit_running_unseen_is_not_counted_as_the_rest_of_the_house(

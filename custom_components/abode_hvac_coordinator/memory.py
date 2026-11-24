@@ -60,6 +60,7 @@ class RoomState:
     arbiter: Arbiter = field(default_factory=Arbiter)
     choices: RoomChoices = field(default_factory=RoomChoices)
     occupied: bool | None = None  # [D068]
+    commanded_c: float | None = None  # the setpoint last sent, C [D049]
     occupancy: OccupancyProfile = field(default_factory=OccupancyProfile)  # [D114]
     profile: CapabilityProfile | None = None  # [D048]
     yesterday: DayScore | None = None  # the scorecard, so its sensors show yesterday after a restart
@@ -172,6 +173,7 @@ def room_to_dict(s: RoomState) -> dict[str, Any]:
         "arbiter": s.arbiter.as_dict(),
         "choices": choices_to_dict(s.choices),
         "occupied": s.occupied,
+        "commanded_c": s.commanded_c,
         "occupancy": s.occupancy.as_dict(),
         "profile": profile_to_dict(s.profile) if s.profile is not None else None,
         "yesterday": score_to_dict(s.yesterday) if s.yesterday is not None else None,
@@ -199,6 +201,7 @@ def room_from_dict(data: Mapping[str, Any]) -> RoomState:
     occupied = data.get("occupied")
     return RoomState(
         occupancy=OccupancyProfile.from_dict(data.get("occupancy") or {}),
+        commanded_c=_finite(data.get("commanded_c")),
         model=model,
         arbiter=Arbiter.from_dict(part("arbiter") or {}),
         choices=choices_from_dict(part("choices") or {}),

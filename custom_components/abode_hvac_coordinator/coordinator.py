@@ -273,7 +273,6 @@ class RoomRun:
     not_delivered: bool = False
     failed: bool = False
     fail_logged: bool = False
-    commanded_c: float | None = None
     wanted_c: float | None = None
     conditions: list[Conditions] | None = None
 
@@ -1067,6 +1066,11 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
         run.answers = model.answers(outdoor, snap.sun.s, _local_hour(now))
         comfort = run.comfort.evaluate(snap, run.state.choices, now)
         choices = run.state.choices
+        if not choices.automatic_control and run.state.commanded_c is not None:
+            # the user has the room: what the component last sent describes a
+            # room it is no longer holding. The choice save that follows carries
+            # the cleared figure with it [D049]
+            run.state.commanded_c = None
         if comfort.end_precool is not None or comfort.clear_leave:
             choices = replace(
                 choices,
@@ -1433,14 +1437,19 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 # Act tells Model what was sent [D081]; a blind moved with a
                 # start is not another unit changing [D028]
                 self._last_command[rec.entity_id] = now
-                if rec.service == "set_temperature":
+                # the setpoint control mirrors the room's first head, so only
+                # its setpoint is the one that control should show [D049]
+                if rec.service == "set_temperature" and rec.entity_id == run.config.heads[0].climate:
                     head = next((h for h in result.heads if h.climate == rec.entity_id), None)
                     if head is not None:
                         # a range-only unit is sent a range: its middle [D024]
                         if head.setpoint is not None:
-                            run.commanded_c = head.setpoint
+                            run.state.commanded_c = head.setpoint
                         elif head.setpoint_low is not None and head.setpoint_high is not None:
-                            run.commanded_c = (head.setpoint_low + head.setpoint_high) / 2.0
+                            run.state.commanded_c = (head.setpoint_low + head.setpoint_high) / 2.0
+                        # kept with the room, so a restart does not blank the
+                        # control while the unit is still resting; it rides on
+                        # the next save rather than forcing one a cycle [D049]
         wanted = [h.wanted for h in (run.delivery_result.heads if run.delivery_result else ()) if h.wanted is not None]
         if wanted:
             run.wanted_c = wanted[0]
@@ -1627,7 +1636,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             band_high=comfort.band_high,
             position=band.get("position") if band else None,
             target_c=comfort.centre_c,
-            commanded_c=run.commanded_c,
+            commanded_c=run.state.commanded_c,
             wanted_c=run.wanted_c,
             dew_point_c=dew_point(t, rh) if t is not None and rh is not None else None,
             outdoor_dew_point_c=dew_point(ot, orh) if ot is not None and orh is not None else None,

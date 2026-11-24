@@ -950,9 +950,10 @@ async def test_the_setpoint_shows_the_room_s_hold_while_the_head_rests(
     number = hass.states.get("number.office_setpoint")
     assert number is not None
     assert number.state not in ("unknown", "unavailable"), "the control went blank while the room was held"
-    assert room.commanded_c is not None, "nothing was commanded"
-    assert float(number.state) == pytest.approx(room.commanded_c, abs=0.01), \
-        "the control does not show what the room is being held at"
+    assert room.state.commanded_c is not None, "nothing was commanded"
+    sent = climate_calls["set_temperature"][-1].data["temperature"]
+    assert float(number.state) == pytest.approx(float(sent), abs=0.01), \
+        "the control does not show the setpoint the unit was last sent"
 
 
 async def test_the_setpoint_is_blank_after_leave_even_though_one_was_commanded(
@@ -965,7 +966,9 @@ async def test_the_setpoint_is_blank_after_leave_even_though_one_was_commanded(
     entry = await setup_entry(hass)
     room = entry.runtime_data.coordinator.rooms[ROOM_ID]
     await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
-    assert room.commanded_c is not None, "nothing was commanded"
+    assert room.state.commanded_c is not None, "nothing was commanded"
+    shown = hass.states.get("number.office_setpoint")
+    assert shown is not None and shown.state != "unknown", "the control was not showing a value to lose"
     resting = dict(CLIMATE_ATTRS)
     resting["temperature"] = None
     hass.states.async_set("climate.office", "fan_only", resting)
@@ -975,37 +978,87 @@ async def test_the_setpoint_is_blank_after_leave_even_though_one_was_commanded(
     assert number is not None and number.state == "unknown"
 
 
+async def test_the_setpoint_is_not_blank_when_a_restart_lost_the_one_last_sent(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A restart leaves no setpoint behind; a resting head reports none. While a
+    step still holds the room the control must say what the room is being held
+    at, which is the defect #29 reported [D049]."""
+    set_house_states(hass, mode="cool")
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    target = hass.states.get("sensor.office_target_temperature")
+    assert target is not None
+    assert room.state.commanded_c is not None, "nothing was commanded"
+    # a restart keeps the room and its model, and loses the setpoint last sent
+    room.state.commanded_c = None
+    resting = dict(CLIMATE_ATTRS)
+    resting["temperature"] = None
+    hass.states.async_set("climate.office", "fan_only", resting)
+    await hass.async_block_till_done()
+    number = hass.states.get("number.office_setpoint")
+    assert number is not None
+    assert number.state != "unknown", "the control is blank while the component holds the room"
+    profile = room.config.profile
+    assert profile is not None
+    assert profile.min_setpoint <= float(number.state) <= profile.max_setpoint
+    assert float(number.state) == pytest.approx(float(target.state), abs=0.01), \
+        "with nothing sent since the start, the control should show the hold the plan is working to"
+
+
 async def test_the_setpoint_is_blank_when_the_user_is_in_charge_and_the_head_reports_none(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
     """With Automatic control off the head is the user's: what it reports is the
     truth, and a head reporting no setpoint has nothing to show [D049]."""
     set_house_states(hass, mode="fan_only")
-    await setup_entry(hass)
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
     resting = dict(CLIMATE_ATTRS)
     resting["temperature"] = None
     hass.states.async_set("climate.office", "fan_only", resting)
     await _tick(hass, freezer, timedelta(seconds=30))
+    shown = hass.states.get("number.office_setpoint")
+    assert shown is not None and shown.state != "unknown", "the control was not showing a value to lose"
+    assert room.state.choices.automatic_control, "Automatic control was already off"
     await hass.services.async_call("switch", "turn_off",
                                    {"entity_id": "switch.office_automatic_control"}, blocking=True)
     await hass.async_block_till_done()
     number = hass.states.get("number.office_setpoint")
     assert number is not None and number.state == "unknown"
+    assert room.state.commanded_c is None, "taking charge should have cleared the setpoint last sent"
 
 
-async def test_the_setpoint_is_blank_when_the_house_unit_is_not_known(
+async def test_the_setpoint_in_a_house_whose_unit_is_not_known(
     hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
 ) -> None:
-    """A house whose temperature unit the integration does not know gets no
-    number rather than a wrong one."""
-    set_house_states(hass)
-    await setup_entry(hass)
+    """A house whose temperature unit the integration does not know cannot read
+    the unit's own setpoint, so it shows the blank rather than a number in the
+    wrong unit. The room's hold is already in C, which is the control's own
+    unit, so that is shown [D049]."""
+    set_house_states(hass, mode="cool")
+    entry = await setup_entry(hass)
+    room = entry.runtime_data.coordinator.rooms[ROOM_ID]
+    await _tick(hass, freezer, timedelta(minutes=5, seconds=30))
+    target = hass.states.get("sensor.office_target_temperature")
+    assert target is not None
+    assert room.state.commanded_c is not None, "nothing was commanded"
+    room.state.commanded_c = None  # what a restart leaves
+    resting = dict(CLIMATE_ATTRS)
+    resting["temperature"] = None
     with patch("custom_components.abode_hvac_coordinator.number.TO_C", {}):
-        # a head change forces the control to be written, which reads the unit
+        # the unit reports a setpoint in a unit that cannot be converted
         hass.states.async_set("climate.office", "cool", {**CLIMATE_ATTRS, "temperature": 25.5})
         await hass.async_block_till_done()
-    number = hass.states.get("number.office_setpoint")
-    assert number is not None and number.state == "unknown"
+        number = hass.states.get("number.office_setpoint")
+        assert number is not None and number.state == "unknown"
+        # and the head reports none: the room's own hold, already in C
+        hass.states.async_set("climate.office", "fan_only", resting)
+        await hass.async_block_till_done()
+        number = hass.states.get("number.office_setpoint")
+    assert number is not None and number.state != "unknown", "the control went blank although the hold is known in C"
+    assert float(number.state) == pytest.approx(float(target.state), abs=0.01)
 
 
 async def test_the_demand_forecast_is_read_once_per_five_minutes(

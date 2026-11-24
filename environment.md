@@ -27,15 +27,18 @@ Alpine 3.24, running as `www-data`, home `/opencode/home`.
 | --- | --- |
 | Python | **3.14.10** |
 | git | **2.54.1** — `git push` is blocked, publish through the API |
-| **`ruff`** | **absent** — no pip and no packages installed |
-| **`tests/ha`** | **cannot run** — no `pytest`, no `pytest-homeassistant-custom-component` |
+| **`ruff`** | installable into a temporary venv: `python3 -m venv /tmp/rv && /tmp/rv/bin/pip install "ruff==0.17.3"` |
+| **`tests/ha`** | **runs** from a temporary venv: `python3 -m venv /tmp/ha && /tmp/ha/bin/pip install "pytest-homeassistant-custom-component==0.13.375" pytest-cov` (Home Assistant 2026.10.4). Verified 24 November 2026 |
 | `sqlite3` | absent — the recorder database is on the HA host, not here |
 | `gh` | absent |
 | `jq`, `node`, `perl` | absent; `awk`, `sed`, `grep` (busybox) only |
 
-**So here: pure and simulation suites run, `ruff` and `tests/ha` do not.** CI is
-the only runner for the Home Assistant suite and the linter, which makes a red
-CI run the normal way those two are checked — not a surprise.
+**So here: every suite runs.** Lint, pure, simulation and `tests/ha`, the last
+two with coverage, from the venvs above. Earlier notes said otherwise; on
+24 November 2026 a venv took `pytest-homeassistant-custom-component` and the setpoint
+tests ran in seconds, which caught two of my own tests asserting nothing. **Check
+the suite here before pushing, not in CI afterwards.** CI is still the only
+place both Home Assistant versions run, and `mypy --strict` still needs it.
 
 Timings, so a timeout can be chosen sensibly: pure suite ~112 s, simulation
 ~490 s (three tests). Both fit comfortably in a ten-minute timeout.
@@ -46,18 +49,11 @@ the user uploads to `tools/`.
 
 ### Line endings — read this before any git command
 
-The worktree has **CRLF working files against LF blobs**. A plain `git status`
-therefore reports 216 files modified, and a plain `git add` would rewrite every
-line of every file in the repository.
-
-```sh
-git -c core.autocrlf=true diff --stat     # only real changes
-git -c core.autocrlf=true add <files>
-git -c core.autocrlf=true commit ...
-```
-
-With that flag the noise disappears and the diff is exactly what changed. Verify
-with `--numstat` before committing: additions and deletions should be the same
+The worktree files and the blobs are **both LF** now (checked with
+`git ls-files --eol` on 24 November 2026: `i/lf w/lf` for every file touched
+that day), so a plain `git status` shows only real changes. Add with
+`git -c core.autocrlf=false add <files>` and verify with `--numstat` before
+committing: additions and deletions should be the same
 count on files nobody touched.
 
 `.opencode/memory/*.md` are LF, so they are unaffected.

@@ -56,7 +56,7 @@ def learned_state() -> Any:
                                  comfort_mode=models.ComfortMode.SLEEP, leave_pressed_at=T0,
                                  precool_ready_by=T0 + timedelta(hours=1))
     return mem.RoomState(model=rm, arbiter=a, choices=choices, occupied=True, profile=PROFILE,
-                         yesterday=models.DayScore(98.5, 40.0, 0.5, 1.25))
+                         yesterday=models.DayScore(98.5, 40.0, 0.5, 1.25), commanded_c=21.5)
 
 
 class Kept(unittest.TestCase):
@@ -73,6 +73,9 @@ class Kept(unittest.TestCase):
         self.assertEqual(list(r.arbiter.wins), [True, False])
         self.assertEqual(r.choices, s.choices)  # [D049][D058][D088][I8]
         self.assertEqual((r.occupied, r.profile, r.yesterday), (True, PROFILE, s.yesterday))  # [D068][D048]
+        # the setpoint last sent survives a restart, so the control is not
+        # blank while the head goes on resting [D049]
+        self.assertEqual(r.commanded_c, s.commanded_c)
 
     def test_not_the_pid_integral(self) -> None:
         def keys(d: Any) -> set[str]:

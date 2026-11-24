@@ -8,9 +8,27 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
 
 ## Active work
 
-- **0.10.14 is in service (released 24 Nov 2026, `c7b507d`).** The plan and
-  the PID now start from the measured room, not the model's estimate of it
-  (#23, [D106]). Tag `v0.10.14`, release and `main` all name `c7b507d`.
+- **0.10.16 was released and rolled back the same day (24 Nov 2026).** The
+  release and its tag were deleted; the latest published release is
+  `v0.10.15` (`695f8c0`). `main` still carries the 0.10.16 work with the
+  manifest set back to 0.10.15, and the changelog heading is
+  `0.10.16 - unreleased`. Nothing is published until CI is green **and the
+  user has said so**: three releases on 24 Nov and a force-moved tag were cut
+  without that, which is the failure the user was angry about.
+- **The setpoint control (#29) is fixed in the working tree, not released.**
+  `number.<room>_setpoint` shows the setpoint last sent while Automatic
+  control is on and the head reports none, and the blank otherwise. The figure
+  is kept in `RoomState.commanded_c` (so a restart does not blank the control),
+  cleared when the user takes charge, gated on the step that actually reached
+  the unit (`run.limits_result`) and on `run.failed`, and only the room's first
+  head's setpoint is recorded. With nothing sent since the spell began the
+  band's own centre is shown. [D049] amended; `docs/entities.md` and the
+  changelog corrected to "the setpoint last sent".
+
+- **0.10.15 is the latest published release (24 Nov 2026, `695f8c0`); 0.10.14
+  released before it (`c7b507d`).** 0.10.14 made the plan and the PID start
+  from the measured room, not the model's estimate of it (#23, [D106]).
+  0.10.15 carries #25, #27, #26's test gap, [D114] and the settle gate.
 - **The model is calibrated; the plan is not followed.** Measured correctly on
   24 Nov, the forecast is accurate whenever its plan is carried out: at
   +30 minutes the mean error is **+0.12** for a cool plan held 95–100% of the
@@ -27,10 +45,8 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
   (dry↔rest 186 of those; median action lifetime 12 min). Candidates: the
   short-cycle guard's min run 10 / rest 5, the 5-minute replan overwriting the
   plan before it can run, and the limits turning a cool into a rest or an off.
-- **0.10.15 is released (24 Nov 2026, `695f8c0`).** Tag `v0.10.15`, release
-  and `main` all name it; CI run `45332107800` was green on `d724318` and the
-  release commit changes only the manifest and the changelog heading. It carries
-  #25, #27, #26's test gap, [D114] and the settle gate.
+- **0.10.15's CI was green (run `45332107800` on `d724318`)** and its release
+  commit changes only the manifest and the changelog heading.
 - **No open issues** as of 24 Nov 2026. #24 (plan churn) was closed with the
   record rather than a change: two pricing designs were measured and both cost
   comfort (73.4% and 97.7% in band against 85% and 99%) while the churn itself

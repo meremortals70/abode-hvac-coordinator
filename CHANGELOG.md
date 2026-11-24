@@ -6,7 +6,7 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
-## 0.10.16 - 2026-11-24
+## 0.10.16 - unreleased
 
 ### Fixed
 
@@ -15,11 +15,21 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
   control mirrored that blank while the component was holding the room at one:
   on 24 November the office's page showed an empty setpoint with the room 1.1
   points above its band and Automatic control on. While Automatic control is on
-  the control now shows the coordinator's commanded setpoint; when the user is in
-  charge the blank stays, because there is then no setpoint the room is being
-  held at. A room being stopped — Leave, an empty room, a door left open — shows
-  the blank too: a commanded setpoint outlives the step that sent it, and it says
-  nothing while the unit is being turned off.
+  the control now shows the setpoint last sent. That setpoint is kept with the
+  room, so a restart no longer loses it and blanks the control for as long as
+  the head rests — with nothing sent since the spell began, the room's own hold
+  is shown instead.
+
+  It says nothing while the room is being stopped — Leave, an empty room, a door
+  left open — because a setpoint once sent outlives the step that sent it; it is
+  cleared when the user takes charge, so a hand-back never shows a value from
+  before the manual spell; and it is not shown after a failed cycle. The value
+  checked is the step that actually reached the unit, after the short-cycle
+  guard, not the step before it. A house whose temperature unit the integration
+  cannot convert still shows the room's hold, which is already in C.
+
+  When the user is in charge the blank stays, because there is then no setpoint
+  the room is being held at.
 
 ## 0.10.15 - 2026-11-24
 
