@@ -2,11 +2,6 @@
 
 It shows the unit's live setpoint, and is writable only while Automatic
 control is off; its range and step are the unit's [D048].
-
-A head that is resting — fan only, or off — reports no setpoint of its own, and
-that left the control blank while the plan was busy holding the room at one.
-While the component is in charge the control therefore shows what the room is
-being held at; while the user is in charge, a blank is the truth [D049][D054].
 """
 
 from __future__ import annotations
@@ -46,24 +41,17 @@ class SetpointNumber(RoomControlEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        to_c = TO_C.get(self.hass.config.units.temperature_unit)
-        if to_c is None:
-            return None
         st = self.unit_state
+        to_c = TO_C.get(self.hass.config.units.temperature_unit)
         value = st.attributes.get("temperature")
         if value is None:
             lo, hi = st.attributes.get("target_temp_low"), st.attributes.get("target_temp_high")
-            if isinstance(lo, int | float) and isinstance(hi, int | float):
-                value = (lo + hi) / 2.0  # a unit that holds a range: the middle [D081]
-        if isinstance(value, int | float):
-            return round(to_c(float(value)), 2)
-        # the head has no setpoint to report while it rests. The room still has
-        # one while the component is holding it, and showing a blank there said
-        # nothing true about the room [D049]
-        run = self.run
-        if run is not None and run.state.choices.automatic_control and run.commanded_c is not None:
-            return round(run.commanded_c, 2)
-        return None
+            if not isinstance(lo, int | float) or not isinstance(hi, int | float):
+                return None
+            value = (lo + hi) / 2.0  # a unit that holds a range: the middle [D081]
+        if not isinstance(value, int | float) or to_c is None:
+            return None
+        return round(to_c(float(value)), 2)
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_user_command(self.room_id, UserCommand(setpoint=value), self._context)
