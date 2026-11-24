@@ -8,6 +8,21 @@ Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
 ## 0.10.15 - unreleased
 
+### Added
+
+- **Occupancy is a moisture source the model learns ([D113]).** The moisture
+  balance knew the exchange with outdoors, one steady indoor source, drying, the
+  cooling response and the rebound — but nothing that knew when someone came
+  into the room. On 23 November 2026 the living room gained about 2.6 g/kg of
+  water in 45 minutes, starting two minutes after its bed occupancy came on, and
+  no part of the model could have seen it coming. It is added as a learned
+  figure that acts only on the minutes the room was occupied, not as a rule
+  about humidity, so a night with nobody in the room learns it is not there
+  [D104]. The heat side already carries a learned daily pattern, which is the
+  same information smoothed over the usual hours; moisture had no such pattern.
+  A saved model from before this keeps everything it learned — the new figure
+  joins at its starting value.
+
 ### Fixed
 
 - **The demand forecast is read once every five minutes, not every cycle.**

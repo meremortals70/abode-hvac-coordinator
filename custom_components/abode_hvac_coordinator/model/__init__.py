@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from ..models import ModelAnswers, Snapshot
@@ -39,9 +39,11 @@ class RoomModel:
     _last_minute: MinuteSample | None = None
     _hourly_z: deque[tuple[datetime, list[float]]] = field(default_factory=lambda: deque(maxlen=7))
 
-    def minute(self, snapshot: Snapshot, local_hour: float) -> MinuteSample:
-        """Every minute: the step averages and the unit's rate."""
-        sample = minute_sample(snapshot, local_hour)
+    def minute(self, snapshot: Snapshot, local_hour: float, occupied: bool = False) -> MinuteSample:
+        """Every minute: the step averages and the unit's rate. `occupied` is the
+        room's occupancy as last decided, which is the cycle before this one
+        while the cycle runs: a grace flag a few seconds old [D107][D113]."""
+        sample = replace(minute_sample(snapshot, local_hour), occupied=occupied)
         if self.heat is None and sample.reading is not None:
             self.heat = HeatFilter.start(sample.reading)
         if self.heat is not None:
@@ -82,6 +84,7 @@ class RoomModel:
                 dry=wet_now and sample.dry,
                 cooling_rate=max(u, 0.0) if wet_now and not sample.dry else 0.0,
                 rebound=in_rebound(self.humidity.last_wet_stop, sample.time),
+                occupied=sample.occupied,
             )
         )
 

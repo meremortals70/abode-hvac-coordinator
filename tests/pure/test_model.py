@@ -974,9 +974,12 @@ class Humidity(unittest.TestCase):
         self.assertAlmostEqual(hum.rate_of_change(fig, 18.0, self.minute()), fig.h * 2.0)
 
     def test_acting(self) -> None:
-        self.assertEqual(hum.acting([self.minute()]), [True, True, True, False, False, False])
+        self.assertEqual(hum.acting([self.minute()]), [True, True, True, False, False, False, False])
         self.assertEqual(hum.acting([self.minute(dry=True), self.minute(rebound=True)]),
-                         [True, True, True, True, False, True])
+                         [True, True, True, True, False, True, False])
+        # the occupancy source acts only on a minute the room was occupied [D113]
+        self.assertEqual(hum.acting([self.minute(occupied=True)]),
+                         [True, True, True, False, False, False, True])
 
     def ready(self) -> Any:
         f = hum.HumidityFilter.start(20.0)

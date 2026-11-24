@@ -3,7 +3,8 @@
 
 Works in vapour pressure e (hPa), which changes only when water moves:
 
-    de/dt = h (e_out - e) + q - drying [dry] - cooling x U [cool]
+    de/dt = h (e_out - e) + q + occupancy [occupied]
+            - drying [dry] - cooling x U [cool]
             + rebound [15 minutes after the compressor stops cooling or drying]
 
 A second Kalman filter of the same kind as filter.py learns e and the
@@ -32,6 +33,7 @@ from ..const import (
     HUMIDITY_START_COOLING_HPA_PER_C,
     HUMIDITY_START_DRYING_HPA_PER_H,
     HUMIDITY_START_H_PER_H,
+    HUMIDITY_START_OCC_HPA_PER_H,
     HUMIDITY_START_Q_HPA_PER_H,
     HUMIDITY_START_REBOUND_HPA_PER_H,
     HUMIDITY_START_VAR_E,
@@ -54,8 +56,8 @@ from ..linalg import (
     transpose,
 )
 
-H_E, H_LN_H, H_Q, H_LN_DRY, H_LN_COOL, H_LN_REB = 0, 1, 2, 3, 4, 5
-H_SIZE = 6
+H_E, H_LN_H, H_Q, H_LN_DRY, H_LN_COOL, H_LN_REB, H_LN_OCC = 0, 1, 2, 3, 4, 5, 6
+H_SIZE = 7
 _MINUTE_H = 1.0 / 60.0
 _REBOUND_MIN = COIL_REBOUND_S / 60.0
 
@@ -69,6 +71,7 @@ class MoistureFigures:
     drying: float
     cooling: float
     rebound: float
+    occ: float  # vapour added per hour while the room is occupied [D113]
 
 
 def moisture_figures(z: Sequence[float]) -> MoistureFigures:
@@ -78,6 +81,7 @@ def moisture_figures(z: Sequence[float]) -> MoistureFigures:
         drying=math.exp(z[H_LN_DRY]),
         cooling=math.exp(z[H_LN_COOL]),
         rebound=math.exp(z[H_LN_REB]),
+        occ=math.exp(z[H_LN_OCC]),
     )
 
 
@@ -89,6 +93,7 @@ class MoistureMinute:
     dry: bool  # drying with the compressor running
     cooling_rate: float  # U while cooling with the compressor running, else 0
     rebound: bool  # within 15 minutes after the compressor stopped cooling or drying
+    occupied: bool = False  # someone is in the room: they add vapour [D113]
 
 
 def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute) -> float:
@@ -98,12 +103,14 @@ def rate_of_change(fig: MoistureFigures, e: float, m: MoistureMinute) -> float:
         out -= fig.drying
     elif m.cooling_rate > 0.0:
         out -= fig.cooling * m.cooling_rate
+    if m.occupied:
+        out += fig.occ
     if m.rebound:
         out += fig.rebound
     return out
 
 
-_LOG_FIGURES = (H_LN_H, H_LN_DRY, H_LN_COOL, H_LN_REB)
+_LOG_FIGURES = (H_LN_H, H_LN_DRY, H_LN_COOL, H_LN_REB, H_LN_OCC)
 
 
 def moisture_step(z: Sequence[float], minutes: Sequence[MoistureMinute]) -> list[float]:
@@ -131,6 +138,7 @@ def acting(minutes: Sequence[MoistureMinute]) -> list[bool]:
         any(m.dry for m in minutes),
         any(m.cooling_rate > 0.0 and not m.dry for m in minutes),
         any(m.rebound for m in minutes),
+        any(m.occupied for m in minutes),
     ]
 
 
@@ -160,9 +168,10 @@ class HumidityFilter:
         z[H_LN_DRY] = math.log(HUMIDITY_START_DRYING_HPA_PER_H)
         z[H_LN_COOL] = math.log(HUMIDITY_START_COOLING_HPA_PER_C)
         z[H_LN_REB] = math.log(HUMIDITY_START_REBOUND_HPA_PER_H)
+        z[H_LN_OCC] = math.log(HUMIDITY_START_OCC_HPA_PER_H)
         p = diagonal(
             [HUMIDITY_START_VAR_E, HUMIDITY_START_VAR_LOG_FIGURE, HUMIDITY_START_VAR_Q]
-            + [HUMIDITY_START_VAR_LOG_FIGURE] * 3
+            + [HUMIDITY_START_VAR_LOG_FIGURE] * 4
         )
         return cls(z=z, p=p)
 
@@ -279,6 +288,13 @@ class HumidityFilter:
             p = [[float(x) for x in r] for r in data["p"]]
         except (KeyError, TypeError, ValueError):
             return None
+        if len(z) == H_SIZE - 1 and len(p) == H_SIZE - 1 and all(len(r) == H_SIZE - 1 for r in p):
+            # a save from before occupancy added vapour [D113]: the figure
+            # starts at its starting value, wide, and everything learned is
+            # kept; the column and row it joins start at zero
+            z.append(math.log(HUMIDITY_START_OCC_HPA_PER_H))
+            p = [r + [0.0] for r in p] + [[0.0] * H_SIZE]
+            p[H_LN_OCC][H_LN_OCC] = HUMIDITY_START_VAR_LOG_FIGURE
         if len(z) != H_SIZE or len(p) != H_SIZE or any(len(r) != H_SIZE for r in p):
             return None
         if not all(math.isfinite(x) for x in z) or not is_finite(p):

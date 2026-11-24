@@ -108,6 +108,8 @@ class MinuteSample:
     # 1 while one of the room's openings is open, 0 while they are shut or
     # none is configured [D105]
     opening: float = 0.0
+    # the room was occupied for this minute: people add vapour [D113]
+    occupied: bool = False
 
 
 def minute_sample(snapshot: Snapshot, local_hour: float) -> MinuteSample:

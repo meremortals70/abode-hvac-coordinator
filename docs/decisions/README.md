@@ -116,3 +116,4 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D109](D109.md) | Dry runs on a curve of its own, the plan chooses its rate, and a power ceiling is applied to the effort a dry rate asks rather than to the rate itself (supersedes D108's single share) |
 | [D110](D110.md) | A meter on the outdoor unit's own circuit says when its compressor runs and what it draws |
 | [D111](D111.md) | A door to another room is an opening for the stop, and nothing else: it is never air changed with the outdoors and never offered as free cooling |
+| [D113](D113.md) | People add vapour: occupancy is a moisture source the filter learns, added as a term rather than a threshold (the heat balance already carries a learned daily pattern) |
