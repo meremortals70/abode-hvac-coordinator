@@ -10,7 +10,7 @@ from tests.pure._load import load
 hum = load("model.humidity")
 
 
-def minute(*, occupied: bool) -> "hum.MoistureMinute":
+def minute(*, occupied: bool) -> hum.MoistureMinute:
     return hum.MoistureMinute(outdoor_e=20.0, dry=False, cooling_rate=0.0, rebound=False,
                               occupied=occupied)
 

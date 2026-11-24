@@ -106,7 +106,7 @@ from .memory import (
 )
 from .model import RoomModel
 from .model.forecast import ForecastInput, drift_now
-from .model.humidity import moisture_figures
+from .model.humidity import HumidityFilter, moisture_figures
 from .model.physics import Figures, figures
 from .model.unit import (
     curve_efforts,
@@ -469,6 +469,17 @@ def _still_coming(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.state in (ConfigEntryState.SETUP_IN_PROGRESS, ConfigEntryState.SETUP_RETRY):
         return True
     return entry.state is ConfigEntryState.NOT_LOADED and hass.state is not CoreState.running
+
+
+def _moisture_for_diagnostics(hum: HumidityFilter | None) -> dict[str, Any] | None:
+    """The room's moisture figures decoded, as the heat ones are: a logarithm
+    inside a 7x7 matrix cannot be read by eye [D113]."""
+    if hum is None:
+        return None
+    f = moisture_figures(hum.z)
+    return {"h": round(f.h, 4), "q": round(f.q, 4), "drying": round(f.drying, 4),
+            "cooling": round(f.cooling, 4), "rebound": round(f.rebound, 4),
+            "occ": round(f.occ, 4), "identified": hum.occupancy_identified}
 
 
 def _estimate_now(run: RoomRun, now: datetime) -> tuple[float, float]:
@@ -1866,13 +1877,7 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
                 "choices": choices_to_dict(run.state.choices),
                 "profile": profile_to_dict(r.profile) if r.profile else None,
                 "learned": room_to_dict(run.state),
-                # the moisture figures decoded, as the heat ones are: a
-                # logarithm inside a 7x7 matrix cannot be read by eye [D113]
-                "moisture": (lambda f: {"h": round(f.h, 4), "q": round(f.q, 4),
-                                        "drying": round(f.drying, 4), "cooling": round(f.cooling, 4),
-                                        "rebound": round(f.rebound, 4), "occ": round(f.occ, 4),
-                                        "identified": hum.occupancy_identified})
-                            (moisture_figures(hum.z)) if (hum := run.model.humidity) is not None else None,
+                "moisture": _moisture_for_diagnostics(run.model.humidity),
                 "plan": run.trace.get("plan"),
                 "in_charge": run.control.arbiter.in_charge.value,
                 "arbiter": run.control.arbiter.as_dict(),
