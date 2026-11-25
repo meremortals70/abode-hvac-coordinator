@@ -22,9 +22,17 @@ from typing import Any
 from tests.pure._load import load
 
 models = load("models")
+hci = load("hci")
 VT = models.ValueTag
 
 TRUE = {"a": 0.10, "b": 0.50, "c": 0.15, "k": 0.05, "s": 0.80, "m": 0.30}
+# The room's true moisture figures. These are the model's own starting figures,
+# so a whole-loop test measures the decision, not whether the filter can learn
+# them: hPa per hour, and hPa per C of cooling rate [D026][D060][D109].
+TRUE_MOISTURE = {"h": 0.5, "q": 0.0, "drying": 1.0, "cooling": 0.5, "rebound": 1.0}
+REBOUND_MINUTES = 15  # the coil gives moisture back for 15 min after a wet stop [D060]
+ROOM_RH = 55.0
+OUTDOOR_RH = 60.0
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
@@ -58,9 +66,19 @@ class SimRoom:
     command_direction: int = 0
     command_kind: str = "cool"  # cool, heat or dry
     _ext: deque[float] = field(default_factory=lambda: deque([0.0] * 6, maxlen=6))
+    # Opt-in moisture: the whole-loop tests need a room whose humidity moves
+    # when the coil runs and stops, so the plan has a real rebound to price.
+    moisture: bool = False
+    e_hpa: float = 0.0
+    _last_wet: bool = False
+    _last_kind: str = ""
+    _wet_stop: int | None = None
+    _change_stop: int | None = None
 
     def __post_init__(self) -> None:
         self.rng = random.Random(self.seed)
+        if not self.e_hpa:
+            self.e_hpa = hci.vapour_pressure(self.t, ROOM_RH)
 
     @property
     def now(self) -> datetime:
@@ -70,6 +88,13 @@ class SimRoom:
     def hour(self) -> float:
         return (self.minute % 1440) / 60.0
 
+    @property
+    def rh(self) -> float:
+        """The room's humidity: fixed unless this room simulates moisture."""
+        if not self.moisture:
+            return ROOM_RH
+        return max(0.0, min(100.0, hci.rh_at_temperature(self.e_hpa, self.t)))
+
     def outdoor(self) -> float:
         return self._mean + self._swing / 2 * math.sin(2 * math.pi * (self.hour - 9.0) / 24.0)
 
@@ -78,6 +103,50 @@ class SimRoom:
 
     def g(self) -> float:
         return 0.60 if 17.0 <= self.hour < 23.0 else 0.15
+
+    def _moisture_minute(self) -> None:
+        """One minute of the room's moisture, with the balance the filter learns:
+        exchange, steady source, coil removal and the rebound after a wet stop
+        [D026][D060]. The wet state follows the delayed compressor, so a
+        rebound starts when the coil actually stops, not when it is commanded."""
+        f = TRUE_MOISTURE
+        out_e = hci.vapour_pressure(self.outdoor(), OUTDOOR_RH)
+        if self.external:
+            wet = bool(self._cmd[-1]) and self.command_direction > 0
+            dry = self.command_kind == "dry"
+            # a cool-to-dry change stops this unit's compressor for two to four
+            # minutes: the coil gives moisture back even though the mode stays
+            # wet [D103]. Only a coil that is still wet does this; a dry that
+            # follows a long rest has no second stop to pay for [D060]. Only
+            # the moisture path takes the stop; the thermal plant is unchanged
+            # so the heat thresholds still mean what they did.
+            changing = self._last_wet and self._last_kind == "cool" and dry
+        else:
+            wet, dry, changing = bool(self._cmd[-1]), False, False
+        if self._last_wet and not wet:
+            self._wet_stop = self.minute
+        if changing:
+            self._change_stop = self.minute
+        self._last_wet = wet
+        self._last_kind = self.command_kind
+        rebound = (
+            self._wet_stop is not None and self.minute - self._wet_stop < REBOUND_MINUTES
+        ) or (
+            self._change_stop is not None and self.minute - self._change_stop < REBOUND_MINUTES
+        )
+        stopped_for_mode = self._change_stop is not None and self.minute - self._change_stop < 3
+        # The plan works in five-minute steps and cannot price these three lost
+        # minutes separately; that makes the plant a conservative test of the
+        # rebound charge [D116].
+        active = wet and not stopped_for_mode
+        rate = f["h"] * (out_e - self.e_hpa) + f["q"]
+        if active and dry:
+            rate -= f["drying"]
+        elif active:
+            rate -= f["cooling"] * max(self.u, 0.0)
+        if rebound:
+            rate += f["rebound"]
+        self.e_hpa = max(0.1, self.e_hpa + rate / 60.0)
 
     def advance(self) -> None:
         """One minute of the true room."""
@@ -109,6 +178,8 @@ class SimRoom:
         dm = TRUE["c"] * (self.t - self.mass) + TRUE["k"] * (out - self.mass) + TRUE["m"] * s
         self.t += dt / 60.0 + self.rng.gauss(0, 0.002)
         self.mass += dm / 60.0
+        if self.moisture:
+            self._moisture_minute()
         self.minute += 1
 
     def sensor(self) -> float:
@@ -132,7 +203,7 @@ class SimRoom:
         sun = models.SunSnapshot(self.sun() > 0, "geometry", 1.0, 1.0, self.sun(), VT.MEASURED)
         return models.Snapshot(
             room_id="sim", time=self.now, room_temperature=_reading(self.sensor()),
-            room_humidity=_reading(55.0), heads=(head,), sun=sun,
+            room_humidity=_reading(round(self.rh, 1)), heads=(head,), sun=sun,
             outdoor_temperature=_reading(self.outdoor()), outdoor_humidity=_reading(60.0),
             outdoor_wind_ms=_reading(0.0), forecast=(), presence=None, leave_pressed_at=None,
             precool_ready_by=None, openings=(), blind_positions=(),

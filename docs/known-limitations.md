@@ -15,6 +15,13 @@
   as occupied for ever, so people's vapour cannot be told apart from the steady
   indoor source; the term is held back and the steady source carries it, as
   before [D113].
+- **A cool-to-dry change is priced as a compressor stop; dry to cool is not.**
+  The house's Intesis units stop the compressor on a cool-to-dry change, and the
+  plan charges the moisture the wet coil returns [D103][D116]. The export to
+  24 November showed no such stop on a dry-to-cool change, so that direction is
+  charged as a start only. A unit that stopped in both directions would leave
+  that rebound unpriced.
+
 - **Dry is asked no harder than the curve goes.** The unit's effort is asked across 0.5 to 4 °C of reading against setpoint, so dry is commanded at most at an effort of 4 — 2.4 °C/h on its starting curve, more as the curve learns up. The office's trial of 14 November used an effort of 6-7 (a setpoint of 18 against a reading of 28) and took the room down 2.56 °C/h; the component cannot ask that hard, and cools instead.
 - **Dry's curve starts from a guess.** It begins at 0.4 °C/h a step (0.4 at the floor, 2.4 at the top) and is learned only from minutes the unit actually ran dry. A room whose plan never chooses dry keeps that guess, so a unit whose dry is weaker or stronger than the office's of 14 November 2026 reads wrong until dry is run [D109].
 - **One sensor per room, in the room.** The room's air is taken as well mixed and read by one sensor where people are. A sensor in the air conditioner's airflow reads the unit, not the room.

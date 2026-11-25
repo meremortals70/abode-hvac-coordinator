@@ -5,6 +5,7 @@ seeding and the diagnostics download."""
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -407,6 +408,33 @@ async def test_a_sealed_room_is_not_held_for_free_cooling(
     assert run.control.plan is not None and run.control.plan.first.kind is StepKind.COOL
     assert any(c.data.get("hvac_mode") == "cool" for c in climate_calls["set_hvac_mode"])
     assert not [c for c in climate_calls["set_hvac_mode"] if c.data.get("hvac_mode") == "heat"]
+
+
+async def test_the_plan_prices_the_heads_executed_mode_not_its_last_idea(
+    hass: HomeAssistant, climate_calls: dict[str, list[ServiceCall]], freezer: FrozenDateTimeFactory
+) -> None:
+    """A guard can refuse the plan's change and leave the head in dry while
+    the last plan still says cool. The next plan must price the mode the unit
+    is in, so a later cool-to-dry rebound is charged once [D016][D116]."""
+    from custom_components.abode_hvac_coordinator.models import StepKind
+
+    hass.states.async_set("climate.office", "off", {**CLIMATE_ATTRS, "current_temperature": 29.0})
+    hass.states.async_set("sensor.office_t", "29.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    hass.states.async_set("sensor.office_rh", "70", {"unit_of_measurement": "%", "device_class": "humidity"})
+    hass.states.async_set("sensor.outdoor_t", "14.0", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    hass.states.async_set("sensor.outdoor_rh", "40", {"unit_of_measurement": "%", "device_class": "humidity"})
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data.coordinator
+    run = coordinator.rooms[ROOM_ID]
+    assert run.control.plan is not None and run.control.plan.first.kind is StepKind.COOL
+    assert run.snapshot is not None and run.economics is not None
+
+    # The head really changed to dry, but a guard held the new plan's cool.
+    heads = tuple(replace(h, mode="dry") for h in run.snapshot.heads)
+    run.snapshot = replace(run.snapshot, heads=heads)
+    inputs = coordinator._plan_inputs(run, dt_util.utcnow(), [0.3] * 12, 1.0, run.economics)
+    assert inputs is not None
+    assert inputs.last_kind is StepKind.DRY
 
 
 async def test_a_failed_spoken_warning_is_logged_once(

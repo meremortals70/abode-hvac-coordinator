@@ -6,6 +6,26 @@ changed for someone running the integration, and name the decision record
 
 Headings used: **Fixed**, **Changed**, **Added**, **Removed**.
 
+## 0.10.17 - 2026-11-25
+
+### Fixed
+
+- **The plan no longer switches from cool to dry and lets the room drift over
+  the band (#31, [D060][D103][D116]).** [D103] records that the house's Intesis
+  unit stops its compressor on a cool-to-dry change. The coil is wet at that
+  moment, so the moisture it gives back is the same rebound that follows a stop
+  to rest [D060]. The plan paid for that rebound on a stop but not on the mode
+  change, so it often chose dry while the room was already in band; the real
+  stop then let humidity carry the room over the top. Six such changes on
+  24–25 November were followed by the short-cycle guard holding the next start,
+  and the room spent 57 minutes after the initial pull-down above the sleep
+  band. A cool-to-dry change now pays the rebound as well as the start, so the
+  plan stays on cool where the switch would cost more comfort than it saves.
+  Other wet-to-wet changes are not assumed to stop the compressor.
+
+  The whole-loop simulation with real room humidity stays at 1440/1440 minutes
+  in band. A live night remains the house check.
+
 ## 0.10.16 - 2026-11-24
 
 ### Fixed

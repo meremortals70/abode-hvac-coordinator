@@ -22,8 +22,14 @@ Maintain and extend the Abode HVAC Coordinator Home Assistant custom integration
   setpoint is recorded. With nothing sent since the spell began the band's own
   centre is shown. [D049] amended; `docs/entities.md` and the changelog
   corrected to "the setpoint last sent".
-- **The next defect is #31, open and unfixed:** the plan is not carried out. Do
-  not change the model for it.
+- **#31, fix built, not yet released:** the plan is not carried out; do not
+  change the model for it. On 25 Nov a fix prices coil-moisture rebound on a
+  `cool → dry` mode change [D060][D103][D116]. All checks pass; the
+  real-humidity sim stays 1440/1440 (no regression). The new-build replay against the raw seven
+  nights (old actions ignored) is 92.8% pooled after the first 30 minutes; the
+  target night is 98.3%, and the 19–20 Nov outlier (75.4%) is replay-plant
+  drift (the learned `s`/`m` never left their start values), not control. A live
+  night is still the final house check.
 
 - **The releases before 0.10.16:** 0.10.15 (`695f8c0`), then 0.10.14
   (`c7b507d`). 0.10.14 made the plan and the PID start from the measured room,
@@ -165,6 +171,7 @@ compressor sources). They take a csv path and a room prefix.
 
 | Date | What |
 | ---- | ---- |
+| 25 Nov 2026 | Night review of 24–25 Nov: first pass withdrawn; the verified figures are 85.6% in band (89.7% after 30 min) — see `session-handoff.md`; #31 still open |
 | 24 Nov 2026 | 0.10.14 released (`c7b507d`): the plan and the PID start from the measured room (#23, [D106]) |
 | 24 Nov 2026 | #22 closed `not_planned`: the head is an IntesisBox reporting the indoor unit's state a few seconds behind; reproduced with no command sent |
 | 24 Nov 2026 | Seven-day review of 17–24 Nov, autonomy-only; living room 86.6% in band overall, 88.5% of 47h02m asleep |

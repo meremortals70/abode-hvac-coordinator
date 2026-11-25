@@ -30,11 +30,11 @@ plan = load("control.plan")
 pid = load("control.pid")
 comfort = load("comfort")
 
-RH = 55.0  # the simulated room's sensor reads 55 % throughout
+RH = 55.0  # the band's reference humidity at the start of the simulation
 
 
 def run(days: int, seed: int = 3) -> list[dict[str, float]]:
-    sim = SimRoom(seed=seed, external=True)
+    sim = SimRoom(seed=seed, external=True, moisture=True)
     band = (hci.comfort_index(21.5, RH), hci.comfort_index(24.5, RH))
     room = models.RoomConfig("sim", "Sim", (models.HeadConfig("climate.sim"),), "s.t", "s.rh", band, band, band)
     rm, rc, ctl = model.RoomModel(), comfort.RoomComfort(room), control.RoomControl()
@@ -60,12 +60,16 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
                 conds.append(plan.Conditions(sim.now + timedelta(minutes=5 * i), h, out_t, 60.0, 7 <= h < 15,
                                              sim._cloud))
             inp = plan.PlanInputs(
-                now=sim.now, heat=rm.heat, humidity=rm.humidity, e_now=hci.vapour_pressure(23.0, RH), unit=rm.unit,
+                now=sim.now, heat=rm.heat, humidity=rm.humidity,
+                e_now=hci.vapour_pressure(snap.room_temperature.value, snap.room_humidity.value), unit=rm.unit,
                 bands=bands, conditions=conds, prices=[1.0] * 12, p_max=1.0, draw_for_rate=lambda r: 0.3 * abs(r),  # a draw is never negative; the sign picks the curve
                 modes=frozenset({"cool", "heat", "dry", "fan_only"}), blind_control=False, transmission_now=1.0,
                 compressor_running=running,
                 running_since=since.get("run"), stopped_since=since.get("stop"),
-                last_kind=ctl.plan.first.kind if ctl.plan else models.StepKind.REST,
+                # the plan prices the executed head mode, not its own last
+                # proposal, which a guard may have refused [D016][D116]
+                last_kind={"cool": models.StepKind.COOL, "dry": models.StepKind.DRY,
+                           "heat": models.StepKind.HEAT}.get(sim.command_kind, models.StepKind.REST),
                 occupied=occupied,
             )
             fig = physics.figures(rm.heat.z)
@@ -84,6 +88,7 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
                     fig, res.rate, dry=res.kind is models.StepKind.DRY)
             else:
                 sim.command_direction, sim.command_effort = 0, 0.0
+                sim.command_kind = "fan_only"
         now_running = sim.command_direction != 0
         if now_running and not running:
             day["starts"] += 1
@@ -91,7 +96,7 @@ def run(days: int, seed: int = 3) -> list[dict[str, float]]:
         elif running and not now_running:
             since = {"stop": sim.now}
         running = now_running
-        felt = hci.comfort_index(sim.t, RH)
+        felt = hci.comfort_index(sim.t, sim.rh)
         day["n"] += 1
         day["inside"] += band[0] <= felt <= band[1]
         day["heating"] += sim.command_direction < 0

@@ -9,6 +9,7 @@ import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import patch
 
 from tests.pure._load import load
 
@@ -270,6 +271,58 @@ class DryIsPricedByTheMoistureModel(unittest.TestCase):
         self.assertEqual(swaps, 0, [(a.kind.value, a.rate) for a in p.actions])
         self.assertEqual(p.starts, starts_in(p.actions, already_running=True),
                          [(a.kind.value, a.rate) for a in p.actions])
+
+    def test_a_cool_to_dry_mode_change_returns_the_coils_moisture(self) -> None:
+        """A cool-to-dry change stops the compressor [D103], so the coil gives
+        moisture back for 15 minutes [D060]. The plan already charges the
+        start; without the rebound it priced the mode change as though the
+        compressor had never stopped, then chose dry while the room was in
+        band and let humidity carry it above the band top."""
+        hum = load("model.humidity").HumidityFilter.start(E_ROOM)
+        inp = inputs(heat=heat(25.0), humidity=hum)
+        fx = plan._fixed(inp)
+        start = plan._Node(t=inp.heat.z[0], m=inp.heat.z[1], e=E_ROOM, outside=0.0, comfort=0.0,
+                           energy=0.0, starts=0, running=True, last_kind=SK.COOL, rebound=0,
+                           c_start=0.0, u=0.0, way=1)
+        action = plan.PlanAction(SK.DRY, 1.2, None)
+        dry = plan._extend(start, action, 0, inp, fx, 1.0, 0.9)
+        # One field at a time: a wet coil that is not running, and a running
+        # coil whose kind is not wet, both give no rebound. A single-point step
+        # leaves the rebound counter readable (a full step spends all three).
+        not_running = dataclasses.replace(start, running=False)
+        not_wet = dataclasses.replace(start, last_kind=SK.REST)
+        dry_to_cool = dataclasses.replace(start, last_kind=SK.DRY)
+        cool_action = plan.PlanAction(SK.COOL, 1.2, None)
+        with patch.object(plan, "PLAN_POINTS_PER_STEP", 1):
+            step_dry = plan._extend(start, action, 0, inp, fx, 1.0, 0.9)
+            step_idle = plan._extend(not_running, action, 0, inp, fx, 1.0, 0.9)
+            step_plain = plan._extend(not_wet, action, 0, inp, fx, 1.0, 0.9)
+            step_reverse = plan._extend(dry_to_cool, cool_action, 0, inp, fx, 1.0, 0.9)
+            step_same = plan._extend(start, cool_action, 0, inp, fx, 1.0, 0.9)
+        self.assertEqual(step_dry.rebound, plan._REBOUND_STEPS - 1)
+        self.assertEqual(step_idle.rebound, 0)
+        self.assertEqual(step_plain.rebound, 0)
+        self.assertEqual(step_reverse.rebound, 0)  # D116 charges only cool to dry
+        self.assertEqual(step_same.rebound, 0)  # cool to cool is not a stop
+        plain = plan._extend(not_wet, action, 0, inp, fx, 1.0, 0.9)
+        # The HCI pair is the end-to-end effect, including the start this
+        # change also charges; the counters above isolate the cause.
+        self.assertGreater(dry.points[0].hci, plain.points[0].hci)
+        self.assertGreater(dry.points[2].hci, plain.points[2].hci)
+
+    def test_the_plan_stays_on_cool_when_a_switch_to_dry_would_pay_the_rebound(self) -> None:
+        """A room near the band top used to change from cool to dry: dry was
+        cheap, and the coil's moisture return from that stop was missing. The
+        stop is real [D103] and its rebound is priced [D060], so the optimiser
+        now keeps cooling instead of handing the room to humidity."""
+        e = hci.vapour_pressure(24.5, 48.0)
+        h = load("model.humidity").HumidityFilter.start(e)
+        h.z[hum.H_LN_DRY] = math.log(2.0)
+        p = plan.make_plan(inputs(
+            heat=heat(24.5), humidity=h, e_now=e, bands=bands(22.5, 25.0), conditions=conds(outdoor=22.0),
+            compressor_running=True, last_kind=SK.COOL, running_since=NOW - timedelta(minutes=30),
+        ))
+        self.assertIs(p.first.kind, SK.COOL)
 
 
 class DryHasItsOwnCurve(unittest.TestCase):

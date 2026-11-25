@@ -163,6 +163,25 @@ WEATHER_SERVICE = "get_forecasts"
 TTS_DOMAIN = "tts"
 TTS_SERVICE = "speak"
 
+# The plan prices its first step against the kind the unit is actually in,
+# not the kind the last plan proposed: a guard can hold a stop or refuse one
+# [D016][D116]. The head's own mode is the executed command the room can see.
+_EXECUTED_KIND = {
+    "cool": StepKind.COOL,
+    "dry": StepKind.DRY,
+    "heat": StepKind.HEAT,
+}
+
+
+def _executed_kind(snap: Snapshot, fallback: StepKind) -> StepKind:
+    """The kind the head is really in; the first head is the one the control
+    mirrors, as it is for its commanded setpoint (defect #29)."""
+    if snap.heads:
+        kind = _EXECUTED_KIND.get(snap.heads[0].mode or "")
+        if kind is not None:
+            return kind
+    return fallback
+
 _FIVE = timedelta(seconds=MODEL_STEP_S)
 _MINUTE = timedelta(minutes=1)
 _HOUR = timedelta(hours=1)
@@ -1372,7 +1391,9 @@ class AbodeHvacCoordinator(DataUpdateCoordinator[CycleData]):
             left = COIL_REBOUND_S - (now - hum.last_wet_stop).total_seconds()
             rebound = max(math.ceil(left / MODEL_STEP_S), 0)
         profile = room.profile
-        last_kind = run.control.plan.first.kind if run.control.plan is not None else StepKind.REST
+        planned = run.control.plan.first.kind if run.control.plan is not None else StepKind.REST
+        allowed = run.limits_result.kind if run.limits_result is not None else planned
+        last_kind = _executed_kind(snap, allowed)
         cool_cap, heat_cap = _ceilings(_budget_direction(run), econ.ceiling, self._draw_for_rate(run),
                                        figures(heat.z))
         return PlanInputs(

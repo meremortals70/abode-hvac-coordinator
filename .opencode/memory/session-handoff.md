@@ -1,6 +1,50 @@
 # Session handoff
 
-> Last updated: 24 Nov 2026 (end of session)
+> Last updated: 25 Nov 2026
+
+## Current task (25 Nov 2026) — boom-bust fix
+
+The `cool → dry` rebound-cost fix is in `control/plan.py` [D116] and all checks
+pass (pure 606, sim 3, HA 142, ruff clean; combined coverage 748 passed, no
+module at or below 95%). The real-humidity sim stays at 1440/1440 in band: that
+is a no-regression check, not confirmation of the fix. The new-build replay is
+the requested test; a live night is still the final house check.
+
+Old-build baseline measured from the exports in `tools` (before the fix):
+
+| Scope | Overall | After first 30 min of each autonomy spell |
+| --- | --- | --- |
+| 17–24 Nov | 88.8% of 69h27m | 92.7% of 65h57m |
+| 24–25 Nov | 85.6% of 10h18m | 89.7% of 9h50m |
+
+Last night's post-30-minute shortfall is the three guard-hold spells (32 + 3 +
+22 min) after `cool → dry`. Mon 23 Nov is a large outlier (26.4% after 30 min).
+
+Raw CSVs/tarballs are in `tools/`. The exact analysis is now in `tools/_rev25/`
+(`auto_uncapped.py`, `nights_uncapped.py`, `outcome_raw.py`, `after30.py`,
+`README.md`). `tools/` is git-ignored. After the new build is installed and a
+night exported, run those scripts on the new CSV; `after30.py` is the one that
+answers the ≥95% requirement.
+
+The user then asked for the new build itself to be replayed against the raw
+seven nights, ignoring the old build's recorded actions. `replay_new_build.py`
+does that: raw room/weather/occupancy readings plus the learned figures from the
+diagnostics download drive a plant; the working-tree plan, PID, comfort, model,
+delivery and short-cycle guard close the loop. **The first runs were invalid:**
+`RoomConfig` takes `(occupied, sleep, precool)`, and the script passed
+`(sleep, occupied, precool)`, so every night was scored against the wrong band.
+The earlier 98.0% is withdrawn. With the order fixed and the plant re-anchored
+to the measured room at each spell start, the seven spells are: Tue 17 98.2%,
+Wed 18 97.9%, Thu 19 75.4%, Sat 21 97.6%, Sun 22 97.0%, Mon 23 92.4%, Tue 24
+98.3%; **pooled 92.8% of 68h15m after the first 30 minutes**. The target night
+(24–25 Nov) is **98.3%**. The 19–20 Nov spell is the outlier because the replay
+plant drifts 1.3 °C colder than the measured room by morning (the learned `s`
+and `m` still sit at their start values), not because of the control; the old
+build measured 94.4% there. Excluding that plant-drift spell the pooled figure
+is 97.5%. This is a replay, not a live night.
+
+The older duplicate room-sensor paragraph was reverted from `AGENTS.md` at the
+user's request; `AGENTS.md` is clean again.
 
 ## Current task (later on 24 Nov 2026)
 
@@ -219,6 +263,33 @@ does not slide.
 were judged by the simulation rather than by reasoning: the q clamp (wrong), the
 stop cost (wrong), and the fixture inconsistency (right). Each looked defensible
 on paper.
+
+### Night review, 24–25 Nov — verified 25 Nov 2026
+
+Export `tools/abode_living_2026-11-25.tar.gz`, local Tue 21:00 → Wed 08:00.
+Automatic control on 21:35 → 07:55 (10h20m), 126 distinct plans (~5 min). Held
+index rows intersected with held, ramping band rows, no caps: **85.6% in band
+over 10h18m** (sleep 82.1% of 8h18m, occupied 100% of 2h). Five spells, 1h29m:
+32 min is the initial pull-down from CI 30.89 at bedtime; **57 min across three
+spells follows short-cycle-guard holds**.
+
+Six times between 22:40 and 02:12 the plan changed cool→dry. 13–32 s after each
+command the house load fell 600–900 W (22:40:34 1350→750 W), which the
+compressor observer reads as a stop because the head exposes no `hvac_action`
+[D110]. The guard held the next start ~270 s and forced `rest`/`fan_only` while
+the plan still said dry: dry ran only 90–120 s each time and was cancelled.
+The index rose 0.4–0.9 during each hold; after three of the six it crossed the
+band top (peaks 25.33, 25.12, 25.22 against a 22.5–25.0 band). 39 guard rows
+are six holds. 19 of 21 first-step changes are this cool→dry→rest→cool cycle,
+not free-standing churn.
+
+**Established [D103]:** the Intesis unit stops its compressor on a cool→dry
+change; on 10 November 20 of 23 such changes were followed within a minute by a
+430–900 W load fall with no command to stop. What is **not separately metered**
+is whether last night's particular 600–900 W step was that stop or dry's own
+lower draw: the 13–32 s lag, six for six, is consistent with the stop. The fix
+relies on the D103 rule, not on that one night's load trace. First-pass figures
+were withdrawn — see git history of this file.
 
 ## Next move
 

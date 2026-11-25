@@ -40,8 +40,8 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
     delivery = tl.load("delivery")
     M = tl.models
     CS, SRC = M.CompressorState, M.CompressorSource
-    RH = 60.0
-    sim = SimRoom(seed=3, external=True)
+    RH = 60.0  # the humidity at which the bands are expressed; the room may read differently
+    sim = SimRoom(seed=3, external=True, moisture=True)
     band = (tl.hci.comfort_index(22.5, RH), tl.hci.comfort_index(24.5, RH))
     room = M.RoomConfig("sim", "Sim", (M.HeadConfig("climate.sim"),), "s.t", "s.rh", band, band, band)
     rm, rc, ctl = tl.model.RoomModel(), tl.comfort.RoomComfort(room), tl.control.RoomControl()
@@ -82,13 +82,17 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
                                                 7 <= hr < 15, sim._cloud))
             kw: dict[str, Any] = {
                 "now": sim.now, "heat": rm.heat, "humidity": rm.humidity,
-                "e_now": tl.hci.vapour_pressure(23.0, RH), "unit": rm.unit, "bands": bands,
+                "e_now": tl.hci.vapour_pressure(snap.room_temperature.value, snap.room_humidity.value),
+                "unit": rm.unit, "bands": bands,
                 "conditions": conds, "prices": [1.0] * 12, "p_max": 1.0,
                 "draw_for_rate": lambda r: 0.45, "modes": frozenset({"cool", "heat", "dry", "fan_only"}),
                 "blind_control": False, "transmission_now": 1.0,
                 "compressor_running": mode in ("cool", "heat", "dry"), "running_since": since.get("run"),
                 "stopped_since": since.get("stop"),
-                "last_kind": ctl.plan.first.kind if ctl.plan else M.StepKind.REST,
+                # the plan prices the executed head mode, not its own last
+                # proposal, which a guard may have refused [D016][D116]
+                "last_kind": {"cool": M.StepKind.COOL, "dry": M.StepKind.DRY,
+                              "heat": M.StepKind.HEAT}.get(mode, M.StepKind.REST),
             }
             if "last_way" in fields:
                 kw["last_way"] = last_way
@@ -141,7 +145,7 @@ def run(days_n: int = 3, known: bool = False, repo: str | None = None) -> list[d
         sim.command_direction = d if comp_on else 0
         sim.command_kind = mode  # the plant knows dry from cool [D109]
         sim.command_effort = max(d * (own - sent), 0.5) if comp_on else 0.0
-        felt = tl.hci.comfort_index(sim.t, RH)
+        felt = tl.hci.comfort_index(sim.t, sim.rh)
         day["n"] += 1
         day["inside"] += band[0] <= felt <= band[1]
         day["heat"] += mode == "heat"

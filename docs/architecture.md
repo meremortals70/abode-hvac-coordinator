@@ -173,7 +173,7 @@ Also learned, outside the filter:
   from minutes the room was occupied and priced only once it has been seen both
   occupied and empty, or it cannot be told apart from q [D113].
 - **D\_mode** is the water removed: the drying rate in dry mode, the response in cool mode, zero otherwise [D026][D029][Prop].
-- **R\_coil** is water the coil gives back for 15 minutes after the compressor stops cooling or drying, learned in its own right [D060].
+- **R\_coil** is water the coil gives back for 15 minutes after the compressor stops cooling or drying, learned in its own right [D060]. On the house's units a change from cool to dry is such a stop [D103], so the plan prices the rebound as well as the restart [D116]. Other wet-to-wet changes are not assumed to stop the compressor.
 
 **Why moisture is modelled apart from heat** [D026][Der]. In a humid climate the two loads move apart. On a rainy day the air temperature falls while humidity climbs, so the heat load drops as the moisture load rises, and a room can need drying on a day that feels cool. A model with one figure for both is wrong on exactly those days.
 

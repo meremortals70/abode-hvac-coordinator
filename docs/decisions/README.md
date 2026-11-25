@@ -118,3 +118,4 @@ One file per rule of Appendix A of the design specification. A number no longer 
 | [D111](D111.md) | A door to another room is an opening for the stop, and nothing else: it is never air changed with the outdoors and never offered as free cooling |
 | [D113](D113.md) | People add vapour: occupancy is a moisture source the filter learns, added as a term rather than a threshold (the heat balance already carries a learned daily pattern) |
 | [D114](D114.md) | The plan expects the room's own hours: a share per hour of the day, learned from the room's occupancy, instead of taking the room as it is now over the whole horizon |
+| [D116](D116.md) | A cool-to-dry change prices the coil's moisture rebound as well as the start, for this device's units; dry to cool is not assumed to stop the compressor |

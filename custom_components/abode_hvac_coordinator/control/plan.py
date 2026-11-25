@@ -653,7 +653,12 @@ def _extend(
         n.starts += 1
     wet_before = n.last_kind in (StepKind.COOL, StepKind.DRY) and n.running
     wet = action.kind in (StepKind.COOL, StepKind.DRY)
-    if wet_before and not wet:
+    # On the house's units a cool-to-dry change stops the compressor [D103],
+    # so the wet coil gives moisture back exactly as it does on a stop to
+    # rest [D060][D116]. Charging the start but not this rebound let the plan choose
+    # dry from cool while the room was in band; the real stop then let
+    # humidity carry the room over the band top.
+    if wet_before and (not wet or (action.kind is StepKind.DRY and n.last_kind is StepKind.COOL)):
         n.rebound = _REBOUND_STEPS
     n.running = runs
     n.last_kind = action.kind
